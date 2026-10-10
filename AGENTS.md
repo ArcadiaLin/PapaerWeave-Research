@@ -164,6 +164,32 @@ operators, so readers can find what others stored for other purposes.
 3. **Evaluation.** T1 against strong baselines, per-mechanism ablations, and
    T2.
 
+### Venue positioning
+
+- **Tentative title:** *Collaborating without Coordinating: Data Management for
+  Knowledge Accumulated by LLM Agents*. The title states the general problem;
+  the abstract scopes the study back to scientific literature ("acute and
+  checkable"), and the system name PaperWeave marks the domain. The title
+  invites reviewers to expect a coordination-avoidance analysis in the spirit
+  of I-confluence and CALM; the body must answer it.
+- **Positioned as a data management system**, not a middleware. MCP is only
+  how agents connect.
+- **SIGMOD subject areas** (agreed 2026-10-10). Primary: *AI & knowledge
+  bases* (Modern AI & Data Management), the home of agent-memory work such as
+  GEM, which the abstract implicitly answers. The collaborative area sits
+  under Human-Centric Data Management, whose reviewers assume human
+  participants, so it is a secondary rather than the primary. Secondaries:
+  - *Crowdsourced and collaborative data management*: the multi-writer setting
+    and the collaborative data sharing lineage (ORCHESTRA);
+  - *Data provenance and workflows*: C2 provenance and lineage, version history;
+  - *Data integration, information extraction, and schema matching*: C1 entity
+    resolution, extraction from papers;
+  - *Data models and semantics*: the accumulation meta-model, the grounded and
+    interpretive layers.
+
+  *Data quality, data cleaning* is deliberately excluded: it would recast store
+  health as the story and dilute the intent-derived workload.
+
 ## System and Engineering Status
 
 The existing prototype is the system; no new subsystem is planned for the

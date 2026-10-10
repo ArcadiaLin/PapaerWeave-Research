@@ -1,6 +1,14 @@
-# PaperWeave: Shared Accumulation of Paper-Derived Knowledge by Uncoordinated Agents
+# Collaborating without Coordinating: Data Management for Knowledge Accumulated by LLM Agents
 
-（标题为候选。）
+（标题暂定，2026-10-10。）标题按通用的问题来提，摘要再把主张收回到实证范围（科学文献）；系统名保留 PaperWeave，名字本身也标明了实证领域。
+
+落选的候选：
+
+- *PaperWeave: Shared Accumulation of Paper-Derived Knowledge by Uncoordinated Agents*：旧标题，只讲场景，没有主张。
+- *PaperWeave: Collaborating without Coordinating — Data Management for Scientific Knowledge Accumulation by LLM Agents*：领域限定写进标题，偏长。
+- 改系统名（Cairn、SourceWeave 等）：比喻类名字撞名严重，直白类名字不如 PaperWeave 可信，作罢。
+
+"Collaborating without Coordinating"会让审稿人期待协调规避（I-confluence、CALM）式的不变式分析，正文需要接住。
 
 # 论文草稿
 
@@ -10,7 +18,34 @@
 
 # Abstract
 
-暂时留空。
+（暂定，2026-10-10。）先不写评测数字，结果用定性表述；终稿有了实验结果再决定是否补数字。
+
+宏观主线是"私有记忆 → 没有主人的共享知识 → 可问责"：
+
+- **Agent 从知识的消费者变成生产者。** 它们读、比较、核查时留下的记录，别的 Agent 可以接着用。
+- **暗中回应 agent memory 的数据管理研究**（如 GEM 的 *Is Agent Memory a Database?*、*Are We Ready For An Agent-Native Memory System?*）：它们的记忆属于一个 Agent、服务一个主体，最新的写入可以代表真值，过时就是旧值被新值取代。共享知识没有主人，这个前提不再成立：新写入不一定更对，分歧可能合理，依据会在脚下变化。摘要只陈述这一点，不点名反驳。
+- **答案是可问责而不是权威：** 规则能判定的地方收敛，合理分歧连同依据一起保留，可能过时的地方暴露出来。
+- 机制压缩成一句"经典机制的改造"；"不变式 × 合并"的分类留给引言与设计章节，摘要不展开。
+- **收回通用性：** 标题是通用的，摘要在提出原则之后用一句话把研究限定到科学文献，并给出理由（问题在这里尖锐且可核查），实验结论也只对这个领域陈述。机制按领域无关设计，泛化留到讨论部分，不进摘要。
+
+```text
+LLM agents increasingly produce knowledge, not just consume it: the records
+they leave while reading papers let others build on their work. Agent memory
+systems serve a single agent, where the latest write can stand for the truth.
+Shared knowledge has no such owner: uncoordinated agents write to one
+long-lived store, legitimately disagree, and draw on sources that change. We
+argue that such a store cannot decide who is right, but must keep every write
+accountable: converging what rules can decide, preserving disagreement with
+its grounds, and exposing what may be stale. We study this problem in
+scientific literature, where it is acute and checkable, and present
+PaperWeave, a data management system that adapts classical mechanisms of
+identity, provenance, view maintenance, and versioning to agent writers.
+Experiments on an intent-grounded workload show that PaperWeave degrades
+markedly more slowly than file-based, graph, and agent-memory baselines as
+writers and writes grow.
+```
+
+摘要中出现的 agent-memory 对照组（A4）尚未写入评测草案。
 
 # Introduction
 
