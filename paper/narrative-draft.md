@@ -26,23 +26,11 @@
 - **暗中回应 agent memory 的数据管理研究**（如 GEM 的 *Is Agent Memory a Database?*、*Are We Ready For An Agent-Native Memory System?*）：它们的记忆属于一个 Agent、服务一个主体，最新的写入可以代表真值，过时就是旧值被新值取代。共享知识没有主人，这个前提不再成立：新写入不一定更对，分歧可能合理，依据会在脚下变化。摘要只陈述这一点，不点名反驳。
 - **答案是可问责而不是权威：** 规则能判定的地方收敛，合理分歧连同依据一起保留，可能过时的地方暴露出来。
 - 机制压缩成一句"经典机制的改造"；"不变式 × 合并"的分类留给引言与设计章节，摘要不展开。
+- **照顾主题领域：** 数据模型一句（有据层与解释层）对应 *Data models and semantics*；实体解析直接写 entity resolution，对应 *Data integration*。实际机制是存储层给出候选（id、alias、语义近邻）、由写入者在写入时判定，不做匹配算法，也没有 merge/split；摘要不展开，正文讲清。过时机制只标记不重算，所以用 view invalidation 而非 view maintenance。
 - **收回通用性：** 标题是通用的，摘要在提出原则之后用一句话把研究限定到科学文献，并给出理由（问题在这里尖锐且可核查），实验结论也只对这个领域陈述。机制按领域无关设计，泛化留到讨论部分，不进摘要。
 
 ```text
-LLM agents increasingly produce knowledge, not just consume it: the records
-they leave while reading papers let others build on their work. Agent memory
-systems serve a single agent, where the latest write can stand for the truth.
-Shared knowledge has no such owner: uncoordinated agents write to one
-long-lived store, legitimately disagree, and draw on sources that change. We
-argue that such a store cannot decide who is right, but must keep every write
-accountable: converging what rules can decide, preserving disagreement with
-its grounds, and exposing what may be stale. We study this problem in
-scientific literature, where it is acute and checkable, and present
-PaperWeave, a data management system that adapts classical mechanisms of
-identity, provenance, view maintenance, and versioning to agent writers.
-Experiments on an intent-grounded workload show that PaperWeave degrades
-markedly more slowly than file-based, graph, and agent-memory baselines as
-writers and writes grow.
+LLM agents now both use and produce knowledge: as they read, compare, and verify, they can build on what earlier agents recorded and leave records for later ones. Agent memory systems largely manage state that belongs to one agent, so its latest write can stand for the truth. When many agents share one long-lived store, no single agent’s word is authoritative: agents may work without coordinating or legitimately disagree, and the sources they draw on change. We argue that such a store cannot decide who is right, but must keep every write accountable: converging what rules can decide, preserving disagreement with its grounds, and exposing what may be stale. We study this problem in scientific literature, where it is acute and checkable, and present PaperWeave, a data management system whose data model separates source-grounded records, revised with full history, from interpretations that coexist with their provenance. It adapts classical entity resolution, view invalidation, and data versioning to agent writers, preserving the store's integrity as uncoordinated writes accumulate. Experiments on an intent-grounded workload show that PaperWeave degrades markedly more slowly than file-based, graph, and agent-memory baselines as agents and updates accumulate.
 ```
 
 摘要中出现的 agent-memory 对照组（A4）尚未写入评测草案。
