@@ -3,8 +3,9 @@
 - **有据层**：Experiment，以及 ``stated_by: paper`` 的 Claim、Contribution 与正反关系。改动或删除它们是一次修订，
   文档要在 ``confirm.<id>.revise`` 中给出 ``reason``；改动时还要给出 ``anchor``，即该记录所属论文中支持新内容的
   行范围（``<section>::<start>:<end>``）。锚点与理由记入提交的 ``meta.revisions``，旧值留在版本历史中。
-- **解释层**：Observation、``stated_by: agent`` 的 Contribution 与正反关系。写入者只能改动或删除自己形成的记录；
-  对别人的判断有不同意见，就写一条自己的记录（如 ``OPPOSES``），两者并存。
+- **解释层**：Observation、``stated_by: agent`` 的 Contribution 与正反关系。别人形成的记录可以读、可以增加出边
+  （如补一条 ``ABOUT``），但只有形成者能改它的内容、删它的边或删除它；对别人的判断有不同意见，就写一条自己的
+  记录（如 ``OPPOSES``），两者并存。新增 agent 的正反关系不算修订它的起点。
 
 ``note`` 是批注，不算内容，改它不受限。删除另一端节点时连带删除的边，由 ``delete-impact`` 提示，不算修订。
 """
@@ -49,15 +50,15 @@ def check_revisions(
     problems: list[Problem] = []
     revisions: dict[str, dict[str, str]] = {}
     grounded: set[str] = set()  # 改动过的有据层记录在文档中的引用
-    for node_id, is_delete in sorted(_changed(changeset, before, doc, ref, problems).items()):
+    for node_id, change in sorted(_changed(changeset, before, doc, ref, problems).items()):
         node = before.nodes[node_id]
         which, at = layer(kind_of(node.labels), node.props), f"nodes.{ref(node_id)}"
-        if which == "interpretive" and node.props.get("formed_by") != doc.by:
+        if which == "interpretive" and change != "add" and node.props.get("formed_by") != doc.by:
             problems.append(Problem("coexist", at, _COEXIST.format(owner=node.props.get("formed_by"))))
         elif which == "grounded":
             grounded.add(ref(node_id))
             entry = _revise(doc.confirm.get(ref(node_id)))
-            problem = _check_revise(entry, is_delete, ref(node_id), node_id, before, reader, material_root)
+            problem = _check_revise(entry, change == "delete", ref(node_id), node_id, before, reader, material_root)
             if problem is not None:
                 problems.append(problem)
             else:
@@ -71,18 +72,20 @@ def check_revisions(
 
 
 _COEXIST = (
-    "this record was formed by {owner}; interpretations coexist, so write your own record "
-    "(for example an Observation, or OPPOSES between claims) instead of changing theirs"
+    "this record was formed by {owner}; you may add relations to it, but interpretations coexist, so write "
+    "your own record (for example an Observation, or OPPOSES between claims) instead of changing theirs"
 )
 
 
 def _changed(
     changeset: Changeset, before: GraphState, doc: Document, ref: Callable[[str], str], problems: list[Problem]
-) -> dict[str, bool]:
-    """改动过内容的已有节点 → 是否删除。出边的增删改算作起点的改动；agent 的正反关系按边的形成者单独检查。"""
+) -> dict[str, str]:
+    """改动过的已有节点 → 改动程度：``delete``、``edit``（改内容或改、删出边），或 ``add``（只新增出边）。
+
+    agent 的正反关系按边的形成者单独检查，不算起点的改动。"""
     deleted = {n.id for n in changeset.nodes if n.after is None}
     changed = {
-        n.id: n.after is None
+        n.id: "delete" if n.after is None else "edit"
         for n in changeset.nodes
         if n.before is not None
         and (n.after is None or n.labels_before != n.labels_after or _content(n.before, n.after))
@@ -90,13 +93,17 @@ def _changed(
     for e in changeset.edges:
         if e.key.dst in deleted or e.key.src in deleted or e.key.src not in before.nodes:
             continue
-        if e.key.type in STANCE_RELS and e.before is not None:
-            stance = before.edges.get(e.key, e.before)  # 变更集中的改前值只列改动的属性
-            problems += _stance(doc, e.key, stance, ref)
+        if e.key.type in STANCE_RELS:
+            stance = before.edges.get(e.key, e.before) if e.before is not None else e.after or {}
+            if e.before is not None:  # 变更集中的改前值只列改动的属性，所以取改前状态中的完整属性
+                problems += _stance(doc, e.key, stance, ref)
             if stance.get("stated_by") != "paper":
                 continue
-        if e.before is None or e.after is None or _content(e.before, e.after):
-            changed.setdefault(e.key.src, False)
+        if e.before is None:
+            changed.setdefault(e.key.src, "add")
+        elif e.after is None or _content(e.before, e.after):
+            if changed.get(e.key.src) != "delete":
+                changed[e.key.src] = "edit"
     return changed
 
 

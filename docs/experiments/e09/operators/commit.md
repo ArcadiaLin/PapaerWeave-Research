@@ -166,7 +166,7 @@ graph-doc ──dry_run──▶ graph-plan ──(无阻塞项)──▶ apply 
 | 唯一性 | `identifier-taken`、`name-taken`、`key-taken` | 唯一命名空间的标识、名称（NameKey）或自然键已属于另一个节点 | Agent 判断：同一对象就改用已有 id 修改它，否则更正 |
 | 查重 | `dedup` | 新建的 Entity / Concept 有未判定的候选 | Agent 判断：换成已有 id，或写 `confirm.<引用>.distinct_from` |
 | 修订 | `revision` | 改动或删除有据层记录（Experiment，`stated_by: paper` 的 Claim、Contribution 与正反关系）而没有写 `confirm.<id>.revise`；改动缺锚点；锚点格式错或超出该记录所属论文的行范围（报为 `locator`）。改 `note` 不算 | Agent 回原文核对：确实读错就写 `revise: {reason, anchor}`，删除只需 `reason`；否则不改 |
-| 并存 | `coexist` | 改动或删除别人形成的解释层记录（Observation，`stated_by: agent` 的 Contribution 与正反关系） | Agent 不改别人的记录，另写自己的记录 |
+| 并存 | `coexist` | 改动别人形成的解释层记录（Observation，`stated_by: agent` 的 Contribution 与正反关系）的内容、删改它的出边或删除它；给它新增出边不受限 | Agent 不改别人的记录，另写自己的记录 |
 | 删除 | `delete-impact` | 删除节点时一并删除的、来自其他模型节点的入边 | 只提示，不阻塞 |
 | 并发 | — | 提交时改前值与库中当前值不一致（`ConflictError`，§3） | Agent 重新读取后再交 |
 
@@ -181,7 +181,7 @@ graph-doc ──dry_run──▶ graph-plan ──(无阻塞项)──▶ apply 
 **修订与并存（2026-10-11）。** 修改是正常的写入，但按改前状态分层把关（[Commit 契约](../../../designs/v2/commit_contract.md) §5）：
 
 - **有据层**记录说的是论文写了什么，分歧是暂时的错误。改动它是一次修订，必须写 `confirm.<id>.revise: {reason, anchor}`，`anchor` 是该记录所属论文中支持新内容的行范围；删除（撤回）只需 `reason`。锚点与理由记入提交的 `meta.revisions`，旧值留在版本历史中。出边的增删改算作起点的改动；删除另一端节点时连带删除的边不算。
-- **解释层**记录是写入者的判断，没有单一真值。只有形成者本人能改动或删除；其他写入者有不同意见就另写一条，两者带着各自的来源并存。
+- **解释层**记录是写入者的判断，没有单一真值。其他写入者可以读，也可以给它新增出边（如补一条 `ABOUT`）；改内容、删改出边或删除它只能由形成者本人做。有不同意见就另写一条，两者带着各自的来源并存。新增 agent 的正反关系不算修订它的起点 Claim。
 - 实体与概念不在两层之内，照常修改。
 
 自然键冲突只在新建或改键时检查。实现在 `e09/commit/revision.py`。

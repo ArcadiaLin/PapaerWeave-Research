@@ -107,7 +107,7 @@ Experiment 上的属性：`exp_key`、`anchors`、`text`；Claim、Contribution 
 - 同一表单重跑：全部为不变，不写入。写入中途失败时事务回滚，可直接重试。
 - 实验、主张或贡献内容有变化：按层处理（2026-10-11 放宽，实现见 graph-doc 写入路径 [`commit.md`](../../experiments/e09/operators/commit.md) §5）。
   - **有据层**（Experiment，`stated_by: paper` 的 Claim、Contribution 与正反关系）：附理由与锚点（该记录所属论文中支持新内容的行范围）时允许修订，二者记入 graph-vc 提交的 `meta.revisions`，旧值留在版本历史中；删除即撤回，只需理由。未附的仍然拒绝。
-  - **解释层**（Observation，`stated_by: agent` 的 Contribution 与正反关系）：只有形成者本人可以改动或删除；其他写入者另写自己的记录，两者并存，不裁决。
+  - **解释层**（Observation，`stated_by: agent` 的 Contribution 与正反关系）：其他写入者可以读、可以新增出边（如补一条 `ABOUT`），改内容、删改出边或删除只能由形成者本人做；有不同意见就另写自己的记录，两者并存，不裁决。
 - 同一论文补录另一个研究问题：论文按标识命中，新增一个 Experiment；已有实验组补充锚点属于内容修订，按上一条处理。表单中没有的实验不删除（可能来自其他批次）。
 - 写后复核不为空：说明 `Commit` 自身有缺陷，报错。
 

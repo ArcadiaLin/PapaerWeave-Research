@@ -111,6 +111,27 @@ def test_interpretations_of_other_writers_cannot_be_changed(ingested: MemoryGrap
     assert ingested.dry_run(edit).ok  # 形成者自己可以改
 
 
+def test_others_may_add_relations_to_an_interpretation_but_not_remove_them(ingested: MemoryGraph) -> None:
+    obs = _with_observation(ingested)
+    add = doc(f"{obs}:\n  ABOUT: [exp_0001, dataset_0002]")
+    prepared = ingested.submit(by(add, "gpt"))
+    assert prepared.ok, prepared.errors
+    assert EdgeKey(obs, "ABOUT", "dataset_0002") in ingested.state.edges
+    assert rules(ingested.dry_run(by(doc(f"{obs}:\n  ABOUT: [dataset_0002]"), "gpt"))) == {"coexist"}
+
+
+def test_a_new_agent_stance_between_stored_claims_is_not_a_revision(ingested: MemoryGraph) -> None:
+    _with_observation(ingested)
+    claim2 = next(k.src for k in ingested.state.edges if k.type == "OPPOSES" and k.dst == "claim_0001")
+    stance = doc(f"""
+        claim_0001:
+          SUPPORTS:
+            - {{to: {claim2}, stated_by: agent, description: Both hold for short horizons.}}
+        """)
+    prepared = by(stance, "gpt")
+    assert ingested.dry_run(prepared).ok, ingested.dry_run(prepared).errors
+
+
 def test_agent_stances_of_other_writers_cannot_be_changed(ingested: MemoryGraph) -> None:
     _with_observation(ingested)
     claim2 = next(k.src for k in ingested.state.edges if k.type == "OPPOSES" and k.dst == "claim_0001")
