@@ -36,7 +36,23 @@ LLM agents now both use and produce knowledge: as they read, compare, and verify
 备选方案，这个方案前部分比较贴近 scientific 和
 
 ```text
-LLM agents increasingly do research work: they read papers, extract results, and compare methods, and the records they leave could spare later agents from starting over. Pooling these records in one long-lived store is harder than it looks. One agent records a method under its arXiv name and another under its conference name; two agents read the same ablation differently; a paper is revised, and a comparison built on its old numbers silently becomes wrong. Agent memory systems sidestep such problems because they serve a single agent, for which last-writer-wins is a reasonable default. A shared store cannot: its agents do not coordinate, may legitimately disagree, and draw on sources that keep changing. We argue that such a store should not try to decide who is right, but must keep every write accountable: merging what rules can decide, keeping disagreements together with their evidence, and flagging what may be stale. We present PaperWeave, a data management system that realizes this principle for scientific literature. Its data model separates source-grounded records, revised with full history, from interpretations that coexist with their provenance. It adapts classical entity resolution, view invalidation, and data versioning to agent writers, preserving the store’s integrity as uncoordinated writes accumulate. Experiments on an intent-grounded workload show that PaperWeave degrades markedly more slowly than file-based, graph, and agent-memory baselines as agents and updates accumulate.
+LLM agents increasingly perform literature-based research tasks. Accumulating
+their outputs in a long-lived shared store would let later agents build on
+prior work. Existing agent memory systems, however, are largely designed for a
+single owner and resolve conflicting writes by recency or internal judgment.
+When writers do not coordinate, this assumption fails: absent appropriate
+mechanisms, new content often remains unlinked to existing content, and store
+quality degrades as writes accumulate. We argue that a shared store should not
+adjudicate correctness but should keep every write accountable: attributable to
+its writer and traceable to its evidence and prior content. We present
+PaperWeave, a data management system for paper-derived knowledge. It separates
+what a paper states from what a writer judges: source-grounded records hold one
+value, revisable by any writer with a source anchor and a reason, while
+interpretations are attributed to their writers and coexist without
+adjudication. PaperWeave adapts entity resolution, view invalidation, and data
+versioning to agent writers to maintain accountability as uncoordinated writes
+accumulate. We design an evaluation on an intent-grounded workload to measure
+store integrity and downstream answer accuracy as the number of writers grows.
 ```
 
 摘要中出现的 agent-memory 对照组（A4）尚未写入评测草案。
@@ -258,6 +274,57 @@ readers can find what others stored for other purposes.
 
 随后以 Figure 2 介绍整体架构：多个 Agent 经 MCP 调用算子契约；读者经访问算子在检索面上定位、遍历与读取证据；每次写入经统一提交进入共享库；项目从共享库的固定状态 fork，在隔离的状态上工作并推回。回看 Figure 1 的写入历史如何沿这条链路落地。评测结果出来后，在 intro 末尾补主要发现。
 
+# Related Work and Positioning
+
+本节围绕**独立 Agent 持续积累论文衍生知识与研究产物**这一领域工作负载定位 PaperWeave。一般背景是 Agent 从知识消费者成为生产者；本文具体研究的是学术知识积累中的身份、来源、研究操作及产物生命周期。重点说明相邻系统已有机制与这些任务要求之间的关系，不以功能名称的有无判定优劣。机制适配是否改善后续使用、收益是否抵偿成本，由评测回答。
+
+## 动态 Agent Memory：Zep / Graphiti
+
+**已有工作。** Zep（`2025-Zep`）通过 Graphiti 将持续到来的对话与其他输入组织为时态知识图，结合原始 episode、实体与事实、来源连接、时间有效区间及混合检索，为 Agent 提供上下文。当前公开 Graphiti 实现还支持自定义实体与关系类型、属性和端点约束、直接三元组写入，以及来源导航；Zep 的公开集成示例包含共享业务图和领域 ontology。因此，不能把这一路线概括为只保存个人交互、缺少身份或来源，也不能仅以“PaperWeave 有学术 schema”作为区别。
+
+**区别在管理语义，不在功能有无。** 身份解析、来源、时态更新、自定义类型、混合检索与 MCP 接入，两者多有重叠，以下不按功能有无比较。不协调的多写者积累要回答的是：语义判断由谁做出，判断之后保留什么，后来的读者能看到什么。PaperWeave 与 Graphiti 的区别落在三处，每一处对应 T1 中一种可观测的失败模式，由同一工作负载上的实验检验。
+
+**一、裁决位置。** Graphiti 在摄入时由系统内部完成语义裁决：实体身份先走精确名称、模糊匹配等确定性路径，未决部分交给内部 LLM；关系的去重与矛盾也由内部 LLM 判断，被判矛盾的旧关系按有效时间失效。直接写三元组的 `add_triplet` 跳过的是抽取，不是这些解析。当前的矛盾判断指令要求保留数值、日期与限定条件的差异，只在两条事实不能同时为真时判为矛盾，这是实际的防误判设计，应当承认；但判断仍在系统内部做出，提交内容的写者既看不到也无法确认。PaperWeave 的系统内部不做语义判断：可能重复的候选随提交结果退回写者，由写者复用已有对象或声明不同（`distinct_from`），判断记入提交，由形成者负责。不协调写入下，内部裁决一旦出错，例如合并了同名的不同数据集，或让一个合理的不同解释失效，错误不经任何人确认就进入共享状态；交回写者则把成本转为写入时的交互，并可能增加重复。两种做法的误合并率、重复率与交互成本都要测量，我们不主张交回写者天然更准确。
+
+**二、有据层与解释层。** Graphiti 的来源是 episode 级的：一条事实可追溯到摄入它的那次输入。PaperWeave 进一步区分两类记录。有据层（实体身份与论文自身的陈述）对来源负责，引用绑定材料的内容版本与章节、行号锚点；分歧视为暂时的错误，修订须附原文锚点和理由，历史全部保留。解释层（Observation、写者对主张之间支持或反对的判断、派生产物）让不同形成者的判断并存：他人可以新增关系，但不能改写或删除。Graphiti 可以用声明节点、属性与外部规则表示类似的区分；差别在于 PaperWeave 把它作为写入契约执行。分歧在读取时是否足够可见，由评测检验。
+
+**三、派生依赖与版本状态。** 研究工作会产出跨论文比较、可比性核查与综合报告等派生产物。PaperWeave 要求每份产物声明所用输入，形成可追溯的谱系；输入被修订、删除或材料变化后，读取该产物时会附带可能过时的提示。重算派生内容代价高且结果不确定，因此只提示、不自动维护，这是对视图失效这一经典做法的改编。每次写入都是带前后值的提交，任意历史状态可以重建，提交可以撤销；项目从固定状态分出并推回的机制已设计，尚未实现。据本次核查，Graphiti 的一等机制围绕关系的有效时间与系统时间，未见与声明输入、过时提示及提交祖先对应的机制。一条事实何时不再成立，与一份比较所依据的输入是否发生变化，是两种不同的维护要求。
+
+**研究操作的位置。** Extract、Check、MatrixConstruct、Generate 等 MCP 操作是上述契约的载体：外部通用 Agent 完成语义工作，提交声明的输入、参数与结果；系统校验结构与引用后，把结果登记为产物，供后来者检索、引用和继续使用。操作清单本身不是贡献，同样的操作可以在通用框架的应用层组合出来；贡献在于这些操作执行的声明、修订与依赖规则。
+
+**实验检验与主张边界。** 区别由实验检验，而不由特性表证明。评测中 Graphiti 作为基线，使用与 PaperWeave 相同的领域类型，承接相同的写者任务，测量误合并、分歧被失效、过时未被发现，以及下游答案的正确率。先导语料已包含对应情形：Informer 使用的 NOAA Weather 与后续论文常用的 Jena Weather 同名而不同；SCINet 的部分基线数值转录自 Informer；不同论文在不同条件下报告相互冲突的结果。若 Graphiti 在这些情形上不弱于 PaperWeave，我们相应缩小主张。Agent 承担语义执行，系统承担契约校验与产物管理；这不意味着系统接管完整科研过程、捕获全部隐性输入或验证科学结论。约束只作用于经系统入口提交的内容，通用 Agent 仍保留文件和 shell 工具，绕过行为另行审计。本文是学术知识积累的领域系统研究，采用并适配已有机制，跨领域有效性留作讨论。
+
+英文候选段落：
+
+```text
+Zep and its open-source framework Graphiti organize evolving inputs into
+temporal knowledge graphs, with entity resolution, episode-level provenance,
+custom entity and edge types, hybrid retrieval, and an MCP interface; much of
+this overlaps with PaperWeave. The difference lies in how each manages
+uncoordinated writes. First, Graphiti adjudicates inside the system: an
+internal LLM resolves the identities that deterministic rules leave open and
+judges duplicate and contradicting facts, invalidating older ones by valid
+time. PaperWeave makes no semantic judgment internally; it returns candidate
+duplicates to the writer, who reuses them or declares the objects distinct,
+and records that decision in the commit. Second, PaperWeave separates
+source-grounded records, anchored to spans of a fixed paper version and
+revised only with an anchor and a reason, from interpretations that coexist
+with their writers. Third, derived artifacts declare their inputs; reads flag
+artifacts whose inputs have since been revised, and every write is a
+versioned commit from which any past state can be rebuilt. Graphiti tracks
+when a fact stops holding; PaperWeave also tracks whether the basis of a
+derived comparison has changed. Graphiti could emulate these behaviors with
+custom types and application logic, so we compare the two empirically, on
+the same workload and schema, by wrong merges, lost disagreements, undetected
+staleness, and downstream correctness.
+```
+
+引用与核查依据：
+
+- 论文使用 [`2025-Zep`](../references/refs.bib)，对应 [arXiv:2501.13956v1](https://arxiv.org/abs/2501.13956v1)；2025 年论文的实验与当前实现能力分开引证。
+- 当前实现依据固定版本：[Graphiti 摄入与类型接口](https://github.com/getzep/graphiti/blob/964bb11d1e7020e3cc67fab244268b0736b6c219/graphiti_core/graphiti.py)、[矛盾判断指令](https://github.com/getzep/graphiti/blob/964bb11d1e7020e3cc67fab244268b0736b6c219/graphiti_core/prompts/dedupe_edges.py)、[关系时间处理](https://github.com/getzep/graphiti/blob/964bb11d1e7020e3cc67fab244268b0736b6c219/graphiti_core/utils/maintenance/edge_operations.py)，以及 [Zep 共享图与 ontology 用法](https://github.com/getzep/zep/blob/cfa2ab2bbc3c7085d636479b719bcf64608162cc/ingestion/README.md)。Zep 仓库是示例与集成，不包含当前云服务内部实现，未公开能力不作否定判断。
+- 详细代码证据、工程状态和措辞边界见本地暂存的[实现比较笔记](../references/papers/narrative-adjust/shared-agent-memory/2025-Graphiti/implementation-comparison-paperweave.md)。该目录不入 Git；这里保留公开固定版本链接，使核心比较不依赖本地副本。
+
 # 后续章节大纲
 
 组织方式借鉴 AgenticScholar：一套工作负载规约作为全文中枢，复用三处：related work 能力矩阵的行、机制设计的需求来源、评测小节的组织轴。中枢以六类研究意图 I1–I6 为根，由四部分组成，与评测草案对齐：**意图**（写入者任务与读者探针的共同来源）、**写入者模型**（每个写入者带一个意图任务，轮流写，两条写路径：直写共享库，或 fork → 项目工作 → 推回）、**事件类型**（误读后修订、撤回、材料变化、写入者分歧、分支与推回、回看历史状态）、**读侧阶梯 L0–L4**（存储语义、关联检索、组合、有状态工作、端到端）。挑战编号、机制编号、评测小节一一对应；Figure 1 的场景在评测中完整重演。Related work 前置到 intro 之后，直接叙述我们与各路线的区别。
@@ -265,7 +332,7 @@ readers can find what others stored for other purposes.
 2. **Related Work and Positioning.** 先用一段简述中枢规约，作为能力矩阵的行。主体按机制组织：每个挑战一段，依次写经典前身、Agent 场景下的改变、我们的设计。底稿见讨论记录 §2–§3。反面参照是 truth discovery 与按引用排名：两者都由系统裁决，我们不这样做。随后按路线补充与相邻系统的区别：
    - 学术知识图谱与文献系统：以文档为中心；ORKG 虽是众包多写者，但写入者是人、靠模板整理，不管理 Agent 的使用产物与项目分支。
    - 多写者共享知识库：Wikidata 固定数据模型（item、statement、qualifier、reference、rank），领域属性由社区逐步提议；相互冲突的值可以带来源并存。这是我们"元模型与领域词表分层""分歧并存"的最近先例，要正面说明差别：写入者是 Agent、产物是派生文档、有项目 fork 与推回。
-   - Agent Memory，含多 Agent 共享记忆：记录交互历史，不管跨写入者的身份、来源与版本。
+   - Agent Memory，含多 Agent 共享记忆：Zep/Graphiti 的比较已在上文展开，承认其身份解析、来源、时态更新与领域扩展能力；差异落在裁决位置（系统内部 LLM 裁决，或交回写者）、有据层与解释层的划分、派生依赖与版本状态，研究操作只是这些契约的载体。Graphiti 作为实验基线，在同一工作负载与同一套类型上比较。其他系统逐项核实，不概括为均缺少身份、来源或版本。
    - 语义算子系统（AgenticScholar、LOTUS 等）：LLM 内化于算子；我们把语义工作外置、契约内化。
    - provenance 与版本化数据管理（`2026-Git4Data`、`2013-GraphSnapshot` 等）：管数据版本；我们管多写者积累的知识状态。
    - ontology engineering 与 schema induction：与本文正交，说明领域词表问题有人在做、不是我们的贡献。
