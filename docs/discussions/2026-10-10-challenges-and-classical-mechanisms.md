@@ -19,7 +19,7 @@
 
 | 挑战 | 经典前身 | 当前设计 | 状态 |
 |---|---|---|---|
-| **C1 独立写入下的身份** | 实体解析与记录链接（Fellegi–Sunter 1969）；人在环中或众包的实体解析（CrowdER，VLDB 2012）；自然键与唯一约束；dataspaces 的按需整合（Franklin、Halevy、Maier 2005）；Wikidata 的 QID 合并与重定向 | `NameKey` 精确键与命名空间标识（[图模型](../designs/v2/graph_model_v2.md) §2.4）；dry_run 给出语义候选，Agent `confirm` 同一与否；`ambiguous` 状态 | **能防不能修。** 对象合并与拆分不实现（[Commit 契约](../designs/v2/commit_contract.md) §8），重复与误合并只测量，作为局限报告。查重在提交锁之外（只读了代码，未实测；见 [评测草案](../designs/v2/evaluation_draft.md) §9），写入者轮流执行可绕开 |
+| **C1 独立写入下的身份** | 实体解析与记录链接（Fellegi–Sunter 1969）；人在环中或众包的实体解析（CrowdER，VLDB 2012）；自然键与唯一约束；dataspaces 的按需整合（Franklin、Halevy、Maier 2005）；Wikidata 的 QID 合并与重定向 | `NameKey` 精确键与命名空间标识（[图模型](../designs/v2/graph_model_v2.md) §2.4）；dry_run 给出语义候选，Agent `confirm` 同一与否；`ambiguous` 状态 | **能防不能修。** 对象合并与拆分不实现（[Commit 契约](../designs/v2/commit_contract.md) §8），重复与误合并只测量，作为局限报告。查重在提交锁之外（只读了代码，未实测；见 [评测草案](../designs/v2/evaluation_draft.md) §10），写入者轮流执行可绕开 |
 | **C2 自描述的贡献** | provenance：why/where（Buneman、Khanna、Tan 2001）、provenance semirings（Green 等 2007）；W3C PROV 的 Entity / Activity / Agent；引用完整性；科学领域的 nanopublication（Groth 等 2010）与 micropublication（Clark 等 2014） | 契约校验引用与输入；`USED` 边；`Material` 带 `content_hash`；`formed_by`、`params`、`session`；幂等的 `artifact_key`（[算子契约](../designs/v2/operators.md)、Commit 契约 §7） | 设计基本完整；Agent 算子代码已在，完成度与测试尚未按现行契约复核。记录的是声明的输入，不是完整推理轨迹，也不证明判断为真 |
 | **C3 分歧与变化** | 过时：物化视图失效与维护（Gupta & Mumick 1995）、真值维护系统 TMS / ATMS（Doyle 1979；de Kleer 1986）。并存：Trio / ULDB 的备选值与 lineage（Widom 2005；VLDB 2006）、CRDT 多值寄存器（Shapiro 等 2011）、Dynamo 的兄弟版本（2007）、Wikidata 的多值 statement、rank 与 reference。修订：双时态数据库 | 读取时按依赖计算 `_stale`（算子契约 §5.6）；`SUPPORTS` / `OPPOSES` 边 | **过时有设计；修订按 §4 分层补上。** 现行 Commit 契约 §5 规定内容变化即冲突、整批拒绝，需按 §6 放宽 |
 | **C4 隔离地工作，共享地交付** | 工程数据库的 check-out / check-in 与长事务（Katz 1990）；快照隔离（Berenson 等 1995）；乐观并发控制的提交前校验（Kung & Robinson 1981）；数据版本管理（DataHub 2015、Decibel 2016、OrpheusDB 2017；仓库已有 `2026-Git4Data`、`2013-GraphSnapshot`） | Fork 闭合检查；单父合并提交；逐项核对改前值，冲突交 Agent 决议；`merged_from`（[项目视图](../designs/v2/project_views.md) §5–§6；[版本化知识管理备忘](./2026-10-05-versioned-knowledge-management.md)） | 有设计，未实现 |
@@ -34,7 +34,7 @@ C1 与 C3 的缺口性质相同：库能在写入时拦截或提示，但写入�
 2. **错误是语义性的，而且读起来通顺。** 结构校验拦不住误读。因此 provenance 与分歧并存比保证正确更重要，这也是我们不走 truth discovery 路线的理由（§4）。
 3. **派生内容重算昂贵且不确定。** 物化视图可以增量维护，因为重算确定、便宜；Agent 写的比较表与报告重算一次要再调 LLM，结果也不一定相同。所以只能标记可能过时，不能自动维护。这是与增量视图维护（IVM）的清晰分界。
 4. **读者不会主动查 provenance。** 经典系统把 lineage 当作单独的查询；Agent 读者上下文有限，也不会想到去问。分歧与过时必须随查询结果一起返回（`_stale` 即如此）。
-5. **接口就是契约。** 通用 Agent 只看得到 MCP 工具描述，机制能否起作用取决于 Agent 是否会用、是否绕开。经典 DBMS 没有这个问题，所以要用显示偏好或绕开率来测（评测草案 §8）。
+5. **接口就是契约。** 通用 Agent 只看得到 MCP 工具描述，机制能否起作用取决于 Agent 是否会用、是否绕开。经典 DBMS 没有这个问题，所以要用显示偏好或绕开率来测（评测草案 §8.2）。
 
 ## 4. 分歧与权威：有据层与解释层
 
