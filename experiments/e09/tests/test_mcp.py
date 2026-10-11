@@ -124,19 +124,21 @@ def test_server_yml_must_match_the_operators(tmp_path: Path, edit: Any, problem:
 
 
 def test_workspace_is_refused_inside_the_repository(capsys: pytest.CaptureFixture[str]) -> None:
-    assert workspace([str(REPO / "experiments/e09/runs/w"), "--formed-by", "p/m"]) == 1
+    assert workspace([str(REPO / "experiments/e09/runs/w"), "--user", "u@lab.example"]) == 1
     assert "inside the repository" in capsys.readouterr().err
     assert not (REPO / "experiments/e09/runs/w").exists()
 
 
 def test_workspace_registers_the_server(tmp_path: Path) -> None:
     target = tmp_path / "w"
-    assert workspace([str(target), "--formed-by", "p/m", "--neo4j-uri", "bolt://localhost:7688"]) == 0
+    args = ["--user", "u@lab.example", "--agent", "pi/p/m", "--neo4j-uri", "bolt://localhost:7688"]
+    assert workspace([str(target), *args]) == 0
     files = [p.relative_to(target).as_posix() for p in sorted(target.rglob("*"))]
     assert files == [".pi", ".pi/mcp.json", ".pi/settings.json", "pi.sh"]
     assert json.loads((target / ".pi/settings.json").read_text(encoding="utf-8")) == {"sessionDir": ".pi/sessions"}
     server = json.loads((target / ".pi/mcp.json").read_text(encoding="utf-8"))["mcpServers"]["PaperWeave"]
     assert server["args"] == ["-m", "e09.mcp"] and server["exposure"] == "direct"
     log = str(target / ".pi/paperweave.log")  # 服务启动后才写
-    assert server["env"] == {"E09_NEO4J_URI": "bolt://localhost:7688", "E09_FORMED_BY": "p/m", "E09_MCP_LOG": log}
-    assert workspace([str(target), "--formed-by", "p/m"]) == 1  # 已存在且不空
+    env = {"E09_NEO4J_URI": "bolt://localhost:7688", "E09_USER": "u@lab.example", "E09_AGENT": "pi/p/m"}
+    assert server["env"] == env | {"E09_MCP_LOG": log}
+    assert workspace([str(target), "--user", "u@lab.example"]) == 1  # 已存在且不空

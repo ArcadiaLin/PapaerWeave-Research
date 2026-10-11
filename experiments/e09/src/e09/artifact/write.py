@@ -109,9 +109,10 @@ def write_artifact(
     at: str,
     text: str | None = None,
     sync: Callable[[], int] | None = None,
+    agent: str | None = None,
 ) -> dict[str, Any]:
     """校验并写入一次 Agent 算子调用的产物。``validators`` 是各算子的校验，按 ``op`` 取用；``at`` 是形成时间；
-    ``text`` 是交上来的请求原文（记入提交），不给时用请求的 YAML；``sync`` 在提交后补算向量。
+    ``text`` 是交上来的请求原文（记入提交），不给时用请求的 YAML；``sync`` 在提交后补算向量；``agent``（所用的 Agent 与模型）记入提交的 ``meta.agent``。
 
     Raises:
         OperatorError: 调用没有通过校验。
@@ -157,7 +158,7 @@ def write_artifact(
             message=title,
             source=f"operator:{op}",
             input=text if text is not None else dump(dict(request)),
-            meta={"artifact": art_id, "session": request["session"]},
+            meta={"artifact": art_id, "session": request["session"]} | ({"agent": agent} if agent else {}),
         )
     except ConflictError as exc:  # 校验之后有对象被删除或改动
         raise OperatorError([{"rule": "conflict", "at": "inputs", "msg": str(exc)}], status="conflict") from exc

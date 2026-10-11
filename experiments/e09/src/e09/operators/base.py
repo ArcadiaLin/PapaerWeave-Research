@@ -32,7 +32,8 @@ FAILED = frozenset({"rejected", "blocked", "conflict"})  # 没有完成的状态
 
 @dataclass(frozen=True, slots=True)
 class Context:
-    """一次调用的环境。``at`` 是写入的形成时间；``session`` 与 ``formed_by`` 是调用所在的会话与形成者（模型或人），
+    """一次调用的环境。``at`` 是写入的形成时间；``session`` 与 ``formed_by`` 是调用所在的会话与形成者（登录身份），
+    ``agent`` 是所用的 Agent 与模型（记入提交的 ``meta.agent``）；
     Agent 算子写入时必须有；``sync`` 在写入后补算向量，为 ``None`` 时不补算；``text`` 是请求原文，写入时记入提交，
     不给时用请求的 YAML。查询向量由 ``store.embed`` 给出。"""
 
@@ -40,6 +41,7 @@ class Context:
     at: str
     session: str | None = None
     formed_by: str | None = None
+    agent: str | None = None
     sync: Callable[[], int] | None = None
     text: str | None = None
 
@@ -186,7 +188,9 @@ def agent_operator(
             msg = "set by the caller's context, not a parameter"
             raise ContractError([{"rule": "format", "at": k, "msg": msg} for k in missing])
         full = {"op": name, **params, **context}
-        return write_artifact(ctx.store, full, {name: validate}, at=ctx.at, text=ctx.text, sync=ctx.sync)
+        return write_artifact(
+            ctx.store, full, {name: validate}, at=ctx.at, text=ctx.text, sync=ctx.sync, agent=ctx.agent
+        )
 
     return Operator(name, "agent", parameters, execute, writes=True, validate=validate)
 

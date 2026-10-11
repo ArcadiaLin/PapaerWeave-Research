@@ -8,9 +8,12 @@
 ``rejected``、``blocked`` 或 ``conflict`` 时标为 ``isError``，内容照样交给模型。
 
 **调用环境。** MCP 调用不带客户端的会话与模型，所以 Agent 算子的 ``session`` 由服务进程启动时生成（一个客户端
-会话对应一个服务进程），``formed_by`` 由环境变量 ``E09_FORMED_BY`` 给出，二者都记在 Artifact 上。
+会话对应一个服务进程）。写入者的身份由连接配置给出，相当于登录：``E09_USER`` 是形成者，记为 Artifact 的
+``formed_by``；Commit 的 ``by`` 可以省略（取登录身份），写了就必须相同。``E09_AGENT`` 是所用的 Agent 与模型，记入
+提交的 ``meta.agent``。写入者无法自己声明身份。
 
-环境变量：``E09_NEO4J_URI`` 等连接参数（:mod:`e09.config`）；``E09_FORMED_BY`` 形成者，Agent 算子写入时必需；
+环境变量：``E09_NEO4J_URI`` 等连接参数（:mod:`e09.config`）；``E09_USER`` 登录身份，Agent 算子写入时必需；
+``E09_AGENT`` 所用的 Agent 与模型；
 ``E09_ENABLE_COMMIT=1`` 时才列出 ``Commit``（它改动知识本身）；``E09_NO_EMBED=1`` 时关闭查询向量，写入后也不补算；
 ``E09_MCP_LOG`` 给出日志文件（追加写）。库没有版本记录时服务不启动。
 
@@ -47,7 +50,15 @@ def enabled(spec: Spec) -> dict[str, types.Tool]:
     return {name: t for name, t in spec.tools.items() if name != "Commit" or commit}
 
 
-def serve(store: Store, *, session: str, formed_by: str | None, sync: Any, spec: Spec | None = None) -> Server:
+def serve(
+    store: Store,
+    *,
+    session: str,
+    formed_by: str | None,
+    sync: Any,
+    spec: Spec | None = None,
+    agent: str | None = None,
+) -> Server:
     """MCP 服务：调用逐个执行（同一时间只有一个写入，不与自己的写入冲突）。"""
     spec = spec or load()
     server: Server = Server(spec.name, version=spec.version, instructions=spec.instructions)
@@ -65,7 +76,7 @@ def serve(store: Store, *, session: str, formed_by: str | None, sync: Any, spec:
             result = rejected([{"rule": "format", "at": "tool", "msg": f"one of {list(tools)}"}])
         else:
             at = datetime.now(UTC).isoformat(timespec="seconds")
-            ctx = Context(store, at=at, session=session, formed_by=formed_by, sync=sync)
+            ctx = Context(store, at=at, session=session, formed_by=formed_by, agent=agent, sync=sync)
             async with lock:
                 result = await anyio.to_thread.run_sync(op.call, ctx, arguments or {})
         status = result.details.get("status", "ok")
@@ -84,7 +95,8 @@ def main() -> int:
     spec = load()
 
     no_embed = os.environ.get("E09_NO_EMBED") == "1"
-    formed_by = os.environ.get("E09_FORMED_BY") or None
+    formed_by = os.environ.get("E09_USER") or None
+    agent = os.environ.get("E09_AGENT") or None
     session = f"mcp-{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{secrets.token_hex(3)}"
     try:
         check_versioned(driver, database=NEO4J_DB)
@@ -94,14 +106,16 @@ def main() -> int:
         return 2
     graph = open_graph(driver, database=NEO4J_DB, file_root=DATA)
     store = Store(driver, graph, DATA, database=NEO4J_DB, embed=None if no_embed else embed)
-    server = serve(store, session=session, formed_by=formed_by, sync=None if no_embed else sync_embeddings, spec=spec)
+    sync = None if no_embed else sync_embeddings
+    server = serve(store, session=session, formed_by=formed_by, sync=sync, spec=spec, agent=agent)
     log.info(
-        "%s %s (server.yml %s): session %s, formed_by %s, %s",
+        "%s %s (server.yml %s): session %s, user %s, agent %s, %s",
         spec.name,
         spec.version,
         spec.digest,
         session,
         formed_by,
+        agent,
         NEO4J_URI,
     )
 

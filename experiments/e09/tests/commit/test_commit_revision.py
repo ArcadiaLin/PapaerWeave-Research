@@ -5,9 +5,13 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 from conftest import MemoryGraph, doc, rules, with_confirm
 
 from graph_vc import EdgeKey
+
+from e09.commit import prepare
 
 REVISE_CLAIM = 'claim_0001: {revise: {reason: "the abstract says most, not all", anchor: "Abstract::10:14"}}'
 EDIT_CLAIM = doc("claim_0001:\n  text: DLinear outperforms Transformer methods in most long-horizon settings.")
@@ -143,3 +147,12 @@ def test_agent_stances_of_other_writers_cannot_be_changed(ingested: MemoryGraph)
     assert rules(ingested.dry_run(by(change, "gpt"))) == {"coexist"}
     assert ingested.dry_run(change).ok
     assert EdgeKey(claim2, "OPPOSES", "claim_0001") in ingested.state.edges
+
+
+def test_a_signed_in_writer_cannot_write_as_someone_else(ingested: MemoryGraph) -> None:
+    signed_in = dataclasses.replace(ingested.context(), user="gpt@lab.example", agent="pi/sglang/qwen")
+    as_other = prepare(by(doc("method_0002:\n  note: x"), "claude"), signed_in)
+    assert [(p.rule, p.at) for p in as_other.errors] == [("identity", "by")]
+    omitted = prepare(doc("method_0002:\n  note: x").replace("by: claude\n", ""), signed_in)
+    assert omitted.ok, omitted.errors
+    assert omitted.document is not None and omitted.document.by == "gpt@lab.example"

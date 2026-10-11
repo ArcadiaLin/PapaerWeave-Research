@@ -51,6 +51,12 @@ def prepare(text: str, ctx: Context, ids: Mapping[str, str] | None = None) -> Pr
         doc = parse(text)
     except DocError as exc:
         return Prepared(None, None, tuple(_doc_problem(p) for p in exc.problems))
+    if ctx.user is not None:
+        if doc.by is None:
+            doc = replace(doc, by=ctx.user)
+        elif doc.by != ctx.user:
+            msg = f"you are signed in as {ctx.user}; write by: {ctx.user}, or leave by out"
+            return Prepared(doc, None, (Problem("identity", "by", msg),))
 
     ids = dict(ids or {})
     translation = translate(doc, ctx, ids)
@@ -108,7 +114,8 @@ def apply(
         source=ctx.source,
         base=base,
         input=text,
-        meta={"ids": ids, "dedup": ctx.deduper is not None, "revisions": prepared.revisions},
+        meta={"ids": ids, "dedup": ctx.deduper is not None, "revisions": prepared.revisions}
+        | ({"agent": ctx.agent} if ctx.agent else {}),
     )
     return prepared, record
 

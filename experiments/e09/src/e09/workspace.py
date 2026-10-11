@@ -1,13 +1,16 @@
 """生成一个实验目录：通用 Agent（默认配置的 pi）在这里启动，经 MCP 使用 E09 的算子。
 
-    python -m e09.workspace <目录> [--formed-by provider/model] [--neo4j-uri bolt://...] [--enable-commit] [--no-embed]
+    python -m e09.workspace <目录> [--user <登录身份>] [--agent pi/provider/model] [--neo4j-uri bolt://...]
+                            [--enable-commit] [--no-embed]
 
 目录里只有三样：``.pi/mcp.json`` 登记 ``PaperWeave`` 服务（``python -m e09.mcp``，工具直接列给模型；服务的
 调用日志写到 ``.pi/paperweave.log``）；``.pi/settings.json`` 把 pi 的会话存到 ``.pi/sessions/``，一次实验的记录都在
 目录里；``pi.sh`` 在目录中启动 pi
 （``./pi.sh`` 进入交互界面，``./pi.sh -r`` 选择会话继续）。pi 会从工作目录及其上层目录加载 ``AGENTS.md`` 等上下文
-文件，所以目录必须在仓库之外；目录已存在且不空时拒绝。``formed_by`` 默认取
-pi 的默认模型（``$PI_CODING_AGENT_DIR`` 或 ``~/.pi/agent`` 下 ``settings.json`` 的 ``defaultProvider/defaultModel``）。
+文件，所以目录必须在仓库之外；目录已存在且不空时拒绝。``--user`` 是写入者的登录身份（``E09_USER``，记为
+``formed_by``）；``--agent`` 是所用的 Agent 与模型（``E09_AGENT``），默认取 pi 的默认模型（``$PI_CODING_AGENT_DIR`` 或
+``~/.pi/agent`` 下 ``settings.json`` 的 ``defaultProvider/defaultModel``），写成 ``pi/provider/model``；不给 ``--user`` 时
+登录身份与它相同。
 项目级的 ``.pi/mcp.json`` 只在信任该目录后加载：第一次在目录中启动 pi 时确认信任，非交互模式用 ``--approve``。
 """
 
@@ -30,22 +33,30 @@ cd "$(dirname "$0")" && exec pi "$@"
 """
 
 
-def default_formed_by() -> str | None:
-    """pi 的默认模型，写成 ``provider/model``。"""
+def default_agent() -> str | None:
+    """pi 与它的默认模型，写成 ``pi/provider/model``。"""
     agent = Path(os.environ.get("PI_CODING_AGENT_DIR", Path.home() / ".pi/agent")).expanduser()
     try:
         settings = json.loads((agent / "settings.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     provider, model = settings.get("defaultProvider"), settings.get("defaultModel")
-    return f"{provider}/{model}" if provider and model else None
+    return f"pi/{provider}/{model}" if provider and model else None
 
 
 def mcp_config(
-    *, formed_by: str, neo4j_uri: str, enable_commit: bool, no_embed: bool, log: Path | None = None
+    *,
+    user: str,
+    agent: str | None,
+    neo4j_uri: str,
+    enable_commit: bool,
+    no_embed: bool,
+    log: Path | None = None,
 ) -> dict[str, Any]:
     """``.pi/mcp.json`` 的内容。stdio 服务只拿到这里写出的环境变量，连接参数因此都写明。"""
-    env = {"E09_NEO4J_URI": neo4j_uri, "E09_FORMED_BY": formed_by}
+    env = {"E09_NEO4J_URI": neo4j_uri, "E09_USER": user}
+    if agent:
+        env["E09_AGENT"] = agent
     if log is not None:
         env["E09_MCP_LOG"] = str(log)
     if enable_commit:
@@ -72,12 +83,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     if target.exists() and any(target.iterdir()):
         print(f"error: {target} exists and is not empty", file=sys.stderr)
         return 1
-    formed_by = args.formed_by or default_formed_by()
-    if not formed_by:
-        print("error: no pi default model found; give --formed-by provider/model", file=sys.stderr)
+    agent = args.agent or default_agent()
+    user = args.user or agent
+    if not user:
+        print("error: no pi default model found; give --user or --agent", file=sys.stderr)
         return 1
     config = mcp_config(
-        formed_by=formed_by,
+        user=user,
+        agent=agent,
         neo4j_uri=args.neo4j_uri,
         enable_commit=args.enable_commit,
         no_embed=args.no_embed,
@@ -90,7 +103,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     (target / "pi.sh").write_text(LAUNCHER, encoding="utf-8")
     (target / "pi.sh").chmod(0o755)
-    print(f"{target}  (formed_by {formed_by}, {args.neo4j_uri})")
+    print(f"{target}  (user {user}, agent {agent}, {args.neo4j_uri})")
     print(f"{target}/pi.sh       # trust the directory on first start; resume with -r; non-interactive runs: --approve")
     return 0
 
@@ -98,7 +111,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m e09.workspace", description=__doc__.split("\n\n")[0])
     parser.add_argument("dir", help="实验目录，须在仓库之外")
-    parser.add_argument("--formed-by", help="形成者 provider/model；默认取 pi 的默认模型")
+    parser.add_argument("--user", help="登录身份，记为 formed_by；默认与 --agent 相同")
+    parser.add_argument("--agent", help="所用的 Agent 与模型 pi/provider/model；默认取 pi 的默认模型")
     parser.add_argument("--neo4j-uri", default=NEO4J_URI, help=f"服务连接的库（默认 {NEO4J_URI}）")
     parser.add_argument("--enable-commit", action="store_true", help="列出 Commit（改动知识本身）")
     parser.add_argument("--no-embed", action="store_true", help="关闭查询向量，写入后也不补算")
@@ -109,4 +123,4 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["LAUNCHER", "SERVER", "default_formed_by", "main", "mcp_config"]
+__all__ = ["LAUNCHER", "SERVER", "default_agent", "main", "mcp_config"]

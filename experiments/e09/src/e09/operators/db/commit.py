@@ -92,6 +92,8 @@ def execute(call: Context, request: Mapping[str, Any]) -> dict[str, Any]:
         at=call.at,
         material_root=store.material_root,
         deduper=ResolveDeduper() if params.get("dedup", True) else None,
+        user=call.formed_by,
+        agent=call.agent,
     )
     return run(
         text,

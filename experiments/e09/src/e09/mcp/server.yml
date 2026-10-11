@@ -121,7 +121,7 @@ tools:
 
       The doc parameter is the YAML text below and holds only graph-doc, by, confirm and nodes; message, source, base, apply and dedup are separate parameters of this tool, not keys of the doc.
         graph-doc: v0.1
-        by: <your model name>
+        by: <your sign-in identity>                    # optional: the server fills it in; if written, it must match
         confirm: {$ref: {distinct_from: [ids]}, id: {revise: {reason: ..., anchor: ...}}}   # optional, see below
         nodes:
           $new-name: {kind: ..., <fields>, <RELATIONS>}   # $ names a new node; the reply maps it to an id
