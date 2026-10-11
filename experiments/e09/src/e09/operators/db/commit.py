@@ -1,9 +1,9 @@
 """Commit：提交一份 graph-doc（docs/experiments/e09/operators/commit.md）。
 
-    Commit(doc: <graph-doc>, source, apply?: false, message?, base?, dedup?: true)
+    Commit(doc: <graph-doc>, source?, apply?: false, message?, base?, dedup?: true)
       -> graph-plan（dry_run，或没有变化）| graph-result（提交后）
 
-不加 ``apply`` 时只做 dry_run。写入管线在 :mod:`e09.commit`：解析 → 翻译 → 求差 → 写入后检查 →（apply 时）分配
+不加 ``apply`` 时只做 dry_run。``source`` 省略时记为调用所在的会话（``session:<id>``）；没有会话时必须给出。写入管线在 :mod:`e09.commit`：解析 → 翻译 → 求差 → 写入后检查 →（apply 时）分配
 id 并经 graph-vc 提交。查重（Resolve）与向量补算用 ``E09_NEO4J_URI`` 所指的同一个库。没有版本记录的旧库一律拒绝。
 ``status`` 为 ``blocked`` 或 ``conflict`` 时是错误结果，``errors`` 列出阻塞项或冲突。
 """
@@ -23,6 +23,7 @@ from ...commit.report import conflict, plan, result
 from ...commit.review import ResolveDeduper
 from ...commit.submit import apply, prepare
 from ...commit.translate import Context as CommitContext
+from ...store import ContractError
 from ...store.database import check_versioned, setup_database
 from ...yamlfmt import dump
 from ..base import STRING, Context, Operator, params_of, schema
@@ -77,7 +78,7 @@ PARAMETERS = schema(
         "base": {"type": "string"},
         "dedup": {"type": "boolean"},
     },
-    ["doc", "source"],
+    ["doc"],
 )
 
 
@@ -85,10 +86,13 @@ def execute(call: Context, request: Mapping[str, Any]) -> dict[str, Any]:
     params = params_of("Commit", PARAMETERS, request)
     doc = params["doc"]
     text = doc if isinstance(doc, str) else dump(doc)
+    source = params.get("source") or (f"session:{call.session}" if call.session else None)
+    if source is None:
+        raise ContractError([{"rule": "format", "at": "source", "msg": "give source: where this knowledge comes from"}])
     store = call.store
     ctx = CommitContext(
         reader=Neo4jReader(store.graph, store.driver, database=store.database),
-        source=params["source"],
+        source=source,
         at=call.at,
         material_root=store.material_root,
         deduper=ResolveDeduper() if params.get("dedup", True) else None,

@@ -13,19 +13,21 @@
 A3 的起点：清空图库（``--reset-a3``，只允许配置中的 T1 图库），按 ``seed_docs`` 的顺序
 （作者取文档的 ``by``）提交，再与内存重放的状态逐项比较，不一致即停止。A0 的起点由同一个内存重放渲染（:mod:`t1.a0_seed`）。两组内容因此相同。
 
-会话按“槽位”调度：每个槽位是一篇论文的一个写者，同一槽位依次在各组运行，组间的运行时刻尽量接近。
-中断后用同一个运行名重跑，已记录的会话跳过。
+会话按“槽位”调度：每个槽位是一篇论文的一个写者。组内按槽位顺序逐个运行（写者轮流写），各组同时运行：
+两组的存储互不相干，并行只缩短总时间。中断后用同一个运行名重跑，已记录的会话跳过。
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import os
+import shutil
 import subprocess
 import sys
+import threading
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -40,6 +42,7 @@ from .replay import replay
 from .sandbox import Arm, Paths, Writer, prepare, run_session
 
 PROTECTED = {7687, 7688}  # neo4j-e09 与 neo4j-test：不清空
+_LOCK = threading.Lock()  # 各组并行时，sessions.jsonl 与 checkpoints.yml 的写入
 
 
 @dataclass(frozen=True)
@@ -168,9 +171,10 @@ def checkpoint(run: Path, config: dict[str, Any], arm: str, k: int) -> str | Non
         subprocess.run(tag, check=True, capture_output=True)
     head = version(run, config, arm)
     path = run / "checkpoints.yml"
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
-    data.setdefault(arm, {})[k] = head
-    path.write_text(yaml.safe_dump(data, sort_keys=True), encoding="utf-8")
+    with _LOCK:
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
+        data.setdefault(arm, {})[k] = head
+        path.write_text(yaml.safe_dump(data, sort_keys=True), encoding="utf-8")
     return head
 
 
@@ -198,12 +202,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     done = _done(run)
     llm = _llm_url(config["runner"]["model"])
     slots = schedule(config)[: args.limit] if args.limit else schedule(config)
-    for slot in slots:
-        for arm in arms:
+
+    def run_arm(arm: str) -> None:
+        for slot in slots:
             if (arm, slot.index) in done:
                 continue
             record = _session(run, config, arm, slot, prompt(config, arm, slot, titles), llm)
-            with open(run / "sessions.jsonl", "a", encoding="utf-8") as f:
+            with _LOCK, open(run / "sessions.jsonl", "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
             print(
                 f"[{arm} {slot.index:02d}] {slot.writer['id']} {slot.paper['short']}: "
@@ -212,6 +217,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             if slot.checkpoint is not None:
                 checkpoint(run, config, arm, slot.checkpoint)
+
+    with ThreadPoolExecutor(max_workers=len(arms)) as pool:
+        for future in [pool.submit(run_arm, arm) for arm in arms]:
+            future.result()  # 一组出错时报出，另一组照常跑完
     return 0
 
 
