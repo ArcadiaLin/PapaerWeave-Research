@@ -61,8 +61,8 @@ class Paths:
         object.__setattr__(self, "sock", self.root / "sock")
 
 
-def prepare(paths: Paths, arm: Arm, model: str, thinking: str, context_window: int) -> None:
-    """建立写者的工作目录与 pi 的 agent 目录（只有模型配置与设置；思考级别与上下文窗口取实验配置）。
+def prepare(paths: Paths, arm: Arm, model: str, thinking: str, context_window: int, idle_timeout_ms: int) -> None:
+    """建立写者的工作目录与 pi 的 agent 目录（只有模型配置与设置；思考级别、上下文窗口与请求的空闲超时取实验配置）。
 
     已存在时保留会话记录，只重写配置。
     """
@@ -81,7 +81,12 @@ def prepare(paths: Paths, arm: Arm, model: str, thinking: str, context_window: i
     _write_json(paths.home / ".pi/agent/models.json", models)
     _write_json(
         paths.home / ".pi/agent/settings.json",
-        {"defaultProvider": provider, "defaultModel": model_id, "modelThinkingLevels": {model: thinking}},
+        {
+            "defaultProvider": provider,
+            "defaultModel": model_id,
+            "modelThinkingLevels": {model: thinking},
+            "httpIdleTimeoutMs": idle_timeout_ms,
+        },
     )
     _write_json(paths.work / ".pi/settings.json", {"sessionDir": ".pi/sessions"})
     if arm.name == "A3":
@@ -178,6 +183,8 @@ def _mcp_command(paths: Paths, arm: Arm, writer: Writer) -> list[str]:
         "E09_AGENT": writer.agent,
         "E09_ENABLE_COMMIT": "1",
         "E09_MCP_LOG": str(paths.root / "paperweave.log"),
+        "E09_WORKDIR": str(paths.work),  # 草稿文件（payload_file、doc_file）只从写者的工作目录读
+        "E09_WORKDIR_ALIAS": "/work",  # 写者在沙箱中看到的同一目录
     }
     if not arm.embeddings:
         env["E09_NO_EMBED"] = "1"

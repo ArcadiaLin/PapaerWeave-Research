@@ -140,5 +140,5 @@ def test_workspace_registers_the_server(tmp_path: Path) -> None:
     assert server["args"] == ["-m", "e09.mcp"] and server["exposure"] == "direct"
     log = str(target / ".pi/paperweave.log")  # 服务启动后才写
     env = {"E09_NEO4J_URI": "bolt://localhost:7688", "E09_USER": "u@lab.example", "E09_AGENT": "pi/p/m"}
-    assert server["env"] == env | {"E09_MCP_LOG": log}
+    assert server["env"] == env | {"E09_MCP_LOG": log, "E09_WORKDIR": str(target)}  # 草稿文件只从工作目录读
     assert workspace([str(target), "--user", "u@lab.example"]) == 1  # 已存在且不空

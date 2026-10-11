@@ -53,9 +53,13 @@ def mcp_config(
     no_embed: bool,
     log: Path | None = None,
     data: Path | None = None,
+    workdir: Path | None = None,
 ) -> dict[str, Any]:
-    """``.pi/mcp.json`` 的内容。stdio 服务只拿到这里写出的环境变量，连接参数因此都写明。"""
+    """``.pi/mcp.json`` 的内容。stdio 服务只拿到这里写出的环境变量，连接参数因此都写明。服务在仓库中运行，
+    ``workdir``（写者的工作目录）因此也写明，草稿文件只从那里读。"""
     env = {"E09_NEO4J_URI": neo4j_uri, "E09_USER": user}
+    if workdir is not None:
+        env["E09_WORKDIR"] = str(workdir)
     if agent:
         env["E09_AGENT"] = agent
     if data is not None:
@@ -98,6 +102,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         enable_commit=args.enable_commit,
         no_embed=args.no_embed,
         log=target / ".pi/paperweave.log",
+        workdir=target,
         data=Path(args.data).expanduser().resolve() if args.data else None,
     )
     (target / ".pi").mkdir(parents=True)

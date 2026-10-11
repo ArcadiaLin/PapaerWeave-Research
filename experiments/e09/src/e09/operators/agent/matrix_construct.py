@@ -9,16 +9,18 @@ from collections.abc import Mapping
 from typing import Any
 
 from ...artifact.write import Output, Problems
-from ..base import agent_operator, schema
+from ..base import DraftForm, agent_operator, schema
 from ._common import (
     FIELD_TYPES,
     as_list,
     bullets,
     cell_text,
     check_keys,
+    example_cell,
     is_key,
     is_text,
     is_typed,
+    parse_cell,
     parse_type,
     table,
     type_name,
@@ -159,6 +161,50 @@ def _label(value: Any) -> str:
     return value["text"] if isinstance(value, Mapping) else f"[{value}]"
 
 
+# ── CSV 草稿：长表，一格一行 ──────────────────────────────────────────
+
+COLUMNS = ["row", "col", "value", "basis", "note"]
+
+
+def _cell_type(params: Mapping[str, Any]) -> Any:
+    cell = params.get("cell")
+    return parse_type(cell.get("type")) if isinstance(cell, Mapping) else None
+
+
+def _columns(params: Mapping[str, Any]) -> tuple[list[str], set[str]] | None:
+    rows, columns = params.get("rows"), params.get("columns")
+    if not isinstance(rows, Mapping) or not rows or not isinstance(columns, Mapping) or not columns:
+        return None
+    if _cell_type(params) is None:
+        return None
+    return COLUMNS, {"row", "col", "value"}
+
+
+def _example(params: Mapping[str, Any]) -> dict[str, str]:
+    return {
+        "row": str(next(iter(params["rows"]))),
+        "col": str(next(iter(params["columns"]))),
+        "value": example_cell(_cell_type(params)),
+        "basis": "<artifact id>#<record key>;<source reference>",
+        "note": "",
+    }
+
+
+def _cell(params: Mapping[str, Any], cells: dict[str, str]) -> dict[str, Any]:
+    """一行转成一格：``value`` 为空时是 ``null``；``basis`` 中的多个引用用 ``;`` 分隔。"""
+    text = cells.get("value", "")
+    entry: dict[str, Any] = {
+        "row": cells.get("row", ""),
+        "col": cells.get("col", ""),
+        "value": parse_cell(text, _cell_type(params)) if text else None,
+    }
+    if basis := [b.strip() for b in cells.get("basis", "").split(";") if b.strip()]:
+        entry["basis"] = basis
+    if note := cells.get("note"):
+        entry["note"] = note
+    return entry
+
+
 MATRIX_CONSTRUCT = agent_operator(
     name="MatrixConstruct",
     params=schema(
@@ -180,6 +226,7 @@ MATRIX_CONSTRUCT = agent_operator(
         ["cells"],
     ),
     validate=matrix,
+    draft=DraftForm(key="cells", columns=_columns, example=_example, item=_cell),
 )
 
 

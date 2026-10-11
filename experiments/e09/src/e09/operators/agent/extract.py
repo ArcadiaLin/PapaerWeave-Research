@@ -10,13 +10,15 @@ from collections.abc import Mapping
 from typing import Any
 
 from ...artifact.write import Output, Problems
-from ..base import agent_operator, schema
+from ..base import DraftForm, agent_operator, schema
 from ._common import (
     FIELD_TYPES,
     cell_text,
     check_keys,
+    example_cell,
     is_text,
     is_typed,
+    parse_cell,
     parse_type,
     table,
     type_name,
@@ -142,6 +144,39 @@ def _slug(value: str) -> str:
     return re.sub(r"[^a-z0-9._]+", "-", value.lower()).strip("-")
 
 
+# ── CSV 草稿：表头是声明的字段加 source，一行一条记录 ──────────────────
+
+
+def _declared(params: Mapping[str, Any]) -> dict[str, Any] | None:
+    schema = params.get("schema")
+    fields = schema.get("fields") if isinstance(schema, Mapping) else None
+    if not isinstance(fields, Mapping) or not fields:
+        return None
+    types = {name: parse_type(type_) for name, type_ in fields.items()}
+    if not all(isinstance(n, str) and _FIELD_NAME.fullmatch(n) for n in types) or None in types.values():
+        return None
+    return types
+
+
+def _columns(params: Mapping[str, Any]) -> tuple[list[str], set[str]] | None:
+    types = _declared(params)
+    if types is None or "source" in types or "key" in types:
+        return None
+    schema = params["schema"]
+    named = [n for k in ("key", "required") if isinstance(schema.get(k), list) for n in schema[k]]
+    return [*types, "source"], {*(n for n in named if n in types), "source"}
+
+
+def _example(params: Mapping[str, Any]) -> dict[str, str]:
+    types = _declared(params) or {}
+    return {name: example_cell(t) for name, t in types.items()} | {"source": "<material id>::<section>::<start>:<end>"}
+
+
+def _row(params: Mapping[str, Any], cells: dict[str, str]) -> dict[str, Any]:
+    types = _declared(params) or {}
+    return {name: parse_cell(text, types.get(name)) for name, text in cells.items() if text}
+
+
 EXTRACT = agent_operator(
     name="Extract",
     params=schema(
@@ -167,6 +202,7 @@ EXTRACT = agent_operator(
         ["rows"],
     ),
     validate=extract,
+    draft=DraftForm(key="rows", columns=_columns, example=_example, item=_row),
 )
 
 

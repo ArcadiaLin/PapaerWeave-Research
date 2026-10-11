@@ -17,11 +17,15 @@
 
 from __future__ import annotations
 
+import csv
+import io
+from collections import Counter
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
-from ..artifact.write import REQUEST_KEYS, REQUIRED, Validate, write_artifact
+from ..artifact.write import REQUEST_KEYS, REQUIRED, OperatorError, Problems, Validate, write_artifact
+from ..draft import Workdir, locate_rows, read, read_csv
 from ..store.store import ContractError, Store
 from ..yamlfmt import dump
 from .repair import repair
@@ -35,7 +39,8 @@ class Context:
     """一次调用的环境。``at`` 是写入的形成时间；``session`` 与 ``formed_by`` 是调用所在的会话与形成者（登录身份），
     ``agent`` 是所用的 Agent 与模型（记入提交的 ``meta.agent``）；
     Agent 算子写入时必须有；``sync`` 在写入后补算向量，为 ``None`` 时不补算；``text`` 是请求原文，写入时记入提交，
-    不给时用请求的 YAML。查询向量由 ``store.embed`` 给出。"""
+    不给时用请求的 YAML。查询向量由 ``store.embed`` 给出。``workdir`` 是调用者的工作目录，草稿文件
+    （``payload_file``、``doc_file``，见 :mod:`e09.draft`）只从这里读；为 ``None`` 时不接受草稿文件。"""
 
     store: Store
     at: str
@@ -44,6 +49,7 @@ class Context:
     agent: str | None = None
     sync: Callable[[], int] | None = None
     text: str | None = None
+    workdir: Workdir | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,9 +70,18 @@ class Result:
         return dump(self.details)
 
 
+MAX_ERRORS = 30  # 返回的错误条数上限：一份草稿可能每行都错，整份列出会占满写者的上下文
+
+
 def rejected(errors: list[dict[str, str]], *, status: str = "rejected") -> Result:
-    """没有执行的结果：``{status, errors}``。"""
-    return Result({"status": status, "errors": ContractError(errors, status=status).errors})
+    """没有执行的结果：``{status, errors}``。错误超过 :data:`MAX_ERRORS` 条时只列前面的，余下的按规则计数。"""
+    items = ContractError(errors, status=status).errors
+    if len(items) > MAX_ERRORS:
+        rest = Counter(e["rule"] for e in items[MAX_ERRORS:])
+        counts = ", ".join(f"{rule} x{n}" for rule, n in rest.most_common())
+        msg = f"{len(items) - MAX_ERRORS} more errors not shown ({counts}); fix the ones above, then call again"
+        items = [*items[:MAX_ERRORS], {"rule": "more", "at": "", "msg": msg}]
+    return Result({"status": status, "errors": items})
 
 
 Execute = Callable[[Context, Mapping[str, Any]], dict[str, Any]]
@@ -159,27 +174,50 @@ def interface(
     return replace(db_operator(name=name, parameters=parameters, run=run), family="interface")
 
 
+@dataclass(frozen=True)
+class DraftForm:
+    """Agent 算子的 CSV 草稿（``payload_file``）：文件给出 ``payload[key]``，一行一项。
+
+    ``columns(params)`` 给出表头的列（模板中的顺序）与不可缺少的列，``params`` 不成形时为 ``None``；
+    ``example(params)`` 给出模板中的示例行（列名 → 文字）；``item(params, cells)`` 把一行（列名 → 文字，空格
+    已去掉）转成 ``payload[key]`` 的一项，与参数中直接写出的形式相同。"""
+
+    key: str
+    columns: Callable[[Mapping[str, Any]], tuple[list[str], set[str]] | None]
+    example: Callable[[Mapping[str, Any]], dict[str, str]]
+    item: Callable[[Mapping[str, Any], dict[str, str]], dict[str, Any]]
+
+
 def agent_operator(
     *,
     name: str,
     params: dict[str, Any],
     payload: dict[str, Any],
     validate: Validate,
+    draft: DraftForm | None = None,
 ) -> Operator:
     """Agent 算子：``validate`` 检查该算子的 ``params`` 与 ``payload``，其余（共同校验、文档、提交）都经
     :func:`e09.artifact.write.write_artifact`。``params`` 与 ``payload`` 是这两个键的 JSON Schema。
 
-    写入的请求是参数加上 ``op``（算子名）与 ``Context`` 中的 ``session``、``formed_by``；二者缺一时拒绝。"""
-    parameters = schema(
-        {
-            "title": STRING,
-            "abs": STRING,
-            "inputs": {"type": "array", "items": STRING},
-            "params": params,
-            "payload": payload,
-        },
-        [k for k in REQUEST_KEYS if k in REQUIRED and k not in CONTEXT_KEYS],
-    )
+    写入的请求是参数加上 ``op``（算子名）与 ``Context`` 中的 ``session``、``formed_by``；二者缺一时拒绝。
+
+    有 ``draft`` 的算子另接受 ``payload_file``：``payload[draft.key]`` 由工作目录中的 CSV 草稿给出（``payload``
+    中可以只写其余的键，如 ``note``）。既没有 ``payload`` 也没有 ``payload_file`` 时返回模板（``status: template``，
+    表头与示例行），什么也不写入。内容来自草稿时，报错的位置换算成 ``<文件>:<行号>``，提交的 ``input`` 记调用参数
+    与草稿原文，``meta.draft`` 记草稿的路径与哈希。"""
+    properties: dict[str, Any] = {
+        "title": STRING,
+        "abs": STRING,
+        "inputs": {"type": "array", "items": STRING},
+        "params": params,
+        "payload": payload,
+    }
+    required = [k for k in REQUEST_KEYS if k in REQUIRED and k not in CONTEXT_KEYS]
+    if draft is not None:  # 取模板时只需 params；写入时缺少的键由 write_artifact 报告
+        properties["payload"] = {k: v for k, v in payload.items() if k != "required"}
+        properties["payload_file"] = STRING
+        required = ["params"]
+    parameters = schema(properties, required)
 
     def execute(ctx: Context, request: Mapping[str, Any]) -> dict[str, Any]:
         params = params_of(name, parameters, request)
@@ -187,12 +225,68 @@ def agent_operator(
         if missing := [k for k, v in context.items() if not v]:
             msg = "set by the caller's context, not a parameter"
             raise ContractError([{"rule": "format", "at": k, "msg": msg} for k in missing])
-        full = {"op": name, **params, **context}
-        return write_artifact(
-            ctx.store, full, {name: validate}, at=ctx.at, text=ctx.text, sync=ctx.sync, agent=ctx.agent
-        )
+        given = params.pop("payload_file", None)
+        if draft is None or (given is None and "payload" in params):
+            full = {"op": name, **params, **context}
+            return write_artifact(
+                ctx.store, full, {name: validate}, at=ctx.at, text=ctx.text, sync=ctx.sync, agent=ctx.agent
+            )
+
+        # 表头由声明给出：声明有问题时（如 key 中的字段没有声明）先报告它们，不给模板、不读文件
+        declared = params.get("params") if isinstance(params.get("params"), Mapping) else {}
+        problems = Problems()
+        validate(declared, {}, problems)
+        errors = [e for e in problems.items if e["at"].startswith("params")]
+        columns = None if errors else draft.columns(declared)
+        if columns is None:
+            raise ContractError(errors or [{"rule": "schema", "at": "params", "msg": "a mapping"}])
+        header, needed = columns
+        if given is None:
+            return _template(name, draft, params["params"], header)
+
+        file = read(ctx.workdir, given, "payload_file", ctx.store.material_root)
+        inline = params.get("payload", {})
+        if not isinstance(inline, Mapping):
+            raise ContractError([{"rule": "format", "at": "payload", "msg": "a mapping"}])
+        if draft.key in inline:
+            msg = f"give {draft.key} either in payload_file or in payload.{draft.key}, not both"
+            raise ContractError([{"rule": "format", "at": f"payload.{draft.key}", "msg": msg}])
+        table = read_csv(file, header, needed)
+        items = [draft.item(params["params"], cells) for _, cells in table.records]
+        full = {"op": name, **params, "payload": {**inline, draft.key: items}, **context}
+        text = dump({**dict(request), "draft": file.text})
+        try:
+            return write_artifact(
+                ctx.store,
+                full,
+                {name: validate},
+                at=ctx.at,
+                text=text,
+                sync=ctx.sync,
+                agent=ctx.agent,
+                draft=file.meta(),
+            )
+        except OperatorError as exc:
+            lines = [line for line, _ in table.records]
+            raise OperatorError(locate_rows(exc.errors, file, draft.key, lines), status=exc.status) from exc
 
     return Operator(name, "agent", parameters, execute, writes=True, validate=validate)
+
+
+def _template(name: str, draft: DraftForm, params: Mapping[str, Any], header: list[str]) -> dict[str, Any]:
+    example = draft.example(params)
+    line = io.StringIO()
+    csv.writer(line, lineterminator="").writerow([example.get(h, "") for h in header])
+    return {
+        "status": "template",
+        "header": ",".join(header),
+        "example": line.getvalue(),
+        "next": (
+            "Write a CSV file in your working directory: this header on the first line, then one line per "
+            f"{'record' if draft.key == 'rows' else 'cell'}; quote values that contain commas. Then call {name} "
+            "again with the same params plus abs, inputs and payload_file (the file's path). Nothing was written."
+        ),
+    }
 
 
 __all__ = [
@@ -202,6 +296,7 @@ __all__ = [
     "TERMS",
     "TEXT",
     "Context",
+    "DraftForm",
     "Execute",
     "Family",
     "Operator",

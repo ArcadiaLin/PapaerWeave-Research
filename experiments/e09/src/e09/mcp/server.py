@@ -15,7 +15,9 @@
 环境变量：``E09_NEO4J_URI`` 等连接参数（:mod:`e09.config`）；``E09_USER`` 登录身份，Agent 算子写入时必需；
 ``E09_AGENT`` 所用的 Agent 与模型；
 ``E09_ENABLE_COMMIT=1`` 时才列出 ``Commit``（它改动知识本身）；``E09_NO_EMBED=1`` 时关闭查询向量，写入后也不补算；
-``E09_MCP_LOG`` 给出日志文件（追加写）。库没有版本记录时服务不启动。
+``E09_MCP_LOG`` 给出日志文件（追加写）；``E09_WORKDIR`` 是写者的工作目录，草稿文件（``payload_file``、
+``doc_file``）只从这里读，不设时取服务进程的当前目录；``E09_WORKDIR_ALIAS`` 是写者看到的同一目录（如沙箱中的
+``/work``，见 :mod:`e09.draft`）。库没有版本记录时服务不启动。
 
 **日志。** 每次调用记一行：会话、工具、结果状态，以及执行前对参数的兜底修复（:mod:`e09.operators.repair`）。
 修复不告诉模型，只记在这里；日志写到 stderr，给了 ``E09_MCP_LOG`` 时也写入该文件。
@@ -35,6 +37,7 @@ import mcp.types as types
 from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
 
+from ..draft import Workdir
 from ..operators import Context
 from ..operators.base import rejected
 from ..store import Store, UnversionedDatabaseError, check_versioned, open_graph
@@ -58,6 +61,7 @@ def serve(
     sync: Any,
     spec: Spec | None = None,
     agent: str | None = None,
+    workdir: Workdir | None = None,
 ) -> Server:
     """MCP 服务：调用逐个执行（同一时间只有一个写入，不与自己的写入冲突）。"""
     spec = spec or load()
@@ -76,7 +80,9 @@ def serve(
             result = rejected([{"rule": "format", "at": "tool", "msg": f"one of {list(tools)}"}])
         else:
             at = datetime.now(UTC).isoformat(timespec="seconds")
-            ctx = Context(store, at=at, session=session, formed_by=formed_by, agent=agent, sync=sync)
+            ctx = Context(
+                store, at=at, session=session, formed_by=formed_by, agent=agent, sync=sync, workdir=workdir
+            )
             async with lock:
                 result = await anyio.to_thread.run_sync(op.call, ctx, arguments or {})
         status = result.details.get("status", "ok")
@@ -107,9 +113,10 @@ def main() -> int:
     graph = open_graph(driver, database=NEO4J_DB, file_root=DATA)
     store = Store(driver, graph, DATA, database=NEO4J_DB, embed=None if no_embed else embed)
     sync = None if no_embed else sync_embeddings
-    server = serve(store, session=session, formed_by=formed_by, sync=sync, spec=spec, agent=agent)
+    workdir = Workdir.from_env()
+    server = serve(store, session=session, formed_by=formed_by, sync=sync, spec=spec, agent=agent, workdir=workdir)
     log.info(
-        "%s %s (server.yml %s): session %s, user %s, agent %s, %s",
+        "%s %s (server.yml %s): session %s, user %s, agent %s, %s, workdir %s",
         spec.name,
         spec.version,
         spec.digest,
@@ -117,6 +124,7 @@ def main() -> int:
         formed_by,
         agent,
         NEO4J_URI,
+        workdir.root,
     )
 
     async def run() -> None:

@@ -5,7 +5,8 @@
 运行目录 ``<workdir_root>/<运行名>/``：
 
 - ``run.yml``：配置副本、仓库提交与是否有未提交改动、开始时间；
-- ``sessions.jsonl``：每次会话一行（组、序号、论文、写者、退出码、用时、事件流与会话记录的位置、会话前后的库版本）；
+- ``sessions.jsonl``：每次会话一行（组、序号、论文、写者、退出码、用时、事件流与会话记录的位置、会话前后的库版本、
+  模型请求出错的次数与原因；A0 另记会话结束时笔记库中没有提交的改动）；
 - ``checkpoints.yml``：各组每个检查点的库版本（A3 为 graph-vc 的提交 id，A0 为 git 标签 ``checkpoint-<k>``）；
 - ``A3/data/``：A3 的材料根目录（论文副本与产物文档，``E09_DATA``）；``A0/store/``：A0 的笔记库（git 仓库）；
 - ``<组>/<写者>/``：写者的沙箱目录（见 :mod:`t1.sandbox`）。
@@ -237,13 +238,15 @@ def _session(run: Path, config: dict[str, Any], arm: str, slot: Slot, text: str,
         sandbox_arm = Arm("A0", papers, store=run / "A0/store")
     paths = Paths(run / arm / writer.id)
     runner = config["runner"]
-    prepare(paths, sandbox_arm, runner["model"], runner["thinking"], runner["context_window"])
+    prepare(
+        paths, sandbox_arm, runner["model"], runner["thinking"], runner["context_window"], runner["http_idle_timeout_ms"]
+    )
     before = version(run, config, arm)
     started = datetime.now(UTC).isoformat(timespec="seconds")
     result = run_session(
         paths, sandbox_arm, writer, text, timeout_s=config["runner"]["session_timeout_min"] * 60, llm=llm
     )
-    return {
+    record = {
         "arm": arm,
         "index": slot.index,
         "paper": slot.paper["arxiv"],
@@ -252,10 +255,50 @@ def _session(run: Path, config: dict[str, Any], arm: str, slot: Slot, text: str,
         **result,
         "events": f"{arm}/{writer.id}/{result['events']}",
         "session": [f"{arm}/{writer.id}/{s}" for s in result["session"]],
+        "request_errors": request_errors(paths.root / result["events"]),
         "before": before,
         "after": version(run, config, arm),
         "prompt": text,
     }
+    if arm == "A0":
+        patch = Path(result["events"]).with_suffix(".leftover.patch")
+        record["leftover"] = discard_leftovers(run / "A0/store", paths.root / patch)
+        if record["leftover"]:
+            record["leftover_patch"] = f"{arm}/{writer.id}/{patch}"
+    return record
+
+
+def request_errors(events: Path) -> list[str]:
+    """会话中出错结束的模型请求（pi 事件流中 ``stopReason: error`` 的助手消息），每次一条原因。"""
+    errors = []
+    if not events.exists():
+        return errors
+    for line in events.read_text(encoding="utf-8").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        message = event.get("message") or {}
+        if event.get("type") == "message_end" and message.get("stopReason") == "error":
+            errors.append(str(message.get("errorMessage") or "error"))
+    return errors
+
+
+def discard_leftovers(store: Path, patch: Path) -> list[str]:
+    """A0 会话结束后笔记库中没有提交的改动：存成补丁、返回改动的文件清单，然后丢弃。
+
+    与 A3 对称：A3 中没有经 Commit 的内容不进库，A0 中没有 git commit 的内容也不留给下一个写者。"""
+
+    def git(*args: str) -> str:
+        return subprocess.run(["git", "-C", str(store), *args], check=True, capture_output=True, text=True).stdout
+
+    changed = [line[3:] for line in git("status", "--porcelain", "--untracked-files=all").splitlines()]
+    if changed:
+        git("add", "-A")
+        patch.write_text(git("diff", "--cached", "--binary", "HEAD"), encoding="utf-8")
+        git("reset", "--hard", "HEAD")
+        git("clean", "-fd")
+    return changed
 
 
 def _record_run(run: Path, config_path: Path, arms: list[str]) -> None:

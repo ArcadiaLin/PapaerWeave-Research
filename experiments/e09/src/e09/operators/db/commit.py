@@ -1,10 +1,15 @@
 """Commit：提交一份 graph-doc（docs/experiments/e09/operators/commit.md）。
 
-    Commit(doc: <graph-doc>, source?, apply?: false, message?, base?, dedup?: true)
-      -> graph-plan（dry_run，或没有变化）| graph-result（提交后）
+    Commit(doc | doc_file, source?, apply?: true, message?, base?, dedup?: true)
+      -> graph-plan（dry_run、有阻塞项或没有变化）| graph-result（提交后）
 
-不加 ``apply`` 时只做 dry_run。``source`` 省略时记为调用所在的会话（``session:<id>``）；没有会话时必须给出。写入管线在 :mod:`e09.commit`：解析 → 翻译 → 求差 → 写入后检查 →（apply 时）分配
-id 并经 graph-vc 提交。查重（Resolve）与向量补算用 ``E09_NEO4J_URI`` 所指的同一个库。没有版本记录的旧库一律拒绝。
+``doc`` 是 graph-doc 文本；``doc_file`` 是写者工作目录中的 graph-doc 草稿（:mod:`e09.draft`），二者给一个。
+用草稿时，阻塞项与提示的位置换算成 ``<文件>:<行号> (<位置>)``，提交的 ``meta.draft`` 记草稿的路径与哈希。
+``apply`` 默认提交：先做 dry_run，有阻塞项时返回 graph-plan、不写入，没有时直接提交；``apply: false`` 只做
+dry_run。命令行入口（:mod:`e09.cli`）总是显式给出 ``apply``，仍须加 ``--apply`` 才提交。
+
+``source`` 省略时记为调用所在的会话（``session:<id>``）；没有会话时必须给出。写入管线在 :mod:`e09.commit`：
+解析 → 翻译 → 求差 → 写入后检查 →（apply 时）分配 id 并经 graph-vc 提交。查重（Resolve）与向量补算用 ``E09_NEO4J_URI`` 所指的同一个库。没有版本记录的旧库一律拒绝。
 ``status`` 为 ``blocked`` 或 ``conflict`` 时是错误结果，``errors`` 列出阻塞项或冲突。
 """
 
@@ -18,6 +23,7 @@ from neo4j import Driver
 
 from graph_vc import ConflictError, VersionedGraph
 
+from ... import draft
 from ...commit.reader import Neo4jReader
 from ...commit.report import conflict, plan, result
 from ...commit.review import ResolveDeduper
@@ -40,6 +46,7 @@ def run(
     base: str | None = None,
     database: str | None = None,
     embed: Callable[[], int] | None = None,
+    meta: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """dry_run 或提交一份 graph-doc，返回 graph-plan 或 graph-result。
 
@@ -54,7 +61,7 @@ def run(
         return plan(prepare(text, ctx), ctx.reader)
     setup_database(graph, driver, database=database)
     try:
-        prepared, record = apply(text, graph, ctx, message=message, base=base)
+        prepared, record = apply(text, graph, ctx, message=message, base=base, meta=meta)
     except ConflictError as exc:
         return conflict(exc)
     if record is None:
@@ -72,20 +79,30 @@ def run(
 PARAMETERS = schema(
     {
         "doc": STRING,
+        "doc_file": STRING,
         "source": {"type": "string"},
         "apply": {"type": "boolean"},
         "message": {"type": "string"},
         "base": {"type": "string"},
         "dedup": {"type": "boolean"},
     },
-    ["doc"],
+    (),
 )
 
 
 def execute(call: Context, request: Mapping[str, Any]) -> dict[str, Any]:
     params = params_of("Commit", PARAMETERS, request)
-    doc = params["doc"]
-    text = doc if isinstance(doc, str) else dump(doc)
+    if ("doc" in params) == ("doc_file" in params):
+        raise ContractError([{"rule": "format", "at": "doc", "msg": "give either doc (the YAML text) or doc_file"}])
+    file = None
+    if "doc_file" in params:
+        file = draft.read(call.workdir, params["doc_file"], "doc_file", call.store.material_root)
+        if syntax := draft.yaml_syntax(file):
+            raise ContractError([syntax])
+        text = file.text
+    else:
+        doc = params["doc"]
+        text = doc if isinstance(doc, str) else dump(doc)
     source = params.get("source") or (f"session:{call.session}" if call.session else None)
     if source is None:
         raise ContractError([{"rule": "format", "at": "source", "msg": "give source: where this knowledge comes from"}])
@@ -99,17 +116,19 @@ def execute(call: Context, request: Mapping[str, Any]) -> dict[str, Any]:
         user=call.formed_by,
         agent=call.agent,
     )
-    return run(
+    out = run(
         text,
         graph=store.graph,
         driver=store.driver,
         ctx=ctx,
-        commit=bool(params.get("apply", False)),
+        commit=bool(params.get("apply", True)),
         message=params.get("message", ""),
         base=params.get("base"),
         database=store.database,
         embed=call.sync,
+        meta={"draft": file.meta()} if file else None,
     )
+    return draft.locate_doc(out, file) if file else out
 
 
 COMMIT = Operator(

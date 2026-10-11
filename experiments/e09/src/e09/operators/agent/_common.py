@@ -61,6 +61,28 @@ def type_name(type_: Any) -> str:
     return f"enum{list(type_)}" if isinstance(type_, tuple) else type_
 
 
+def parse_cell(text: str, type_: Any) -> Any:
+    """草稿 CSV 中一格的文字按声明的类型取值：``number`` 取整数或小数，``integer`` 取整数，``boolean`` 取
+    ``true`` / ``false``，其余（``string``、``ref``、枚举）照原文。解析不了时照原文，由校验报告类型不符。"""
+    try:
+        if type_ == "number":
+            return int(text) if re.fullmatch(r"[+-]?\d+", text) else float(text)
+        if type_ == "integer":
+            return int(text)
+    except ValueError:
+        return text
+    if type_ == "boolean":
+        return {"true": True, "false": False}.get(text.lower(), text)
+    return text
+
+
+def example_cell(type_: Any) -> str:
+    """模板中示例行的一格。"""
+    if isinstance(type_, tuple):
+        return type_[0]
+    return {"number": "0.375", "integer": "96", "boolean": "true", "ref": "<id>"}.get(type_, "<text>")
+
+
 def cell_text(value: Any, type_: Any) -> str:
     if value is None:
         return "—"

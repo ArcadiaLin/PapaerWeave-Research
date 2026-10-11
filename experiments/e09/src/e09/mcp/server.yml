@@ -119,7 +119,7 @@ tools:
     description: |-
       Change the stored knowledge: create, edit or delete objects and their relations by submitting a graph-doc, a YAML text describing the wanted state of some nodes. Artifacts cannot be written here; use the artifact tools.
 
-      The doc parameter is the YAML text below and holds only graph-doc, by, confirm and nodes; message, source, base, apply and dedup are separate parameters of this tool, not keys of the doc.
+      Write the graph-doc to a YAML file in your working directory with your file tools and pass its path as doc_file (a short doc may instead go inline as doc). The graph-doc holds only graph-doc, by, confirm and nodes; message, source, base, apply and dedup are separate parameters of this tool, not keys of the doc.
         graph-doc: v0.1
         by: <your sign-in identity>                    # optional: the server fills it in; if written, it must match
         confirm: {$ref: {distinct_from: [ids]}, id: {revise: {reason: ..., anchor: ...}}}   # optional, see below
@@ -145,11 +145,12 @@ tools:
       - Contribution: text*, stated_by* (paper | agent), note; needs FROM and ABOUT. Observation: text*, note; needs ABOUT
       Relations: FROM {to: paper, locators: ["<section>::<start>:<end>"]} (an Observation may come FROM an artifact); ABOUT; EVALUATES {to, role: target | baseline}; USES {to, role: evaluation_data | training_data | analysis_input | tooling | retrieval_corpus}; ON_TASK; EVALUATED_ON; SUPPORTED_BY; SUPPORTS / OPPOSES {to, stated_by, description} between Claims; CITES; PART_OF; DERIVED_FROM; IMPLEMENTS; FOR_TASK; BROADER; HAS_PART; ADDRESSES; OVERLAPS_WITH (endpoints as in Traverse). Any edge may also carry description and source_refs.
 
-      Workflow: call without apply (a dry run) and read the graph-plan. status blocked lists errors, each with at, msg and often fix; change the doc and submit again. A dedup error lists stored candidates for a new Entity or Concept: if one is the same object, replace your $ref by its id everywhere (your fields then edit it); if none is, add confirm: {$ref: {distinct_from: [candidate ids]}}. Records of what a paper says (Experiment, Claim, Contribution stated_by paper) are kept faithful to the paper: to change or delete one, give confirm: {id: {revise: {reason: why, anchor: "<section>::<start>:<end>" of the paper lines supporting the change}}} (a deletion needs only reason); the old version stays in the history. Interpretations (Observation, Contribution stated_by agent, SUPPORTS / OPPOSES stated_by agent) keep their author: anyone may add relations to them (such as another ABOUT), but only the writer who formed one may change its text, remove its relations or delete it; to disagree, write your own. When status is ready, submit the same doc with apply: true; the graph-result gives the commit id and the id of every $ref. status noop means nothing would change.
+      Workflow: write the file, then call Commit with doc_file. The call checks the doc and commits it when nothing blocks it; the graph-result gives the commit id and the id of every $ref. status blocked means nothing was written: errors lists each problem with at (file:line and the place in the doc), msg and often fix; edit those lines of the file and call again with the same arguments. A dedup error lists stored candidates for a new Entity or Concept: if one is the same object, replace your $ref by its id everywhere (your fields then edit it); if none is, add confirm: {$ref: {distinct_from: [candidate ids]}}. Records of what a paper says (Experiment, Claim, Contribution stated_by paper) are kept faithful to the paper: to change or delete one, give confirm: {id: {revise: {reason: why, anchor: "<section>::<start>:<end>" of the paper lines supporting the change}}} (a deletion needs only reason); the old version stays in the history. Interpretations (Observation, Contribution stated_by agent, SUPPORTS / OPPOSES stated_by agent) keep their author: anyone may add relations to them (such as another ABOUT), but only the writer who formed one may change its text, remove its relations or delete it; to disagree, write your own. status noop means nothing would change. To preview without writing, pass apply: false.
     parameters:
-      doc: The graph-doc as YAML text (see the description for its form).
+      doc: The graph-doc as YAML text, for a short doc; give doc or doc_file, not both.
+      doc_file: Path of a YAML file in your working directory holding the graph-doc (see the description for its form).
       source: Optional. A short label of where this knowledge comes from, such as the paper; recorded in the commit and on new names. Left out, the session is recorded.
-      apply: true commits; omit or false for a dry run.
+      apply: Default true, which commits when nothing blocks; false only previews (a dry run).
       message: One line saying what this commit does.
       base: The commit (meta.snapshot) at which you read the nodes you are changing; recorded only.
       dedup: Check new Entities and Concepts against stored ones (default true); leave it on.
@@ -157,18 +158,24 @@ tools:
   Extract:
     title: Extract
     description: |-
-      Record specific values read from the source (result numbers, settings, release addresses) as typed rows, so later work can cite each row. params declares the table, payload holds the rows.
+      Record specific values read from the source (result numbers, settings, release addresses) as typed rows, so later work can cite each row. params declares the table; the rows go in a CSV file.
+
+      Workflow: (1) call Extract with params only; the reply gives the CSV header and an example line, and nothing is written. (2) Write the rows to a CSV file in your working directory with your file tools, one line per record. (3) Call Extract with title, abs, inputs, params and payload_file (the file's path). (4) If rejected, each error gives file:line; edit those lines and call again with the same arguments. A handful of rows may instead go inline in payload.rows.
 
       Each row needs a source: the reference of the lines it was read from. Record keys are built from the key fields: their values are lowercased, other characters become -, and the parts are joined with - (method DLinear, dataset ETTh1, horizon 96 -> dlinear-etth1-96). Keys must be unique within the artifact, so put every field that tells rows apart into key (for result tables: method, dataset, horizon, metric, setting). Later artifacts cite a row as <artifact id>#<key>.
       Example params: {schema: {fields: {method: ref, dataset: string, horizon: integer, mse: number}, required: [mse], key: [method, dataset, horizon]}}
-      Example row: {method: <method id>, dataset: ETTh1, horizon: 96, mse: 0.375, source: <material id>::<section>::<start>:<end>}
+      Example CSV for these params:
+        method,dataset,horizon,mse,source
+        method_0014,ETTh1,96,0.375,<material id>::<section>::<start>:<end>
+      An empty cell means the value is not given; quote a value that contains a comma.
     parameters:
       <<: *artifact
       params: "{schema: {fields, required?, key}}: the table declaration, as a JSON object."
       params.schema.fields: "field name -> type: string | number | integer | boolean | ref | enum[a, b]. Names use letters, digits and _, start with a letter; key and source are reserved."
-      payload: "{rows, note?}: the extracted rows, as a JSON object."
+      payload_file: Path of the CSV file in your working directory holding the rows; its header is the declared fields plus source.
+      payload: "{note?} with payload_file, or {rows, note?} for a few rows inline, as a JSON object."
       payload.rows[]: One object per record with its field values and source.
-      payload.note: "Required when rows is empty: what was read and why nothing was recorded."
+      payload.note: "Required when there are no rows: what was read and why nothing was recorded."
 
   Summarize:
     title: Summarize
@@ -243,11 +250,14 @@ tools:
   MatrixConstruct:
     title: Matrix
     description: |-
-      Organize a comparison across papers as a matrix: methods x datasets, issues x methods, methods x design elements. Declare rows, columns and the cell type, then give exactly one cell per row and column. This is the place for comparison tables; Generate can cite the matrix afterwards.
+      Organize a comparison across papers as a matrix: methods x datasets, issues x methods, methods x design elements. Declare rows, columns and the cell type in params, then give exactly one cell per row and column in a CSV file. This is the place for comparison tables; Generate can cite the matrix afterwards.
+
+      Workflow: (1) call MatrixConstruct with params only; the reply gives the CSV header (row,col,value,basis,note) and an example line, and nothing is written. (2) Write the cells to a CSV file in your working directory with your file tools, one line per cell, using the declared row and column keys. (3) Call MatrixConstruct with title, abs, inputs, params and payload_file (the file's path). (4) If rejected, each error gives file:line; edit those lines and call again with the same arguments. A small matrix may instead go inline in payload.cells.
 
       - Check comparability with Check first, and cite those judgments or extracted rows (<artifact id>#<record key>) as cell basis.
       - Give basis for a cell whenever you can.
-      - For an empty cell (value null), say in its note whether the value is not reported, not applicable, or not checked.
+      - For an empty cell (value left empty), say in its note whether the value is not reported, not applicable, or not checked.
+      - Several basis references in one cell are separated by ;.
       Record keys are <row>~<col>; cite a cell as <artifact id>#<row>~<col>.
       Example params: {rows: {dlinear: <method id>, patchtst: <method id>}, columns: {etth1_96: {text: "ETTh1, horizon 96, MSE"}}, cell: {type: number}}
     parameters:
@@ -255,7 +265,8 @@ tools:
       params: "{rows, columns, cell: {type, question?}}: the matrix declaration, as a JSON object. cell.type is string | number | integer | boolean | ref | enum[a, b]."
       params.rows: "row key -> reference or {text}. Keys use letters, digits, _ . and -."
       params.columns: "column key -> reference or {text}. Keys use letters, digits, _ . and -."
-      payload: "{cells, note?}: the cells, as a JSON object."
+      payload_file: "Path of the CSV file in your working directory holding the cells, header row,col,value,basis,note."
+      payload: "{note?} with payload_file, or {cells, note?} for a small matrix inline, as a JSON object."
       payload.cells[]: "{row, col, value (null when empty), basis?, note?}"
 
   Log:

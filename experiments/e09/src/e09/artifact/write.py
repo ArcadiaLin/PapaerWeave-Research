@@ -110,9 +110,11 @@ def write_artifact(
     text: str | None = None,
     sync: Callable[[], int] | None = None,
     agent: str | None = None,
+    draft: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """校验并写入一次 Agent 算子调用的产物。``validators`` 是各算子的校验，按 ``op`` 取用；``at`` 是形成时间；
-    ``text`` 是交上来的请求原文（记入提交），不给时用请求的 YAML；``sync`` 在提交后补算向量；``agent``（所用的 Agent 与模型）记入提交的 ``meta.agent``。
+    ``text`` 是交上来的请求原文（记入提交），不给时用请求的 YAML；``sync`` 在提交后补算向量；``agent``（所用的 Agent 与模型）记入提交的 ``meta.agent``；
+    ``draft``（内容来自草稿文件时，文件的路径与哈希，见 :mod:`e09.draft`）记入提交的 ``meta.draft``。
 
     Raises:
         OperatorError: 调用没有通过校验。
@@ -158,7 +160,9 @@ def write_artifact(
             message=title,
             source=f"operator:{op}",
             input=text if text is not None else dump(dict(request)),
-            meta={"artifact": art_id, "session": request["session"]} | ({"agent": agent} if agent else {}),
+            meta={"artifact": art_id, "session": request["session"]}
+            | ({"agent": agent} if agent else {})
+            | ({"draft": dict(draft)} if draft else {}),
         )
     except ConflictError as exc:  # 校验之后有对象被删除或改动
         raise OperatorError([{"rule": "conflict", "at": "inputs", "msg": str(exc)}], status="conflict") from exc
@@ -435,8 +439,20 @@ def _result(
     out["warnings"] = warnings
     if output.stats:
         out["stats"] = output.stats
-    out["render"] = output.body
+    out["render"] = _shown(output.body, art_id)
     return out
+
+
+RENDER_LINES = 40  # 返回给写者的正文行数上限；完整的正文在产物文档中
+
+
+def _shown(body: str, art_id: str) -> str:
+    """返回给写者的正文：写者刚交上的内容不必整份读回，过长时只给开头几行与余下的行数。"""
+    lines = body.splitlines()
+    if len(lines) <= RENDER_LINES:
+        return body
+    rest = len(lines) - RENDER_LINES
+    return "\n".join([*lines[:RENDER_LINES], f"… {rest} more lines, all kept in the document of {art_id}"])
 
 
 def _body(text: str) -> str:

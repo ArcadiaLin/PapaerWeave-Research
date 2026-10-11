@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
-from typing import Protocol
+from typing import Any, Protocol
 
 from graph_doc import DiffError, DocError, Document, diff, is_temp, parse
 from graph_vc import Changeset, ChangesetError, CommitRecord, ConflictError, GraphState, VersionedGraph
@@ -97,8 +97,9 @@ def apply(
     *,
     message: str = "",
     base: str | None = None,
+    meta: Mapping[str, Any] | None = None,
 ) -> tuple[Prepared, CommitRecord | None]:
-    """准备并提交。有错误或无需写入时不提交，返回 ``None``。"""
+    """准备并提交。有错误或无需写入时不提交，返回 ``None``。``meta`` 另记入提交的 ``meta``（如草稿文件）。"""
     dry = prepare(text, ctx)
     if not dry.ok or not dry.changeset:
         return dry, None
@@ -115,7 +116,8 @@ def apply(
         base=base,
         input=text,
         meta={"ids": ids, "dedup": ctx.deduper is not None, "revisions": prepared.revisions}
-        | ({"agent": ctx.agent} if ctx.agent else {}),
+        | ({"agent": ctx.agent} if ctx.agent else {})
+        | dict(meta or {}),
     )
     return prepared, record
 
