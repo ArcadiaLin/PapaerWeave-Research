@@ -193,3 +193,9 @@ def rules(prepared: Prepared) -> set[str]:
 def doc(body: str) -> str:
     """补上文档头；正文按两个空格缩进写在 nodes 下。"""
     return "graph-doc: v0.1\nby: claude\nnodes:\n" + textwrap.indent(textwrap.dedent(body).strip("\n"), "  ") + "\n"
+
+
+def with_confirm(text: str, body: str) -> str:
+    """在文档头后插入 ``confirm`` 段；正文按两个空格缩进写在 confirm 下。"""
+    block = "confirm:\n" + textwrap.indent(textwrap.dedent(body).strip("\n"), "  ") + "\n"
+    return text.replace("by: claude\n", "by: claude\n" + block, 1)

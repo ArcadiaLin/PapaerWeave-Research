@@ -26,6 +26,11 @@ FIXES = {
     "identifier-taken": "if it is the same object, edit the existing node by id; otherwise correct the identifier",
     "key-taken": "the record already exists; edit it by id instead of creating it again",
     "material": "check the material path; changing a registered material is not supported yet",
+    "revision": (
+        "re-read the paper (ReadEvidence); if the record misstates it, add confirm.{ref}.revise with reason and "
+        "anchor (<section>::<start>:<end> of the supporting lines); otherwise leave the record unchanged"
+    ),
+    "coexist": "leave their record unchanged; state your own view in a new Observation (or OPPOSES between claims)",
 }
 CONFLICT_FIX = "the database changed after the dry run; read the affected nodes again and resubmit"
 

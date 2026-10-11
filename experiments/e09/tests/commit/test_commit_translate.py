@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 
-from conftest import DLINEAR, MemoryGraph, doc, rules
+from conftest import DLINEAR, MemoryGraph, doc, rules, with_confirm
 
 from e09.model.namekey import name_key
 from graph_vc import EdgeKey, FileRef, NodeState
@@ -118,7 +118,8 @@ def test_w3_edit_existing_nodes(ingested: MemoryGraph) -> None:
 
 def test_w4_agent_records_carry_formation(ingested: MemoryGraph) -> None:
     prepared = ingested.submit(
-        doc("""
+        with_confirm(
+            doc("""
         $issue:
           kind: Issue
           text: Can linear models replace Transformers for long-term forecasting?
@@ -146,7 +147,9 @@ def test_w4_agent_records_carry_formation(ingested: MemoryGraph) -> None:
           text: Prompted later work to report the look-back window.
           FROM: [paper_0001]
           ABOUT: [paper_0001]
-        """)
+        """),
+            'claim_0001: {revise: {reason: "also about the open issue", anchor: "Abstract::10:14"}}',
+        )
     )
     assert prepared.ok, prepared.errors
     ids, state = prepared.ids, ingested.state
@@ -160,9 +163,17 @@ def test_w4_agent_records_carry_formation(ingested: MemoryGraph) -> None:
     assert state.edges[EdgeKey(ids["$contrib-agent"], "FROM", "paper_0001")]["material_ref"].startswith("material_")
 
 
+REVISE_ALL = """
+exp_0001: {revise: {reason: "drop the merged method", anchor: "5.2 Comparison::198:240"}}
+claim_0001: {revise: {reason: "drop the merged method", anchor: "Abstract::10:14"}}
+contrib_0001: {revise: {reason: "drop the merged method", anchor: "1 Introduction::40:44"}}
+"""
+
+
 def test_w5_delete_takes_names_and_relationships(ingested: MemoryGraph) -> None:
     prepared = ingested.submit(
-        doc("""
+        with_confirm(
+            doc("""
         exp_0001:
           EVALUATES:
             - {to: method_0001, role: baseline}
@@ -171,7 +182,9 @@ def test_w5_delete_takes_names_and_relationships(ingested: MemoryGraph) -> None:
         contrib_0001:
           ABOUT: [task_0002]
         method_0002: null
-        """)
+        """),
+            REVISE_ALL,
+        )
     )
     assert prepared.ok, prepared.errors
     state = ingested.state

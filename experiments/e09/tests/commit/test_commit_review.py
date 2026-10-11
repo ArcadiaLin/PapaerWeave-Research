@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from conftest import DLINEAR, MemoryGraph, doc
+from conftest import DLINEAR, MemoryGraph, doc, with_confirm
 
 from e09.commit import Candidate, Lookup, MemoryReader, plan, result
 from e09.model.schema import kind_of
@@ -84,8 +84,16 @@ def test_confirm_must_name_document_nodes_and_existing_ids(graph: MemoryGraph) -
         assert [p.at for p in graph.dry_run(text).errors] == [at]
 
 
+REVISE_EXP_CLAIM = (
+    '  exp_0001: {revise: {reason: "baseline only", anchor: "5.2 Comparison::198:240"}}\n'
+    '  claim_0001: {revise: {reason: "about the task", anchor: "Abstract::10:14"}}\n'
+)
+
+
 def test_delete_reports_incoming_relationships(ingested: MemoryGraph) -> None:
-    prepared = ingested.dry_run(doc("claim_0001: null"))
+    prepared = ingested.dry_run(
+        with_confirm(doc("claim_0001: null"), 'claim_0001: {revise: {reason: "the paper does not claim this"}}')
+    )
     assert prepared.ok
     warnings = [p for p in prepared.problems if p.rule == "delete-impact"]
     assert warnings == []  # 没有其他节点指向 claim_0001
@@ -98,7 +106,7 @@ def test_delete_reports_incoming_relationships(ingested: MemoryGraph) -> None:
         claim_0001:
           ABOUT: [task_0002]
         method_0002: null
-        """)
+        """).replace("by: claude\n", "by: claude\nconfirm:\n" + REVISE_EXP_CLAIM, 1)
     )
     impact = [p for p in prepared.problems if p.rule == "delete-impact"]
     assert [p.at for p in impact] == ["nodes.method_0002"]

@@ -17,7 +17,7 @@ from graph_vc import Changeset
 from ..model.schema import ARTIFACT, CONCEPT, ENTITY, FAMILY, NAMESPACES, kind_of
 from .problems import Problem
 
-CONFIRM_KEYS = frozenset({"distinct_from"})
+CONFIRM_KEYS = frozenset({"distinct_from", "revise"})  # revise 的含义见 revision.py
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +114,10 @@ def _check_confirm(doc: Document) -> list[Problem]:
             problems.append(Problem("format", at, f"a confirmation has only {sorted(CONFIRM_KEYS)}"))
         elif not _is_ids(entry.get("distinct_from", [])):
             problems.append(Problem("format", f"{at}.distinct_from", "distinct_from is a list of existing ids"))
+        elif "revise" in entry and not _is_revise(entry["revise"]):
+            problems.append(
+                Problem("format", f"{at}.revise", "revise is {reason: <why>, anchor: <section>::<start>:<end>}")
+            )
     return problems
 
 
@@ -121,6 +125,14 @@ def _distinct_from(entry: Any) -> list[str]:
     if isinstance(entry, Mapping) and _is_ids(entry.get("distinct_from", [])):
         return list(entry.get("distinct_from", []))
     return []
+
+
+def _is_revise(value: Any) -> bool:
+    return (
+        isinstance(value, Mapping)
+        and set(value) <= {"anchor", "reason"}
+        and all(isinstance(v, str) and v.strip() for v in value.values())
+    )
 
 
 def _is_ids(value: Any) -> bool:

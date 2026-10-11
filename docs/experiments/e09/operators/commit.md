@@ -42,7 +42,7 @@
 | `graph-doc` | ✓ | ✓ | 格式版本 |
 | `meta` | ✓ | 忽略 | 生成这份视图的查询、覆盖情况（返回数、是否截断、快照）、路径绑定与诊断信息 |
 | `by` | — | 必填 | 写入者。Agent 形成的记录的 `formed_by` 取自这里 |
-| `confirm` | — | 可选 | 写入时的确认，不入图：如判定新节点与查重候选不是同一对象（`distinct_from`），见 §5 |
+| `confirm` | — | 可选 | 写入时的确认，不入图：判定新节点与查重候选不是同一对象（`distinct_from`）；修订有据层记录的理由与锚点（`revise`），见 §5 |
 | `nodes` | ✓ | ✓ | 节点，按引用作键；同一节点在一份文档中只出现一次 |
 
 ### 2.2 引用
@@ -165,6 +165,8 @@ graph-doc ──dry_run──▶ graph-plan ──(无阻塞项)──▶ apply 
 | 材料 | `material`、`locator`、`source-ref` | 材料路径不存在或已属于别的 Paper；更换已登记的材料；locator 越界；来源引用指向的节点没有材料 | Agent 改文档 |
 | 唯一性 | `identifier-taken`、`name-taken`、`key-taken` | 唯一命名空间的标识、名称（NameKey）或自然键已属于另一个节点 | Agent 判断：同一对象就改用已有 id 修改它，否则更正 |
 | 查重 | `dedup` | 新建的 Entity / Concept 有未判定的候选 | Agent 判断：换成已有 id，或写 `confirm.<引用>.distinct_from` |
+| 修订 | `revision` | 改动或删除有据层记录（Experiment，`stated_by: paper` 的 Claim、Contribution 与正反关系）而没有写 `confirm.<id>.revise`；改动缺锚点；锚点格式错或超出该记录所属论文的行范围（报为 `locator`）。改 `note` 不算 | Agent 回原文核对：确实读错就写 `revise: {reason, anchor}`，删除只需 `reason`；否则不改 |
+| 并存 | `coexist` | 改动或删除别人形成的解释层记录（Observation，`stated_by: agent` 的 Contribution 与正反关系） | Agent 不改别人的记录，另写自己的记录 |
 | 删除 | `delete-impact` | 删除节点时一并删除的、来自其他模型节点的入边 | 只提示，不阻塞 |
 | 并发 | — | 提交时改前值与库中当前值不一致（`ConflictError`，§3） | Agent 重新读取后再交 |
 
@@ -176,7 +178,13 @@ graph-doc ──dry_run──▶ graph-plan ──(无阻塞项)──▶ apply 
 - **文档内部。** 同一文档中的新节点之间不互相查重。
 - **不查重的写入。** 调用方可以关闭查重，用于种子这类经人工整理、可信的批量入库。是否查重记入 Commit 的 `meta.dedup`。
 
-现行契约中的“Content 不原地修改”不再适用：修改就是正常的写入。自然键冲突只在新建或改键时检查。
+**修订与并存（2026-10-11）。** 修改是正常的写入，但按改前状态分层把关（[Commit 契约](../../../designs/v2/commit_contract.md) §5）：
+
+- **有据层**记录说的是论文写了什么，分歧是暂时的错误。改动它是一次修订，必须写 `confirm.<id>.revise: {reason, anchor}`，`anchor` 是该记录所属论文中支持新内容的行范围；删除（撤回）只需 `reason`。锚点与理由记入提交的 `meta.revisions`，旧值留在版本历史中。出边的增删改算作起点的改动；删除另一端节点时连带删除的边不算。
+- **解释层**记录是写入者的判断，没有单一真值。只有形成者本人能改动或删除；其他写入者有不同意见就另写一条，两者带着各自的来源并存。
+- 实体与概念不在两层之内，照常修改。
+
+自然键冲突只在新建或改键时检查。实现在 `e09/commit/revision.py`。
 
 ## 6. 场景示例
 

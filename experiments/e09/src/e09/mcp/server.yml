@@ -122,7 +122,7 @@ tools:
       The doc parameter is the YAML text below and holds only graph-doc, by, confirm and nodes; message, source, base, apply and dedup are separate parameters of this tool, not keys of the doc.
         graph-doc: v0.1
         by: <your model name>
-        confirm: {$ref: {distinct_from: [ids]}}   # optional, see duplicates below
+        confirm: {$ref: {distinct_from: [ids]}, id: {revise: {reason: ..., anchor: ...}}}   # optional, see below
         nodes:
           $new-name: {kind: ..., <fields>, <RELATIONS>}   # $ names a new node; the reply maps it to an id
           exp_0004: {note: ..., ABOUT: [...]}             # an existing id edits that node
@@ -145,7 +145,7 @@ tools:
       - Contribution: text*, stated_by* (paper | agent), note; needs FROM and ABOUT. Observation: text*, note; needs ABOUT
       Relations: FROM {to: paper, locators: ["<section>::<start>:<end>"]} (an Observation may come FROM an artifact); ABOUT; EVALUATES {to, role: target | baseline}; USES {to, role: evaluation_data | training_data | analysis_input | tooling | retrieval_corpus}; ON_TASK; EVALUATED_ON; SUPPORTED_BY; SUPPORTS / OPPOSES {to, stated_by, description} between Claims; CITES; PART_OF; DERIVED_FROM; IMPLEMENTS; FOR_TASK; BROADER; HAS_PART; ADDRESSES; OVERLAPS_WITH (endpoints as in Traverse). Any edge may also carry description and source_refs.
 
-      Workflow: call without apply (a dry run) and read the graph-plan. status blocked lists errors, each with at, msg and often fix; change the doc and submit again. A dedup error lists stored candidates for a new Entity or Concept: if one is the same object, replace your $ref by its id everywhere (your fields then edit it); if none is, add confirm: {$ref: {distinct_from: [candidate ids]}}. When status is ready, submit the same doc with apply: true; the graph-result gives the commit id and the id of every $ref. status noop means nothing would change.
+      Workflow: call without apply (a dry run) and read the graph-plan. status blocked lists errors, each with at, msg and often fix; change the doc and submit again. A dedup error lists stored candidates for a new Entity or Concept: if one is the same object, replace your $ref by its id everywhere (your fields then edit it); if none is, add confirm: {$ref: {distinct_from: [candidate ids]}}. Records of what a paper says (Experiment, Claim, Contribution stated_by paper) are kept faithful to the paper: to change or delete one, give confirm: {id: {revise: {reason: why, anchor: "<section>::<start>:<end>" of the paper lines supporting the change}}} (a deletion needs only reason); the old version stays in the history. Interpretations (Observation, Contribution stated_by agent, SUPPORTS / OPPOSES stated_by agent) can be changed only by the writer who formed them; to disagree with someone else's, write your own. When status is ready, submit the same doc with apply: true; the graph-result gives the commit id and the id of every $ref. status noop means nothing would change.
     parameters:
       doc: The graph-doc as YAML text (see the description for its form).
       source: A short label of where this knowledge comes from, such as a paper or session; recorded in the commit and on new names.

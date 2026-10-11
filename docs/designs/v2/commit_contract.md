@@ -105,8 +105,10 @@ Experiment 上的属性：`exp_key`、`anchors`、`text`；Claim、Contribution 
 | `SUPPORTS` / `OPPOSES` | 起点、终点、类型与 `formed_by` |
 
 - 同一表单重跑：全部为不变，不写入。写入中途失败时事务回滚，可直接重试。
-- 实验、主张或贡献内容有变化：冲突，拒绝写入。Content 不原地修改；当前不做修订，需要时清库重建。
-- 同一论文补录另一个研究问题：论文按标识命中，新增一个 Experiment；已有实验组补充锚点属于内容修订，不能绕过冲突检查。表单中没有的实验不删除（可能来自其他批次）；当前不做撤回。
+- 实验、主张或贡献内容有变化：按层处理（2026-10-11 放宽，实现见 graph-doc 写入路径 [`commit.md`](../../experiments/e09/operators/commit.md) §5）。
+  - **有据层**（Experiment，`stated_by: paper` 的 Claim、Contribution 与正反关系）：附理由与锚点（该记录所属论文中支持新内容的行范围）时允许修订，二者记入 graph-vc 提交的 `meta.revisions`，旧值留在版本历史中；删除即撤回，只需理由。未附的仍然拒绝。
+  - **解释层**（Observation，`stated_by: agent` 的 Contribution 与正反关系）：只有形成者本人可以改动或删除；其他写入者另写自己的记录，两者并存，不裁决。
+- 同一论文补录另一个研究问题：论文按标识命中，新增一个 Experiment；已有实验组补充锚点属于内容修订，按上一条处理。表单中没有的实验不删除（可能来自其他批次）。
 - 写后复核不为空：说明 `Commit` 自身有缺陷，报错。
 
 ## 6. 批次记录
@@ -134,7 +136,7 @@ Agent 算子（[算子契约](./operators.md) §4）每次调用写一个 Artifa
 
 ## 8. 尚未覆盖
 
-- 修订、撤回、对象合并与拆分：当前不做，需要时清库重建。
+- 对象合并与拆分：不实现；重复与误合并只测量，作为局限报告。修订与撤回见 §5。
 - 实验条件与数据切分：模型不表达切分与资源版本，条件按锚点读原文。
 - Paper 以外的关系写入（方法间关系、`IMPLEMENTS`、`ADDRESSES` 等）：单篇抽取不写（[抽取原则](./extraction_principles.md) §1）。
 - Issue、Proposition 的建立与整理：留给后续的 Concept 精炼与整理工具或算子；当前只能经 `refs` 引用已有对象。

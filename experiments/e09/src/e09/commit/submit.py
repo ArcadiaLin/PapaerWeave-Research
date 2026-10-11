@@ -1,6 +1,6 @@
 """一次写入：解析 → 翻译 → 求差 → 写入后状态检查 →（apply 时）分配 id 并提交。
 
-:func:`prepare` 只读不写，对应 dry_run；:func:`apply` 先做一遍 dry_run，没有错误时为临时引用分配 id，
+:func:`prepare` 只读不写，对应 dry_run，其中按层检查修订与并存（:mod:`.revision`）；:func:`apply` 先做一遍 dry_run，没有错误时为临时引用分配 id，
 用真实 id 重新准备一遍，再经 graph-vc 在单事务中提交。返回给 Agent 的 graph-plan / graph-result 格式另行定义。
 """
 
@@ -18,6 +18,7 @@ from ..model.schema import DERIVED_FIELDS, NODE_LABELS, PREFIX, REL_TYPES
 from .checks import check_state, touched
 from .problems import Problem
 from .review import delete_impact, review
+from .revision import check_revisions
 from .translate import Context, translate
 
 
@@ -33,6 +34,7 @@ class Prepared:
     changeset: Changeset | None
     problems: tuple[Problem, ...] = ()
     ids: dict[str, str] = field(default_factory=dict)  # 临时引用 → id；dry_run 中为空
+    revisions: dict[str, dict[str, str]] = field(default_factory=dict)  # 有据层修订：节点 id → {anchor?, reason}
 
     @property
     def errors(self) -> list[Problem]:
@@ -75,7 +77,11 @@ def prepare(text: str, ctx: Context, ids: Mapping[str, str] | None = None) -> Pr
     refs = translation.refs
     problems += check_state(after, touched(changeset), lambda node_id: refs.get(node_id, node_id))
     problems += delete_impact(changeset, {node_id: node.labels for node_id, node in local.nodes.items()})
-    return Prepared(doc, changeset, tuple(problems), ids)
+    revision_problems, revisions = check_revisions(
+        doc, changeset, local, ctx.reader, ctx.material_root, lambda node_id: refs.get(node_id, node_id)
+    )
+    problems += revision_problems
+    return Prepared(doc, changeset, tuple(problems), ids, revisions)
 
 
 def apply(
@@ -102,7 +108,7 @@ def apply(
         source=ctx.source,
         base=base,
         input=text,
-        meta={"ids": ids, "dedup": ctx.deduper is not None},
+        meta={"ids": ids, "dedup": ctx.deduper is not None, "revisions": prepared.revisions},
     )
     return prepared, record
 
