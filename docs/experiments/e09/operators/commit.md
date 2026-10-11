@@ -130,6 +130,8 @@ graph-doc ──dry_run──▶ graph-plan ──(无阻塞项)──▶ apply 
 | dry_run | graph-doc | 解析文档；按模型翻译成目标状态并检查格式、只读字段与引用；查重；计算与库中现状的差异；在内存中执行差异，复核写后状态（端点规则、必需字段与必需的边） | graph-plan |
 | apply | 同一份 graph-doc | 先做一次 dry_run；没有阻塞项时分配 id，用真实 id 再做一次，然后在单事务中写入并记 Commit | graph-result |
 
+调用参数除 graph-doc（`doc`）外，有 `source`、`message`、`base`、`apply`、`dedup`，它们都不是文档的键。`source` 是来源标签，记入提交的 `source` 与新 NameKey 的 `registered_from`（§2.5）。它可以省略：省略时记为调用所在的会话（`session:<会话 id>`），没有会话的调用（如命令行）仍须给出。
+
 写后复核看的是改动节点及其邻居的完整状态，所以删除节点后，邻居缺了必需的边也会被发现。提交后补算向量；补算失败不回滚提交，只在 graph-result 的 `warnings` 中提示。提交时若发现库在 dry_run 之后被改动，返回 `status: conflict` 与不一致项（§3）。
 
 **graph-plan**
