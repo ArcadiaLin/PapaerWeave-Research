@@ -61,8 +61,11 @@ class Paths:
         object.__setattr__(self, "sock", self.root / "sock")
 
 
-def prepare(paths: Paths, arm: Arm, model: str) -> None:
-    """建立写者的工作目录与 pi 的 agent 目录（只有模型配置与设置）。已存在时保留会话记录，只重写配置。"""
+def prepare(paths: Paths, arm: Arm, model: str, thinking: str, context_window: int) -> None:
+    """建立写者的工作目录与 pi 的 agent 目录（只有模型配置与设置；思考级别与上下文窗口取实验配置）。
+
+    已存在时保留会话记录，只重写配置。
+    """
     for d in (paths.work / ".pi", paths.home / ".pi/agent", paths.sock):
         d.mkdir(parents=True, exist_ok=True)
     provider, model_id = model.split("/", 1)
@@ -71,13 +74,14 @@ def prepare(paths: Paths, arm: Arm, model: str) -> None:
     entry = models["providers"][provider]
     parts = urlsplit(entry["baseUrl"])
     entry["baseUrl"] = f"http://127.0.0.1:{LLM_PORT}{parts.path}"
+    entry["models"] = [m | {"contextWindow": context_window} for m in entry["models"] if m["id"] == model_id]
+    if not entry["models"]:
+        raise ValueError(f"{model} is not in {host_agent / 'models.json'}")
     models["providers"] = {provider: entry}
     _write_json(paths.home / ".pi/agent/models.json", models)
-    settings = json.loads((host_agent / "settings.json").read_text(encoding="utf-8"))
-    levels = {k: v for k, v in settings.get("modelThinkingLevels", {}).items() if k == model}
     _write_json(
         paths.home / ".pi/agent/settings.json",
-        {"defaultProvider": provider, "defaultModel": model_id, "modelThinkingLevels": levels},
+        {"defaultProvider": provider, "defaultModel": model_id, "modelThinkingLevels": {model: thinking}},
     )
     _write_json(paths.work / ".pi/settings.json", {"sessionDir": ".pi/sessions"})
     if arm.name == "A3":
@@ -96,9 +100,12 @@ def run_session(paths: Paths, arm: Arm, writer: Writer, prompt: str, *, timeout_
     runs = paths.root / "runs"
     runs.mkdir(exist_ok=True)
     before = set((paths.work / ".pi/sessions").rglob("*.jsonl")) if (paths.work / ".pi/sessions").exists() else set()
-    bridges = [_spawn(["unix-to-tcp", str(paths.sock / "llm.sock"), urlsplit(llm).netloc])]
+    # 转发进程与它启动的 MCP 服务的 stderr 写到写者目录（MCP 服务另有自己的日志 paperweave.log）
+    stderr = open(paths.root / "bridge.err", "ab")  # noqa: SIM115
+    bridges = [_spawn(["unix-to-tcp", str(paths.sock / "llm.sock"), urlsplit(llm).netloc], stderr)]
     if arm.name == "A3":
-        bridges.append(_spawn(["unix-exec", str(paths.sock / "mcp.sock"), "--", *_mcp_command(paths, arm, writer)]))
+        mcp = ["unix-exec", str(paths.sock / "mcp.sock"), "--", *_mcp_command(paths, arm, writer)]
+        bridges.append(_spawn(mcp, stderr))
     try:
         _wait_for(paths.sock / "llm.sock", *([paths.sock / "mcp.sock"] if arm.name == "A3" else []))
         started = time.monotonic()
@@ -110,6 +117,7 @@ def run_session(paths: Paths, arm: Arm, writer: Writer, prompt: str, *, timeout_
             try:
                 code = subprocess.run(
                     [*_bwrap(paths, arm, writer, prompt), "bash", "-c", inner],
+                    stdin=subprocess.DEVNULL,  # pi -p 在 stdin 不是终端时会读它
                     stdout=out,
                     stderr=err,
                     timeout=timeout_s,
@@ -121,6 +129,7 @@ def run_session(paths: Paths, arm: Arm, writer: Writer, prompt: str, *, timeout_
         for p in bridges:
             p.terminate()
             p.wait(timeout=10)
+        stderr.close()
     after = set((paths.work / ".pi/sessions").rglob("*.jsonl"))
     session = sorted(str(p.relative_to(paths.root)) for p in after - before)
     return {"exit": code, "seconds": seconds, "events": f"runs/{stamp}.jsonl", "session": session}
@@ -175,8 +184,8 @@ def _mcp_command(paths: Paths, arm: Arm, writer: Writer) -> list[str]:
     return ["env", *(f"{k}={v}" for k, v in env.items()), str(REPO / ".venv/bin/python"), "-m", "e09.mcp"]
 
 
-def _spawn(args: list[str]) -> subprocess.Popen:
-    return subprocess.Popen(["python3", str(BRIDGE), *args], cwd=REPO / "experiments/e09")
+def _spawn(args: list[str], stderr) -> subprocess.Popen:
+    return subprocess.Popen(["python3", str(BRIDGE), *args], cwd=REPO / "experiments/e09", stderr=stderr)
 
 
 def _wait_for(*socks: Path, timeout_s: float = 10) -> None:

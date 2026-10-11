@@ -86,6 +86,15 @@ def test_a_failing_channel_is_reported_not_treated_as_empty(store: Store) -> Non
     assert ids(out)[0] == "method_0003"
 
 
+def test_an_identifier_alone_leaves_the_semantic_channel_off(store: Store) -> None:
+    def embed(texts: list[str]) -> list[list[float]]:
+        raise AssertionError("nothing to embed")
+
+    found = find(dataclasses.replace(store, embed=embed), "Entity", {"identifier": "arxiv:2205.13504"}, kinds=["Paper"])
+    assert found.page == ["paper_0001"]
+    assert found.coverage["channels"]["semantic"] == "disabled"
+
+
 def test_budget_and_continuation(store: Store) -> None:
     first = search(store, "Entity", kinds=["Dataset"], budget=2)
     assert ids(first) == ["dataset_0001", "dataset_0002"]

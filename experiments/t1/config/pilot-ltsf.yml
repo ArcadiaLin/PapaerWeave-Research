@@ -117,6 +117,12 @@ schedule:
 runner:
   agent: pi                  # 默认配置：自带系统提示与内置工具，不换提示、不设工具白名单
   model: sglang/qwen3.8-27b
+  # 思考级别（pi --thinking）：off 时模型不生成思考内容。2026-10-11 冒烟测试中 high 一次会话约 3.8 万输出 token、
+  # 20 分钟以上（单路约 44 token/秒），按用户决定改为 off；各组相同。
+  thinking: "off"
+  # pi 按模型的 contextWindow 管理上下文，接近时自动压缩历史（摘要替换原文）。宿主机 models.json 声明 128000，
+  # smoke-3 的 A3 会话在约 11.2 万、11.6 万 token 时各压缩一次；服务端上下文为 262144，沙箱内按此覆盖。
+  context_window: 262144
   mode: print                # pi -p：非交互，一次会话跑完一个任务
   session_timeout_min: 60    # 超时记为失败并保留轨迹，不重试
   # 每组每个写者一个独立工作目录（~/t1-runs/<run>/<arm>/<writer>/），只含 MCP 登记、pi 会话设置与会话记录；

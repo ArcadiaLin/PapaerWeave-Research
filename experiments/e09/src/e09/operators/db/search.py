@@ -271,7 +271,9 @@ def _ranked(
     plan = {
         "lexical_name": (lambda: _lexical_name(store, mention, base, params)) if mention and named else None,
         "lexical_text": (lambda: _lexical_text(store, type_, text, base, params)) if text else None,
-        "semantic": (lambda: _semantic(store, type_, text or mention, base, params)) if store.embed else None,
+        "semantic": (lambda: _semantic(store, type_, text or mention, base, params))
+        if store.embed and (text or mention)
+        else None,  # 只给标识符时没有可嵌入的文本
     }
     channels: dict[str, list[dict[str, Any]]] = {}
     for name, run in plan.items():
