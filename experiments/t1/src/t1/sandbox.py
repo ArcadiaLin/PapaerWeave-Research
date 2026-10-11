@@ -1,0 +1,194 @@
+"""写者会话的隔离运行：一次 pi 会话在 bubblewrap 沙箱中执行（默认配置的 pi，非交互）。
+
+沙箱里能看到的只有：系统目录与 node（只读）、本写者的工作目录 ``/work``（可写）、本写者的 ``HOME``（pi 的
+agent 目录：只有模型配置与设置，不带宿主机的扩展、skills 与认证）、论文材料 ``/work/papers``（只读）；A0 另有
+共享笔记库 ``/work/store``（可写，各写者共用一份）。仓库、``docs/``、金标准、其他组与其他写者的目录都不可见；
+环境变量清空后只设必要的几个（宿主机的代理设置不带进去）。
+
+网络断开，只剩回环地址。与外面的联系只有挂载进去的 unix socket（:mod:`t1.bridge`）：
+
+- ``llm.sock``：沙箱内 ``127.0.0.1:<端口>`` → 沙箱外的大模型服务；
+- ``mcp.sock``（A3）：沙箱内登记的 MCP 服务只是一条转发命令，每个连接在沙箱外启动一个 ``python -m e09.mcp``，
+  登录身份与连接参数在沙箱外写定。写者拿不到图库的端口与口令，进入共享库的唯一途径是 MCP 接口。
+
+``pi`` 从工作目录及其上层加载 ``AGENTS.md``，沙箱中 ``/work`` 的上层为空，仓库的说明文件不会被加载。
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from urllib.parse import urlsplit
+
+from e09.config import REPO
+
+BRIDGE = Path(__file__).with_name("bridge.py")
+LLM_PORT = 30000  # 沙箱内大模型服务的回环端口
+
+
+@dataclass(frozen=True)
+class Writer:
+    id: str
+    user: str  # 登录身份：A3 的 E09_USER（formed_by、提交 author），A0 的 git author
+    agent: str  # 所用的 Agent 与模型：A3 的 E09_AGENT（提交 meta.agent）
+
+
+@dataclass(frozen=True)
+class Arm:
+    name: str  # A0 或 A3
+    papers: Path  # 论文材料目录（只读挂载到 /work/papers）
+    store: Path | None = None  # A0：共享笔记库（git 仓库）
+    neo4j: str | None = None  # A3：图库
+    data: Path | None = None  # A3：材料根目录（E09_DATA：论文与产物文档）
+    embeddings: bool = True
+
+
+@dataclass(frozen=True)
+class Paths:
+    root: Path  # ~/t1-runs/<run>/<arm>/<writer>/
+    work: Path = field(init=False)
+    home: Path = field(init=False)
+    sock: Path = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "work", self.root / "work")
+        object.__setattr__(self, "home", self.root / "home")
+        object.__setattr__(self, "sock", self.root / "sock")
+
+
+def prepare(paths: Paths, arm: Arm, model: str) -> None:
+    """建立写者的工作目录与 pi 的 agent 目录（只有模型配置与设置）。已存在时保留会话记录，只重写配置。"""
+    for d in (paths.work / ".pi", paths.home / ".pi/agent", paths.sock):
+        d.mkdir(parents=True, exist_ok=True)
+    provider, model_id = model.split("/", 1)
+    host_agent = Path(os.environ.get("PI_CODING_AGENT_DIR", Path.home() / ".pi/agent")).expanduser()
+    models = json.loads((host_agent / "models.json").read_text(encoding="utf-8"))
+    entry = models["providers"][provider]
+    parts = urlsplit(entry["baseUrl"])
+    entry["baseUrl"] = f"http://127.0.0.1:{LLM_PORT}{parts.path}"
+    models["providers"] = {provider: entry}
+    _write_json(paths.home / ".pi/agent/models.json", models)
+    settings = json.loads((host_agent / "settings.json").read_text(encoding="utf-8"))
+    levels = {k: v for k, v in settings.get("modelThinkingLevels", {}).items() if k == model}
+    _write_json(
+        paths.home / ".pi/agent/settings.json",
+        {"defaultProvider": provider, "defaultModel": model_id, "modelThinkingLevels": levels},
+    )
+    _write_json(paths.work / ".pi/settings.json", {"sessionDir": ".pi/sessions"})
+    if arm.name == "A3":
+        server = {
+            "command": "python3",
+            "args": ["/opt/t1/bridge.py", "stdio-to-unix", "/run/t1/mcp.sock"],
+            "exposure": "direct",
+            "timeout": 300,
+        }
+        _write_json(paths.work / ".pi/mcp.json", {"mcpServers": {"PaperWeave": server}})
+
+
+def run_session(paths: Paths, arm: Arm, writer: Writer, prompt: str, *, timeout_s: int, llm: str) -> dict:
+    """在沙箱中跑一次 pi 会话。返回退出码、用时与这次会话的记录文件；pi 的 JSON 事件流写到 ``<root>/runs/``。"""
+    stamp = time.strftime("%Y%m%dT%H%M%S")
+    runs = paths.root / "runs"
+    runs.mkdir(exist_ok=True)
+    before = set((paths.work / ".pi/sessions").rglob("*.jsonl")) if (paths.work / ".pi/sessions").exists() else set()
+    bridges = [_spawn(["unix-to-tcp", str(paths.sock / "llm.sock"), urlsplit(llm).netloc])]
+    if arm.name == "A3":
+        bridges.append(_spawn(["unix-exec", str(paths.sock / "mcp.sock"), "--", *_mcp_command(paths, arm, writer)]))
+    try:
+        _wait_for(paths.sock / "llm.sock", *([paths.sock / "mcp.sock"] if arm.name == "A3" else []))
+        started = time.monotonic()
+        inner = (
+            f"python3 /opt/t1/bridge.py tcp-to-unix 127.0.0.1:{LLM_PORT} /run/t1/llm.sock & "
+            'sleep 0.3; exec pi -p --offline --approve --mode json "$T1_PROMPT"'
+        )
+        with open(runs / f"{stamp}.jsonl", "wb") as out, open(runs / f"{stamp}.err", "wb") as err:
+            try:
+                code = subprocess.run(
+                    [*_bwrap(paths, arm, writer, prompt), "bash", "-c", inner],
+                    stdout=out,
+                    stderr=err,
+                    timeout=timeout_s,
+                ).returncode
+            except subprocess.TimeoutExpired:
+                code = "timeout"
+        seconds = round(time.monotonic() - started, 1)
+    finally:
+        for p in bridges:
+            p.terminate()
+            p.wait(timeout=10)
+    after = set((paths.work / ".pi/sessions").rglob("*.jsonl"))
+    session = sorted(str(p.relative_to(paths.root)) for p in after - before)
+    return {"exit": code, "seconds": seconds, "events": f"runs/{stamp}.jsonl", "session": session}
+
+
+def _bwrap(paths: Paths, arm: Arm, writer: Writer, prompt: str) -> list[str]:
+    node = Path(shutil.which("node") or "").resolve().parent.parent
+    args = [
+        "bwrap", "--unshare-all", "--die-with-parent", "--clearenv",
+        "--ro-bind", "/usr", "/usr",
+        "--symlink", "usr/bin", "/bin", "--symlink", "usr/lib", "/lib",
+        "--symlink", "usr/lib64", "/lib64", "--symlink", "usr/sbin", "/sbin",
+        "--ro-bind", "/etc", "/etc", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+        "--ro-bind", str(node), str(node),
+        "--ro-bind", str(BRIDGE), "/opt/t1/bridge.py",
+        "--bind", str(paths.sock), "/run/t1",
+        "--bind", str(paths.work), "/work",
+        "--bind", str(paths.home), "/home/agent",
+        "--ro-bind", str(arm.papers), "/work/papers",
+    ]  # fmt: skip
+    if arm.name == "A0":
+        assert arm.store is not None
+        args += ["--bind", str(arm.store), "/work/store"]
+    env = {
+        "HOME": "/home/agent",
+        "PATH": f"{node}/bin:/usr/bin",
+        "LANG": "C.UTF-8",
+        "TERM": "dumb",
+        "T1_PROMPT": prompt,
+        "GIT_AUTHOR_NAME": writer.user,
+        "GIT_AUTHOR_EMAIL": writer.user,
+        "GIT_COMMITTER_NAME": writer.user,
+        "GIT_COMMITTER_EMAIL": writer.user,
+    }
+    for key, value in env.items():
+        args += ["--setenv", key, value]
+    return [*args, "--chdir", "/work"]
+
+
+def _mcp_command(paths: Paths, arm: Arm, writer: Writer) -> list[str]:
+    assert arm.neo4j is not None and arm.data is not None
+    env = {
+        "E09_NEO4J_URI": arm.neo4j,
+        "E09_DATA": str(arm.data),
+        "E09_USER": writer.user,
+        "E09_AGENT": writer.agent,
+        "E09_ENABLE_COMMIT": "1",
+        "E09_MCP_LOG": str(paths.root / "paperweave.log"),
+    }
+    if not arm.embeddings:
+        env["E09_NO_EMBED"] = "1"
+    return ["env", *(f"{k}={v}" for k, v in env.items()), str(REPO / ".venv/bin/python"), "-m", "e09.mcp"]
+
+
+def _spawn(args: list[str]) -> subprocess.Popen:
+    return subprocess.Popen(["python3", str(BRIDGE), *args], cwd=REPO / "experiments/e09")
+
+
+def _wait_for(*socks: Path, timeout_s: float = 10) -> None:
+    deadline = time.monotonic() + timeout_s
+    while not all(s.exists() for s in socks):
+        if time.monotonic() > deadline:
+            raise RuntimeError(f"bridge sockets not ready: {[str(s) for s in socks if not s.exists()]}")
+        time.sleep(0.05)
+
+
+def _write_json(path: Path, data: object) -> None:
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+__all__ = ["Arm", "Paths", "Writer", "prepare", "run_session"]
