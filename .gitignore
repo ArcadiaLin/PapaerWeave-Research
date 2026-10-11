@@ -3,18 +3,9 @@
 /references/repos/
 /references/datasets/
 
-# External data, model weights, and caches. Keep manifests and small fixtures tracked.
-/data/raw/*
-# 例外：e08 的种子概念是手写的实验输入，需要随版本管理。
-# 父目录被整体忽略时无法重新包含子路径，所以逐级放开再忽略。
-!/data/raw/e08-paper-knowledge/
-/data/raw/e08-paper-knowledge/*
-!/data/raw/e08-paper-knowledge/seeds/
-!/data/raw/e09-paper-knowledge/
-/data/raw/e09-paper-knowledge/*
-!/data/raw/e09-paper-knowledge/docs/
-/data/processed/
-/data/cache/
+# External data, model weights, and caches.
+# data/ 整体暂不进入版本管理（2026-10-11），包括 e08 种子、e09 入库文档与 T1 先导语料；均只保留本地副本。
+/data/
 /models/
 /checkpoints/
 /cache/

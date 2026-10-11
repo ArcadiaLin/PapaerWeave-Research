@@ -27,7 +27,7 @@
 
 \begin{document}
 
-\title{Title Goes Here}
+\title{Collaborating without Coordinating: Data Management for Knowledge Accumulated by LLM Agents}
 
 % anonymous 选项会自动把下面这些替换成 "Anonymous Author(s)"，所以真名可以先写着，
 % 不必等到定稿再填。但正文、致谢、图表、URL、自引措辞里的身份线索必须自己管。
@@ -41,7 +41,24 @@
 \renewcommand{\shortauthors}{Anonymous et al.}
 
 \begin{abstract}
-Abstract goes here.
+LLM agents now both use and produce knowledge: as they read, compare, and
+verify, they can build on what earlier agents recorded and leave records for
+later ones. When many agents share one long-lived store, no single agent's word
+is authoritative: agents may work without coordinating or legitimately
+disagree, and the sources they draw on change. We argue that such a store
+cannot decide who is right, but must keep every write accountable: converging
+what rules can decide, preserving disagreement with its grounds, and exposing
+what may be stale. We study this problem in scientific literature, where it is
+acute and checkable, and present PaperWeave, a data management system whose
+data model separates source-grounded records, revised with full history, from
+interpretations that coexist with their provenance. It adapts classical entity
+resolution, provenance, view invalidation, and data versioning to agent writers,
+with contracts for self-describing contributions and retrieval interfaces for
+readers who were not present when those contributions were written. We frame
+the evaluation around an intent-grounded workload to test whether these
+mechanisms limit degradation as writers and updates accumulate, and whether
+construction costs amortize across later readers.
+% TODO: Replace the evaluation scope above with measured findings once experiments are complete.
 \end{abstract}
 
 % CCS 概念与关键词：投稿时非必需，camera-ready 必填。
@@ -55,216 +72,6 @@ Abstract goes here.
 \section{Introduction}
 \label{sec:intro}
 
-% Last content synchronization: 2026-09-13; working draft: narrative-draft.md.
-% Narrative: agent activities -> properties of scholarly materials and knowledge
-% needs -> research question -> CS empirical setting -> scenario and challenges
-% -> P4A artifact organization and construction -> evaluation and significance.
-% Papers and associated materials are the research objects. Specific organizing
-% units and access paths belong in the methods section.
-% A1--A4 denote activity types (Activity), which can be interleaved.
-% Working draft: the query, candidate papers, and decision changes still require
-% verification. Methods and evaluation remain under discussion; the research
-% agenda below is not a list of completed contributions.
-Agents assisting researchers with discovering related work, comparing research
-approaches, and conducting experiments need to draw on knowledge from papers and
-their associated materials. A study's problem, methods, experimental settings,
-and results are distributed across its main text, figures, tables, and
-appendices; supporting materials may provide further implementation and
-evaluation details. Studies are also connected through citations, shared
-resources, and the reuse of methods. To make justified decisions, agents need
-to understand both the individual pieces of information and how they relate
-within a particular study.
-
-These materials are primarily organized to present and substantiate research.
-The relationships among claims, supporting evidence, and applicability
-conditions are not always explicitly represented as independently accessible
-knowledge records. For example, determining whether a method applies to a
-current problem may require relating its description in the main text to
-results in tables, settings in an appendix, and an implementation in supporting
-materials. Even after locating relevant content, an agent must establish
-whether these pieces concern the same experiment, which conditions a conclusion
-depends on, and whether the evidence supports the current choice. Interpreting
-and checking these relationships across content and materials is part of the
-work needed to organize existing research into knowledge that supports
-subsequent research actions.
-
-We therefore ask: \textbf{How can papers and their associated materials be
-transformed into knowledge artifacts that agents can access, verify, and reuse
-as needed?} Such artifacts need to organize problem definitions, methods,
-experimental conditions, research conclusions, and associated resources into
-records with explicit semantics, while preserving their relationships, source
-evidence, and applicability conditions. Agents can use these records to
-discover and screen candidates, trace and cite supporting evidence, and obtain
-the knowledge needed to reproduce and use existing methods or resources. They
-can return to the original sources when further inspection is needed.
-We refer to these research
-artifacts prepared for agent use as \emph{agent-ready artifacts}.
-
-Computer science provides a suitable empirical setting for studying this
-transformation. Preprints and open publication channels make recent research
-accessible. Explicit task definitions, method descriptions, and experimental
-settings provide cues for interpreting content, while public supporting
-materials provide further evidence for inspecting implementations and
-evaluations. In studies with these properties, code repositories, datasets,
-and benchmarks supply verifiable information about implementation details,
-data construction, and evaluation protocols that can be related to the paper's
-account. We therefore focus our initial empirical study on computer science
-papers with public supporting materials, using their accessibility and the
-traceable relationships among research objects to study the construction and
-verification of knowledge for agents. Even when these materials are public,
-establishing whether they concern the same experiment, which conditions a
-conclusion depends on, and whether a documented use supports a new need still
-requires interpretation and assessment across materials.
-
-\begin{quote}
-\small
-\textbf{Scenario: \texttt{<query>}.} An agent receives this request from a
-researcher and needs to investigate related work and draw on existing research
-to test an idea. We characterize its use of papers and associated materials
-through four activity types, labeled A1--A4, where A stands for \emph{Activity}:
-
-\textbf{A1---Discover.} Retrieve papers based on the researcher's needs to
-form a candidate set of related work.\\[2pt]
-\textbf{A2---Screen.} Refine the candidates using their problem definitions,
-methods, and experimental conditions to decide whether to include them and
-how to prioritize them.\\[2pt]
-\textbf{A3---Expand and substantiate.} Follow citations, method reuse, and
-resource relationships to find related work and materials, enrich the research
-context, and cite studies and evidence supporting the current assessment or
-research plan.\\[2pt]
-\textbf{A4---Reproduce and use.} Use existing methods or resources in experiments,
-including running implementations, reproducing results, or applying them to new
-research tasks, while checking the required versions, configurations, and
-evaluation conditions.
-\end{quote}
-
-% Scenario sketch, pending verification against actual materials:
-% Initial retrieval returns <candidate paper A>. Inspecting <key evidence in the
-% paper and associated materials> may reveal that its method or evaluation
-% conditions differ from <the current need>, prompting a revised assessment.
-% Further inspection may introduce <candidate paper B> through resource or
-% citation relationships. Actual materials must determine the candidates,
-% evidence, and decision changes. The final scenario should show which knowledge
-% affected a choice and how it was obtained from the papers and materials.
-
-As the scenario illustrates, an agent can assist a researcher through one or
-more of A1--A4 in response to \texttt{<query>}. These activities can be
-interleaved and affect one another: task examples or scoring code found through
-A3 may change the screening outcome in A2, version differences or experimental
-results observed in A4 may prompt reconsideration of an earlier judgment, and
-new work found through citation and resource relationships may trigger further
-retrieval (A1). Agents therefore need to
-connect paper content with evidence from associated materials and interpret
-their implications for subsequent research activities.
-
-When other research needs involve the same paper or resource, its problem
-definition, documented uses, and experimental conditions can be reused, while
-applicability to a new need must be reassessed using these facts. Obtaining this
-knowledge anew from the original materials incurs repeated retrieval, reading,
-and reasoning costs. This creates a further need for knowledge organization:
-preserving the results of interpretation and verification as accessible records,
-together with their evidence and conditions, so that subsequent research
-activities can reuse existing knowledge and continue inspection when needed.
-
-Constructing such research artifacts presents three challenges. First,
-\emph{establishing semantic relationships supported by evidence}. A paper's
-methods, experimental conditions, and conclusions may appear in different
-places, while implementation and evaluation materials supply further levels of
-detail. To support screening in A2 and substantiation in A3, the system needs
-to establish which experiments and results support a claim, what roles the
-associated resources played, and which settings were used, avoiding
-unsupported relationships assembled from individually correct pieces of
-information. An author's general description, a documented use in a specific
-experiment, and applicability to a current need must be represented separately,
-with uncertainty retained where the evidence is insufficient.
-
-Second, \emph{organizing knowledge units and relationships to support different
-research activities}. A1--A4 require information at different levels of
-granularity: discovery may begin with a problem or method, screening requires
-conditions and evidence, expansion and substantiation require research
-relationships and supporting sources, and reproduction and use call for
-specific versions, configurations, and evaluation protocols.
-A knowledge representation for agents needs to make clear
-which content can be accessed independently, which relationships must be
-preserved together, and how a record can be traced to the paper and associated
-materials. Integration across papers must also distinguish different versions
-and uses of resources with the same name, so that existing knowledge can
-support subsequent retrieval and comparison.
-
-Third, \emph{preserving the conditions for verifiable reuse}. Whether a record
-provides sufficient support for a current action depends on its source,
-version, scope of inspection, and the research need. A paper's claim that code
-has been released, observed repository contents, successful program execution,
-and experimental reproduction are distinct findings. Their evidential status
-needs to be represented so that an agent can decide when to use an existing
-record and when further checks are needed, without treating a conclusion
-established under specific conditions as a general fact.
-
-We study \emph{Papers for Agents (P4A)}, exploring how to organize and construct
-research artifacts for agents. P4A aims to integrate research content from
-papers and their publicly available associated materials into grounded,
-accessible, and reusable knowledge records through preprocessing that includes
-content parsing, semantic interpretation, and verification against source
-materials, retaining these artifacts in a persistent literature resource
-library. We investigate reasoning-based
-extraction for establishing semantic relationships within papers and across
-associated materials, organizing facts together with source evidence,
-verification status, and applicability conditions. This would allow agents to
-access existing knowledge as needed and pursue unresolved questions. The
-granularity of records, their organization, and access mechanisms remain to be
-determined for specific tasks and evidence environments.
-
-We plan to pursue this work in three directions:
-\begin{itemize}
-\item \textbf{Organizing research artifacts for agents.} Investigate how to
-represent research content, associated materials, and their relationships while
-preserving sources, conditions, and verification status to support the four
-activity types above.
-\item \textbf{Constructing artifacts through reasoning and verification.}
-Investigate how to extract, align, and verify semantic relationships across
-papers and associated materials, handling insufficient or inconsistent evidence
-to produce records that support subsequent research actions.
-\item \textbf{Evaluating artifact quality and usefulness.} Independently assess
-semantic correctness, relationship correctness, and evidential support, then
-examine whether agents using these artifacts make better-supported research
-choices and whether knowledge reuse reduces repeated reading and interpretation.
-\end{itemize}
-
-We plan to evaluate P4A on defined research tasks using a collection of computer
-science papers and associated materials with evidence that can be independently
-checked. The running scenario will illustrate how a knowledge artifact
-affects a specific judgment, while the full set of tasks will examine whether
-its benefits extend to other research needs. Method comparisons should provide
-equivalent access to the original materials and declare the available budgets.
-Baselines such as direct reading and retrieval and conventional structured
-extraction will help distinguish the effects of organization, reasoning, and
-verification. Comparisons with external DeepResearch systems under open search
-can provide supplementary evidence, with each system's information access
-documented. Construction and usage costs will be reported separately, and reuse
-will be examined across multiple needs involving shared papers and resources.
-The task scope, comparison protocols, and quality criteria remain to be defined.
-
-This work explores ways of organizing published research to make it easier
-for agents to discover, understand, and use. By transforming content distributed
-across papers and associated materials into accessible, traceable research
-knowledge with explicit applicability conditions, we aim to provide a reusable
-foundation for agents assisting researchers with subsequent work. Its
-effectiveness must be evaluated through both artifact quality and the research
-activities it supports.
-
-% TODO: Select a representative query from the E07 paper pool, replace scenario
-% placeholders with verified candidates and evidence, and retain the actual
-% retrieval and assessment records.
-% TODO: Support the CS empirical setting with literature or sample evidence;
-% avoid generalizing properties of the selected public studies to the field.
-% Establish specific gaps through related work and baseline observations.
-% TODO: Define the initial task slice, knowledge units, and evidence boundaries.
-% Specify construction and access mechanisms in later sections.
-% TODO: Specify which activity types are evaluated and the extent of execution
-% and reproduction. Define independent verification evidence, ground truth,
-% quality criteria, and budgets. Separate exploratory scenarios from evaluation
-% tasks and replace the research agenda with established contributions and
-% measured findings, keeping the Chinese and English drafts aligned.
 
 \section{Conclusion}
 \label{sec:conclusion}
