@@ -1,0 +1,117 @@
+# T1 先导：时序预测领域，A0 与 A3，K = 2（I3 + I2）。
+# 状态：草稿，待用户过目（2026-10-11）。先导只用来跑通流程、实测写入重叠、暴露机制缺口，不进入最终结论。
+#
+# 任务文本的原则：
+# - 任务是研究意图本身（来自 intents_decompose.md §5 的 I2、I3），不教写者怎么用工具；工具用法只在 MCP
+#   工具说明中。各组的任务文本逐字相同，只有 arms.<组>.store 这一段描述“共享库在哪里”。
+# - 写者知道有一个共享库、知道以后会有别人读它，但不知道别人写了什么，也不知道还有哪些写者。
+# - 任务文本用英文：论文、工具说明、库中内容与探针都是英文，避免中英混写的库。
+
+schema_version: 1
+name: t1-pilot-ltsf
+
+corpus:
+  candidates: data/raw/t1-pilot-corpus/candidates.yml   # 抽样结果，见 docs/decisions/2026-10-10-t1-pilot-corpus.md
+  material_root: data/raw/t1-pilot-corpus               # 材料路径相对于它
+  # 种子论文：由 Claude 完整入库并对照原文核实，各组内容相同（A3 为 graph-doc，A0 为同内容的 Markdown）。
+  seeds:
+    - {arxiv: 2012.07436v3, short: Informer}
+    - {arxiv: 2106.09305v3, short: SCINet}
+  # 交给写者的论文，按 PwC 日期排序，即时间线的顺序。
+  papers:
+    - {arxiv: 2106.13008v5, short: Autoformer, method: Autoformer}
+    - {arxiv: 2107.08687v2, short: Query Selector, method: Query Selector}
+    - {arxiv: 2205.08897v4, short: FiLM, method: FiLM}
+    - {arxiv: 2211.14730v2, short: PatchTST, method: PatchTST}
+    - {arxiv: 2304.08424v5, short: TiDE, method: TiDE}
+    - {arxiv: 2310.09751v3, short: UniTime, method: UniTime}
+    - {arxiv: 2403.01673v1, short: CATS, method: CATS}
+    - {arxiv: 2403.09898v2, short: TimeMachine, method: TimeMachine}
+
+# 身份锚点（引导起点的第一部分）：只给名称与外部标识，挂到确立它们的论文上；各组相同。
+# 只列任务与主数据集；度量不建节点。是否引导、清单是否合适，待定（evaluation_draft.md §13 第 6 项）。
+anchors:
+  task: Long-term time series forecasting
+  datasets: [ETTh1, ETTh2, ETTm1, ETTm2, Electricity, Traffic, Weather, Exchange, ILI]
+
+writers:
+  # 写者 = 一个固定身份 + 一个意图任务；每篇论文一次 pi 会话，会话之间没有记忆，唯一的联系是共享库。
+  # user 是登录身份（.example 保留域名，不指向真实的人或机构）：A3 写入 MCP 连接配置的 E09_USER，由服务端
+  # 记为 formed_by 与提交的 author；A0 写入 git 的 author。agent 记入 E09_AGENT（提交的 meta.agent）。
+  - id: writer-i3
+    user: results.curator@forecast-lab.example
+    agent: pi/sglang/qwen3.8-27b
+    intent: I3
+    task: |
+      You are organizing the reported results of long-term time series forecasting methods so that
+      they can be compared across papers.
+
+      Paper: "{title}" (arXiv {arxiv}), material {material}.
+
+      From this paper, organize the main long-term forecasting results: for each dataset and forecast
+      horizon, the MSE and MAE reported for {method} and for the baselines in the main results table.
+      For each result, keep the conditions needed to judge whether it is comparable with results from
+      other papers: look-back window length, multivariate or univariate setting, data split and
+      normalization, and whether the baseline numbers were re-run by the authors or copied from an
+      earlier paper (and from which one). Record where in the paper each number comes from.
+
+      If the shared store already holds results or conditions for the same methods and datasets,
+      check whether this paper agrees with them, and record any disagreement you find.
+
+  - id: writer-i2
+    user: mechanism.reader@ts-group.example
+    agent: pi/sglang/qwen3.8-27b
+    intent: I2
+    task: |
+      You are building an understanding of how long-term time series forecasting methods work and
+      under which conditions their reported gains hold.
+
+      Paper: "{title}" (arXiv {arxiv}), material {material}.
+
+      From this paper, work out what {method} is and why the authors say it works: its core
+      mechanism, the earlier methods it builds on or argues against, the settings it depends on
+      (look-back window, channel handling, input normalization, extra data or pretraining), what the
+      ablation studies show about which components matter, and the limitations the authors state.
+      Record the claims the paper makes about these points and where in the paper each is stated.
+
+      If the shared store already holds descriptions or claims about the same methods, relate what you
+      find to them: note where this paper supports, refines or contradicts them.
+
+  # 两个写者都附上的结尾段，各组相同。
+  closing: |
+    Write what you find into the shared store so that someone who works on these papers later, for a
+    different purpose and without access to this conversation, can find it, check it against the paper
+    and build on it. {store}
+
+arms:
+  A3:
+    store: >-
+      The shared store is the PaperWeave knowledge base, available through the PaperWeave tools.
+      Papers are material files; refer to a paper by its material path.
+    neo4j: bolt://localhost:7689
+    enable_commit: true
+    embeddings: true          # 与 e09 默认一致；需要 vllm-qwen3-embed 在线，否则改为 false 并记录
+  A0:
+    store: >-
+      The shared store is the git repository in ./store, a directory of notes that anyone may read,
+      add to, reorganize or correct; commit your changes when you are done. Papers are under ./papers,
+      at their material path.
+    # 初始内容：只有 README 一句话说明这是共享笔记库，加上种子论文与锚点的同内容 Markdown；
+    # 不预设目录约定或模板（预设就等于替 A0 设计了一个 schema）。
+    template: store/README.md
+
+schedule:
+  # 写者轮流执行。每篇论文两个会话；先后顺序逐篇交替，让两个写者都会遇到“论文还不在库中”的情况。
+  order: alternate          # 第 1、3、5、7 篇 I3 先写，第 2、4、6、8 篇 I2 先写
+  sessions_per_arm: 16
+  checkpoint_every_papers: 2 # 共 4 个检查点：A3 记 graph-vc head，A0 打 git tag
+  repeats: 1                 # 先导只跑一遍；方差估计在正式运行中做
+
+runner:
+  agent: pi                  # 默认配置：自带系统提示与内置工具，不换提示、不设工具白名单
+  model: sglang/qwen3.8-27b
+  mode: print                # pi -p：非交互，一次会话跑完一个任务
+  session_timeout_min: 60    # 超时记为失败并保留轨迹，不重试
+  # 每组每个写者一个独立工作目录（~/t1-runs/<run>/<arm>/<writer>/），只含 MCP 登记、pi 会话设置与会话记录；
+  # 工作目录之外的文件读取（包括直接读论文）不阻止，事后从轨迹审计。
+  workdir_root: ~/t1-runs

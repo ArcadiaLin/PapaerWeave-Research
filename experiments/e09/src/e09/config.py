@@ -4,7 +4,8 @@ import os
 from pathlib import Path
 
 REPO = next(p for p in [Path.cwd(), *Path.cwd().parents, *Path(__file__).resolve().parents] if (p / "AGENTS.md").is_file())
-DATA = REPO / "data/raw/e09-paper-knowledge"   # 论文材料（复制自 e08，只读）与入库文档
+# 论文材料（复制自 e08，只读）、入库文档与产物文档；E09_DATA 换成别的材料根目录（如 T1 每组一份）
+DATA = Path(os.environ.get("E09_DATA", REPO / "data/raw/e09-paper-knowledge")).expanduser()
 DOCS = DATA / "docs"       # 入库的 graph-doc，按文件名顺序提交，版本管理
 PAPERS = DATA / "papers"
 
