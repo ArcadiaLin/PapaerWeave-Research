@@ -98,3 +98,5 @@ infra/neo4j-e08/backups/
 infra/neo4j-e09/data/
 infra/neo4j-e09/logs/
 infra/neo4j-e09/backups/
+infra/neo4j-t1/data/
+infra/neo4j-t1/logs/

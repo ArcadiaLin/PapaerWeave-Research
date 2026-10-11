@@ -88,7 +88,7 @@ def _changed(
         n.id: "delete" if n.after is None else "edit"
         for n in changeset.nodes
         if n.before is not None
-        and (n.after is None or n.labels_before != n.labels_after or _content(n.before, n.after))
+        and (n.after is None or n.labels_before != n.labels_after or content_changed(n.before, n.after))
     }
     for e in changeset.edges:
         if e.key.dst in deleted or e.key.src in deleted or e.key.src not in before.nodes:
@@ -101,7 +101,7 @@ def _changed(
                 continue
         if e.before is None:
             changed.setdefault(e.key.src, "add")
-        elif e.after is None or _content(e.before, e.after):
+        elif e.after is None or content_changed(e.before, e.after):
             if changed.get(e.key.src) != "delete":
                 changed[e.key.src] = "edit"
     return changed
@@ -129,7 +129,8 @@ def _check_revise(
     return None if is_delete else Problem("revision", at, "a revision needs an anchor")
 
 
-def _content(before: Mapping[str, Any], after: Mapping[str, Any]) -> bool:
+def content_changed(before: Mapping[str, Any], after: Mapping[str, Any]) -> bool:
+    """属性有改动（``note`` 不算）。"""
     keys = (before.keys() | after.keys()) - _FREE
     return any(before.get(k) != after.get(k) for k in keys)
 

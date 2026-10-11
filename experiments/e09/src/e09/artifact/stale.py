@@ -6,6 +6,9 @@
 - ``removed``：文档头部 ``nodes_used`` 中的对象（或记录所属的 Artifact、来源引用的材料）已不在库中。删除节点时
   graph-doc 一并删掉指向它的 ``USED`` 边，所以按不可变的文档头部核对，而不是看现存的边；
 - ``material``：所用材料的文件不在，或哈希与登记的不同；
+- ``revised``：所用的有据层或解释层记录在产物形成之后被修订过（改了内容、标签或出边），另带 ``commit`` 指出
+  最早的那次提交，可以用 Show 查看改了什么。增删改出边时，agent 的正反关系不算；别人给解释层记录新增出边也不算。
+  实体与概念的改动（如补别名、描述）不算，否则提示会被噪声淹没；
 - ``stale input``：所用的 Artifact 本身可能过期。
 """
 
@@ -15,8 +18,11 @@ import hashlib
 from collections.abc import Iterable
 from typing import Any
 
+from graph_vc import Changeset
+
+from ..commit.revision import content_changed, layer
 from ..model.refs import parse_ref
-from ..model.schema import ARTIFACT
+from ..model.schema import ARTIFACT, STANCE_RELS, kind_of
 from ..query.materials import load_lines, materials
 from ..store.store import Store
 from .document import header_of
@@ -84,10 +90,62 @@ def stale(store: Store, ids: Iterable[str]) -> dict[str, list[dict[str, str]]]:
                 reasons.append({"ref": ref.text, "reason": "removed"})
             elif kinds[ref.head] == ARTIFACT and visit(ref.head):
                 reasons.append({"ref": ref.text, "reason": "stale input"})
+        used = [r.head for r in refs if r.kind != "source" and kinds.get(r.head) not in (None, ARTIFACT)]
+        reasons += [{"ref": head, "reason": "revised", "commit": commit} for head, commit in revised(store, art_id, used)]
         memo[art_id] = reasons
         return reasons
 
     return {art_id: visit(art_id) for art_id in dict.fromkeys(ids)}
+
+
+def revised(store: Store, art_id: str, ids: Iterable[str]) -> list[tuple[str, str]]:
+    """``ids`` 中在 ``art_id`` 形成之后被修订过的有据层与解释层记录 → 最早的那次提交，按 ``ids`` 的顺序。"""
+    rows = store.query(
+        """UNWIND $ids AS id MATCH (n {id: id})
+           RETURN n.id AS id, labels(n) AS labels, n.stated_by AS stated_by""",
+        ids=sorted(set(ids)),
+    )
+    layers = {r["id"]: layer(kind_of(frozenset(r["labels"])), {"stated_by": r["stated_by"]}) for r in rows}
+    layers = {k: v for k, v in layers.items() if v is not None}
+    if not layers:
+        return []
+    later = store.query(
+        """MATCH (f:Commit)-[:TOUCHED {op: 'create'}]->(:Artifact {id: $art})
+           UNWIND $ids AS id MATCH (c:Commit {branch: f.branch})-[:TOUCHED]->({id: id}) WHERE c.seq > f.seq
+           RETURN DISTINCT c.id AS id, c.seq AS seq ORDER BY seq""",
+        art=art_id,
+        ids=sorted(layers),
+    )
+    first: dict[str, str] = {}
+    for row in later:
+        changeset = store.graph.get_commit(row["id"]).changeset
+        for node_id in _revised_in(changeset, layers):
+            first.setdefault(node_id, row["id"])
+    return [(i, first[i]) for i in dict.fromkeys(ids) if i in first]
+
+
+def _revised_in(changeset: Changeset, layers: dict[str, str]) -> set[str]:
+    """一次提交中被修订的记录（``layers``：记录 → 所在的层）。被删除的记录由 ``removed`` 报告，这里不算。"""
+    deleted = {n.id for n in changeset.nodes if n.after is None}
+    out = {
+        n.id
+        for n in changeset.nodes
+        if n.id in layers
+        and n.before is not None
+        and n.after is not None
+        and (n.labels_before != n.labels_after or content_changed(n.before, n.after))
+    }
+    for e in changeset.edges:
+        src = e.key.src
+        if src not in layers or src in deleted or e.key.dst in deleted:
+            continue
+        if e.key.type in STANCE_RELS and "agent" in ((e.before or {}).get("stated_by"), (e.after or {}).get("stated_by")):
+            continue
+        if e.before is None and layers[src] != "grounded":
+            continue  # 别人给解释层记录新增出边，不是修订
+        if e.before is None or e.after is None or content_changed(e.before, e.after):
+            out.add(src)
+    return out
 
 
 def readonly(store: Store, ids: Iterable[str]) -> dict[str, dict[str, Any]]:
@@ -102,4 +160,4 @@ def readonly(store: Store, ids: Iterable[str]) -> dict[str, dict[str, Any]]:
     return out
 
 
-__all__ = ["document_text", "documents", "readonly", "stale"]
+__all__ = ["document_text", "documents", "readonly", "revised", "stale"]

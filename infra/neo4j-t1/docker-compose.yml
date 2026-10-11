@@ -1,0 +1,18 @@
+# T1 先导：多写者积累时间线的 A3 图库。与 neo4j-e09（7687）、neo4j-test（7688）端口分开，可同时运行。
+services:
+  neo4j-t1:
+    image: neo4j:ubi10
+    container_name: neo4j-t1
+
+    ports:
+      - "7476:7474"
+      - "7689:7687"
+
+    environment:
+      NEO4J_AUTH: neo4j/password
+
+    volumes:
+      - ./data:/data
+      - ./logs:/logs
+
+    restart: unless-stopped
