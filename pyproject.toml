@@ -24,6 +24,7 @@ default-groups = ["notebook", "test"]    # 一次 `uv sync` 就得到完整开�
 members = [
     "experiments/e08",
     "experiments/e09",
+    "experiments/t1",
     "packages/arxiv2md",
     "packages/apply-patch",
     "packages/graph-vc",

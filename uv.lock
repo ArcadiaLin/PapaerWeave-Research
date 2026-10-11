@@ -9,6 +9,7 @@ members = [
     "cacheplan",
     "cacheplan-e08",
     "cacheplan-e09",
+    "cacheplan-t1",
     "graph-doc",
     "graph-vc",
 ]
@@ -262,6 +263,23 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "mcp", specifier = ">=1.20,<2" },
     { name = "neo4j", specifier = ">=5.28,<7" },
+    { name = "pyyaml", specifier = ">=6,<7" },
+]
+
+[[package]]
+name = "cacheplan-t1"
+version = "0.1.0"
+source = { editable = "experiments/t1" }
+dependencies = [
+    { name = "cacheplan-e09" },
+    { name = "graph-vc" },
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "cacheplan-e09", editable = "experiments/e09" },
+    { name = "graph-vc", editable = "packages/graph-vc" },
     { name = "pyyaml", specifier = ">=6,<7" },
 ]
 

@@ -28,6 +28,13 @@ corpus:
     - {arxiv: 2403.01673v1, short: CATS, method: CATS}
     - {arxiv: 2403.09898v2, short: TimeMachine, method: TimeMachine}
 
+# 检查点 0 的入库文档，按顺序提交（A3）或在内存中重放后渲染成笔记（A0，t1.a0_seed）；source 是提交的来源标签。
+# 锚点之外，两篇种子论文由 Claude 按论文表单撰写并对照原文核实。
+seed_docs:
+  - {doc: data/raw/t1-pilot-corpus/docs/00-anchors.yml, source: seed:t1-anchors, dedup: false}
+  - {doc: data/raw/t1-pilot-corpus/docs/01-2020-Informer.yml, source: paper:2020-Informer, dedup: true}
+  - {doc: data/raw/t1-pilot-corpus/docs/02-2021-SCINet.yml, source: paper:2021-SCINet, dedup: true}
+
 # 身份锚点（引导起点的第一部分）：只给名称与外部标识，挂到确立它们的论文上；各组相同。
 # 只列任务与主数据集；度量不建节点。是否引导、清单是否合适，待定（evaluation_draft.md §13 第 6 项）。
 anchors:
@@ -77,11 +84,11 @@ writers:
       If the shared store already holds descriptions or claims about the same methods, relate what you
       find to them: note where this paper supports, refines or contradicts them.
 
-  # 两个写者都附上的结尾段，各组相同。
-  closing: |
-    Write what you find into the shared store so that someone who works on these papers later, for a
-    different purpose and without access to this conversation, can find it, check it against the paper
-    and build on it. {store}
+# 两个写者都附上的结尾段，各组相同。
+writer_closing: |
+  Write what you find into the shared store so that someone who works on these papers later, for a
+  different purpose and without access to this conversation, can find it, check it against the paper
+  and build on it. {store}
 
 arms:
   A3:
