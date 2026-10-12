@@ -14,6 +14,14 @@
 > - 种子状态中放一组种子 leaderboard；A0 也拿到这些文件，但不给任何“要求统一维护”的提示。
 > - 加 `op_version`；Generate 不要求每段带引用。
 > - 测试按论文入库顺序，随机分给 3–4 个伪用户，由他们自行维护库。
+> - **原则：只在系统要用到的地方要求结构，其余一律自由（2.1）。**
+>
+> **同日后续推演（一次 pi 会话怎样维护 leaderboard，见 6.1）带出、已商定写入本稿的：**
+> - 每类产物有自己的身份键，同一个键只有一份产物（3.7）；
+> - Commit 的返回列出这次提交涉及的对象上挂着的共同产物（4.2）；
+> - 产物的检入先给出校验结果、不写入，确认后才写（3.3）；
+> - `FetchArtifact` 一次可取多份，检入一次可交多份（4.1、3.3）；
+> - 键字段按字符串比较，允许说明文字（6）。
 
 ## 1. 起因
 
@@ -42,7 +50,33 @@ pilot-2 暴露的问题：A3 的结构化收益很低，结构化的内容没有
 
   具体有哪些算子只是配置。
 
-**经典对应：**
+### 2.1 原则：灵活，但不完全灵活
+
+如果格式完全自由，一个通用的“编辑产物”算子就够了。这个通用算子其实已经存在，就是 `generate`：系统对它的内容几乎不做任何处理，所以它几乎完全自由，只校验引用是否存在。其他类型之所以单独成为算子，是因为系统要对它们的某些部分**做事**，而这些事只有知道结构才做得了。
+
+> **只在系统要用到的地方要求结构，其余一律自由。** 每一个被强制的部分，都必须能说出是哪个机制在消费它；说不出来，就不该强制。
+
+由此得到三条判断标准：
+
+1. **什么时候该加一种产物类型：** 能说出一个机制要消费它的结构；说不出来，就用 `generate`。类型因此不会无限增长，这也回答了“为什么是这几个算子”。
+2. **每种类型强制到什么程度：** 恰好是那些机制要用的部分，不多也不少（各类的清单见第 5、6 节）。
+3. **对 pi 来说：** 工具说明里明确写出“系统会检查这几项，其余随你”。写者知道哪里不能马虎、哪里可以自由发挥。
+
+系统消费的结构只有三种：
+
+- 让写者收敛到同一份产物的**键**；
+- 把产物连进图中的**引用**；
+- 让其中的陈述可以核对的**锚点**。
+
+```text
+Artifacts are free-form documents, except for the parts the store acts on:
+the keys that make writers converge on one artifact, the references that
+link it into the graph, and the anchors that let its claims be checked.
+```
+
+数据库中的对应：半结构化存储里，只把要建索引、要加约束的字段提出来做列，其余留在文档里。也就是写入时只为少数字段定 schema，其余到读取时再解释。
+
+### 2.2 经典对应
 
 - **dataspaces 的按需整合（pay-as-you-go）：** 不预先定全局 schema，而是用种子示例引导格式，格式随使用逐步收敛；
 - **check-out / check-in 与乐观校验：** `FetchArtifact` 取工作副本，检入时核对基础版本。C4 一直“已设计、未实现”，这是它在单个产物上的第一个落点；
@@ -79,10 +113,11 @@ Artifact 节点不加字段（`op_version` 除外，见 3.5），版本走提交
 ### 3.3 统一的写入签名
 
 ```text
-<op>(artifact_doc, update_abstract)
+<op>(artifact_doc | [artifact_doc, ...], update_abstract, confirm?)
 ```
 
-- `artifact_doc`：工作目录中的文档路径。头部带 `id` 与 `base` 时是更新，不带时是新建；
+- `artifact_doc`：工作目录中的文档路径，可以一次交多份。每份各自校验，各成一个版本。头部带 `id` 与 `base` 时是更新，不带时是新建；
+- **先校验、后写入：** 不带 `confirm` 时只校验、返回结果与警告，不写入；带 `confirm: true` 再写。与 Commit 的 dry_run → confirm 相同。这样，警告在写入前就给出来，不会为了改一个笔误多出一个版本；
 - `update_abstract`：这次改了什么、为什么。它进入提交的 `message`，也作为编辑提示显示给后来者；
 - 文档头部的 `title`、`abs` 仍作为检索文本。
 
@@ -93,12 +128,13 @@ Artifact 节点不加字段（`op_version` 除外，见 3.5），版本走提交
 | 情况 | 处理 |
 | --- | --- |
 | 头部的 `id`、`base` 被改，或 `base` 不是最新版本 | 拒绝 |
+| 新建的产物，其身份键已有一份产物（3.7） | 拒绝，返回已有那份的 id，让写者去 fetch 它 |
 | 文档中出现的对象 id、产物 id 不在库中 | 拒绝 |
 | 来源引用格式错误、所指材料不存在或行号越界 | 拒绝 |
 | 改动或删除了他人写的行，但 `update_abstract` 没有理由 | 拒绝 |
 | 各类产物自己的轻度规则（如 leaderboard 的新行须带出处） | 拒绝，见第 6 节 |
 | 数字没有出现在所引的那一行 | 警告 |
-| 文档结构与种子示例不同（缺列、多列） | 警告，并给出示例的列 |
+| 文档结构与种子示例不同（缺列、多列），或某列的写法与示例不同（例如该写数字的地方写了文字） | 警告，并给出示例的写法 |
 
 “数字是否出现在所引的那一行”是确定性检查，不需要 LLM，能抓住大部分抄错。
 
@@ -127,14 +163,31 @@ art_0058 · v4 · last edited by writer-i3 at commit_000071 · 3 editors
 
 “自你上次编辑以来，别人改了哪些行”最有用：同一个伪用户隔几次会话回来，马上知道自己写的东西被谁动过。
 
-## 4. 核心算子：FetchArtifact
+### 3.7 产物自己的身份
+
+共同维护的前提，是写者收敛到**同一份**产物上。如果每个写者各建一张“ETTh1 结果表”，C1 的问题就在产物这一层重演。所以每类产物有自己的身份键：
+
+| 产物 | 身份键 |
+| --- | --- |
+| `leaderboard` | （任务、数据集、设置），如（长期预测、ETTh1、多变量） |
+| `compare_settings` | 被比较的两项 |
+| `verify` | 被核查的主张 |
+| `summarize`、`generate` | 无：每次新建都是一份新的产物 |
+
+新建时如果同键已有产物，就像 Commit 的 dry_run 退回身份候选一样，把已有的那份退回给写者。键由头部的字段算出，按字符串规范化后比较，不做模糊匹配。
+
+## 4. 核心算子的改动
 
 与 Search、Traverse、ReadEvidence 并列。
 
+### 4.1 FetchArtifact
+
 ```text
-FetchArtifact(artifact, at?)
-→ 把该产物的文档（或 at 指定提交时的版本）写到工作目录的 ./artifacts/<标题>.md，返回版本与编辑提示（3.6）
+FetchArtifact(artifact | [artifact, ...], at?)
+→ 把产物的文档（或 at 指定提交时的版本）写到工作目录的 ./artifacts/<标题>.md，返回版本与编辑提示（3.6）
 ```
+
+一次可以取多份：一篇论文往往涉及 7–8 张 leaderboard，逐张取的调用开销太大。
 
 文件头部多两行，供检入时核对：
 
@@ -151,6 +204,21 @@ title: ETTh1 multivariate long-term forecasting
 - **读者读长文档：** 现在读者只能用 ReadEvidence 按行号范围一段段读产物文档。Fetch 把整份文档放进工作目录，读者可以直接 grep。它只取产物文档、不取论文，所以在 `store_only` 读者条件下也可用。
 - **看历史版本：** `at` 取当时的版本，对应 G 类版本事件的探针。
 
+### 4.2 Commit 返回相关的共同产物
+
+任务提示里不要求写者维护 leaderboard（第 8 节）。引导来自两处：工具说明，以及库在写入时的返回。Commit 确认后，返回这次提交涉及的对象上挂着哪些共同产物：
+
+```text
+committed commit_000057: +1 Paper, +3 Method, +3 Experiment, +4 Claim, +29 relations
+  Shared artifacts on objects this commit touches:
+    leaderboard art_0003 "ETTh1 multivariate long-term forecasting" — v3, last edited by bob (commit_000041)
+    leaderboard art_0004 "ETTh2 multivariate long-term forecasting" — v2, seed
+    ... 7 leaderboards in all (datasets used by exp_0031)
+    no leaderboard yet for: ILI
+```
+
+它不是提示词里的要求，而是库的一个查询结果：沿“实验 → 用到的数据集 → 该数据集上的 leaderboard”查出来。这是 C5（找得到）在写入时的落点。A0 没有这个返回，写者只能自己发现仓库里有哪些表。它直接影响“采用率”这个观测量。
+
 ## 5. 算子集合
 
 | 算子 | 产物 | 服务的意图与探针 |
@@ -160,6 +228,16 @@ title: ETTh1 multivariate long-term forecasting
 | `verify` | 一条主张在给定证据下是否成立、在什么范围内成立 | I2、I5；D2、D3 |
 | `summarize` | 忠实压缩多份材料或记录，段落须有引用 | I4 |
 | `generate` | 最灵活的产物：回答、草稿、点子、方案；不要求每段带引用 | 撰写类任务，用 LLM judge 评 |
+
+按 2.1 的原则，各类产物强制的部分很少，每一项都有机制在用：
+
+| 产物 | 强制的部分 | 用它的机制 |
+| --- | --- | --- |
+| `leaderboard` | 身份键、行键、id 引用、每个数值的出处 | 见第 6 节 |
+| `compare_settings` | 被比较的两项（指向 leaderboard 的行）、维度、结论、依据 | 读取 leaderboard 时把可比性判断挂到对应的格子上 |
+| `verify` | 被核查的主张（引用）、结论、依据 | 从 Claim 节点出发能看到对它的核查结论 |
+| `summarize` | 每段至少一处引用 | 忠实压缩的检查 |
+| `generate` | 只有“引用必须存在” | 无，所以最自由 |
 
 去掉：
 
@@ -206,9 +284,20 @@ metrics: {MSE: lower, MAE: lower}
   - `variant` 记变体或配置名（如 `PatchTST/64`），模型里变体不建节点；
   - `role` 区分论文提出的方法与基线；
   - `origin` 区分论文自己跑的与转录他文的，转录的在 `source` 之外可附说明来历的那一行。
-- **行键：** 方法、变体、论文、预测长度、look-back。
+- **强制的部分，以及各自被哪个机制用到：**
+
+  | 强制的部分 | 用它的机制 | 不强制会怎样 |
+  | --- | --- | --- |
+  | 头部的（任务、数据集、设置） | 产物的身份键（3.7）：一个键只有一张表 | 每个写者各建一张表，共同维护不会发生 |
+  | 头部的 id 引用（task、dataset） | 图中的连接：从数据集节点 Traverse 能找到它的 leaderboard；Commit 返回相关产物（4.2） | 只能靠全文搜索碰运气 |
+  | 行键：方法、变体、论文、预测长度、look-back | 逐行归属与编辑规则；“同一篇论文的同一格出现两个值”的判断 | 按文本行比对，分不清改了一行还是删一行加一行 |
+  | 方法、论文写成 id | 表格碎片化指标；读取时把同一方法的行聚到一起 | 同一方法有几种写法，没人知道 |
+  | 每个数值带 `source` | “数字在不在所引那一行”的检查；所引论文换版本时的 `superseded` 附注 | 两者都做不了 |
+
+  多加的列（备注、硬件、运行次数）、表外的段落与说明文字都不强制。
+- **键字段按字符串比较，允许说明文字。** 例如 PatchTST 论文中的基线是“在六种 look-back 下重跑、取最好的结果”（`2211.14730v2` 第 569 行），`lookback` 就写不成一个数。这种写法只警告、不拒绝，含义写在“Papers covered”的说明里。种子示例里应放一行这种情况，让写者知道可以这样写。
 - **“Papers covered”** 记录每篇论文转录了哪些表、是否转录完整。这样“论文没有报告这一格”与“没人转录这一格”可以区分（探针 A3）。
-- **自己的轻度规则：** 新增的行须带 `source`，且 `source` 落在该行 `paper` 的材料中；数值须为数字。
+- **自己的轻度规则：** 新增的行须带 `source`，且 `source` 落在该行 `paper` 的材料中；度量列须为数字。
 - **读取时现算的附注**（不写进文档）：
 
   ```text
@@ -224,6 +313,33 @@ metrics: {MSE: lower, MAE: lower}
 - **消融表：** 是同样写进 leaderboard（加一列 `table: main | ablation`），还是每篇论文另建一份结果表，待定。
 
 **身份质量直接决定表格质量。** 同一方法被建成两个节点，表上就裂成两组行。由此得到 E1 的一个直观指标：表格碎片化程度。
+
+### 6.1 一次会话中的维护过程
+
+以伪用户 alice（背景为 I3“做基准对比”）入库 PatchTST 为例。以下 id 与工具返回的文字都是示意，数值取自原文。
+
+**会话开始时的状态：**
+
+- 种子：Informer、SCINet，以及按数据集分的种子 leaderboard（ETTh1、ETTh2、ETTm1、ETTm2、Electricity、Traffic、Weather），每张只有这两篇论文的行；
+- bob 之前入库了 Autoformer，并往这些表里加了 Autoformer 自己报告的行；
+- alice 的任务提示只有工作背景，加一句“把这篇论文加入你的工作所用的知识库”，**不提 leaderboard**。
+
+| 步骤 | alice 做什么 | 看到什么、要判断什么 |
+| --- | --- | --- |
+| 1 | 读论文的方法与实验部分 | ReadEvidence 读几段，或在工作目录里 grep 论文文件 |
+| 2 | 写入库草稿：Paper、Method PatchTST、主结果的 Experiment（`EVALUATES` 指向 PatchTST 与六个基线）、几条 Claim；调用 Commit | dry_run 退回需要判断的身份：PatchTST、Pyraformer、LogTrans 无匹配，将新建；Weather 精确匹配 `dataset_0005`，复用还是声明不同。确认后写入 |
+| 3 | 看 Commit 的返回 | 返回列出这次提交涉及的数据集上挂着的 7 张 leaderboard，以及“ILI 还没有表”（4.2）。这是 alice 发现共同的表的地方 |
+| 4 | `FetchArtifact` 取这 7 张表 | 每张写到 `./artifacts/`，返回版本与编辑者，例如 ETTh1 那张：v3，bob 最后编辑，“你之前没有编辑过它” |
+| 5 | 用 `cat` 读文件 | 从种子与 bob 的行中看出列和写法（方法写 id 加名字、`source` 写成来源引用），以及已经有谁、转录到什么程度：Autoformer 的表已完整转录，其中没有 96 步 |
+| 6 | 读 PatchTST 的 Table 3（第 168–203 行）与说明设置的两处（第 164、569 行） | 需要它判断的都在这里：PatchTST/64 用 $L=512$、PatchTST/42 用 $L=336$，所以变体分开写；FEDformer、Autoformer、Informer 是作者在六种 look-back 下重跑后取最好的，所以 `origin` 是 `run`，`lookback` 写说明文字；DLinear 用默认的 336；Autoformer 在 ETTh1 上的值与 Autoformer 自己的论文不同，这是不同论文的不同结果，照写 |
+| 7 | 编辑文件：每张表追加对应数据集 4 个预测长度 × 8 个方法的行，“Papers covered”加一行 | Pyraformer、LogTrans 用第 2 步新建的 id |
+| 8 | 一次提交 7 份文档，不带 `confirm` | 返回每份的改动（ETTh1：+32 行，未动他人的行）、校验结果与警告。例如：“第 47 行 FEDformer、336、MSE 0.445：第 190 行没有 0.445（该行是 0.444）”；“`lookback` 列写了文字，种子行是数字：允许，请在 Papers covered 中说明” |
+| 9 | 改正笔误，带 `confirm: true` 再交 | 7 张表各成一个新版本。返回读取时现算的附注，例如“Autoformer 在 96–720 步的 4 格现在有两篇论文的值” |
+| 10 | 新建 ILI 的表：头部不写 `id`，照已有的表写 | 校验身份键（长期预测、ILI、多变量）：没有已有的表，确认后新建。若别人刚建过，返回那张表的 id，让 alice 去 fetch 它 |
+
+**之后别人看到什么：** 一周后 bob 入库 TiDE，fetch ETTh1 这张表，看到“v4，alice 最后编辑：Add PatchTST/64, PatchTST/42 and six baselines …；自你上次编辑（v3）以来，第 49–80 行由 alice 新增，Papers covered 新增一行”。
+
+**调用开销：** 入库本身约 5–10 次调用。leaderboard 部分，因为可以一次取多份、一次交多份，约 4 次调用加上读文件与编辑，不再随表的数量成倍增加。
 
 ## 7. 种子
 
@@ -309,13 +425,14 @@ metrics: {MSE: lower, MAE: lower}
 
   “可问责”的含义从“不让改”变为“改了一定看得见、追得到”。
 - **AGENTS.md：** 其中“解释层的并存已经成立：Artifact 每次调用都新建一个”不再成立。
-- **`operators.md`：** §4 的算子清单（删去 Filter、MatrixConstruct、自由 schema 的 Extract；Check 改为 `compare_settings`）；§5 的身份与幂等（5.4）、写入（5.5）、过期（5.6）；新增 `FetchArtifact`。
+- **`operators.md`：** §4 的算子清单（删去 Filter、MatrixConstruct、自由 schema 的 Extract；Check 改为 `compare_settings`）；§5 的身份与幂等（5.4，改为按身份键）、写入（5.5，改为先校验后确认）、过期（5.6）；新增 `FetchArtifact`；Commit（§3.5）的返回加上相关的共同产物。
 - **代码：** `server.yml`、`operators/agent/`、`artifact/`（版本、比对、编辑提示）、测试。
 - **pilot-2 与 r2 的数据降为探索性：** A3 的工具与产物语义都变了。
 
 ## 13. 待定，各附我的建议
 
 1. **消融表的形式：** 写进 leaderboard 加一列 `table`，还是每篇论文另建一份结果表。建议另建：消融的行是变体而不是方法，混进 leaderboard 会让表难读；格式沿用 leaderboard，只是对应一篇论文。
-2. **行键的具体定义：** 各类产物各自规定，下一轮随格式一起定。
+2. **行键的具体定义：** leaderboard 的已在第 6 节；`compare_settings`、`verify` 的行键随格式一起定。
 3. **A2 的配置：** 见第 10 节，待评测设计时定。
 4. **标准误：** leaderboard 加一列 `stderr`，可空。建议加（F2）。
+5. **Commit 返回相关产物的范围：** 只沿“实验 → 数据集 → leaderboard”一条路径，还是也沿方法、主张（例如返回对某条 Claim 的 `verify`）。建议先只做数据集这一条，看采用率再扩展：返回太多会变成噪声。
