@@ -6,6 +6,12 @@
 > - Generate 保留，Filter 与 MatrixConstruct 去掉。
 >
 > 细节为提议，未改代码与设计文档。叙事见 `paper/narrative-draft.md` 的 2026-10-12 修订。
+>
+> **同日第二轮，用户决定：**
+> - A0 不拿 schema：统一的交流格式本身是本系统的优势之一；
+> - 加 `op_version`；
+> - Generate 不要求每段带引用，它是最灵活的算子；
+> - 叙事支持按评测任务设计算子集合，见第 11 节。
 
 ## 1. 起因
 
@@ -82,7 +88,7 @@ pilot-2 暴露的问题：A3 的结构化收益很低，结构化的内容没有
 
 ### 3.3 Artifact 上的记录
 
-- 保留 `op` 属性，新增 `op_version`（声明的哈希）。声明改了，旧产物仍能知道自己按哪一版生成。`op_version` 是新字段，突破模型冻结，需要用户同意。
+- 保留 `op` 属性，新增 `op_version`（声明的哈希）。声明改了，旧产物仍能知道自己按哪一版生成。`op_version` 是新字段，突破模型冻结，用户已同意（2026-10-12）。
 - 不用 `Artifact:<op>` 二级标签。现有的二级标签只用于封闭词表（Entity、Concept 的 kind）；注入的算子名是开放集合，做成标签会让标签无限增长。按 `op` 过滤与按标签查询，能力相同。
 
 ### 3.4 谁来注入
@@ -115,7 +121,7 @@ pilot-2 暴露的问题：A3 的结构化收益很低，结构化的内容没有
 - 能对照来源核对的部分（结果数值、主张）用自动判分，以原文锚点与 PwC 为准；
 - 撰写类产出用 LLM judge 按 rubric 评。
 
-Generate 现在允许段落不带引用，只在 `stats` 中报告引用比例。若用它的产出评撰写质量，judge 应同时看到引用，以便分开评“写得好不好”与“说的是否有出处”。是否收紧约束，留到改算子时定。
+Generate 保持现在的约束：允许段落不带引用，只在 `stats` 中报告引用比例。它是最灵活的算子，用于撰写类任务（用户决定，2026-10-12）。LLM judge 的 rubric 中单列“出处”一项，与“写得好不好”分开评。
 
 ## 5. ExtractResults
 
@@ -124,17 +130,23 @@ Generate 现在允许段落不带引用，只在 `stats` 中报告引用比例�
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `method` | `ref[Method]` 或 `ref[Model]` | 被评测的方法 |
+| `variant` | `string`，可选 | 表中的变体或配置名，如 `PatchTST/64`、`PatchTST^∗`、消融的 `P+CI`。模型中变体不建节点，所以写在这里 |
+| `table` | `enum[main, ablation, other]` | 主结果表、消融表或其他表；Leaderboard 默认只用 `main` |
 | `dataset` | `ref[Dataset]` | 评测数据 |
 | `task` | `ref[Task]`，可选 | 缺省时按 `dataset` 的 `FOR_TASK` 推出 |
 | `role` | `enum[target, baseline]` | 该论文提出的方法，还是对比的基线 |
 | `origin` | `enum[run, copied, unknown]` | 该论文自己跑的，还是转录自其他论文（如 SCINet 的部分基线数值转录自 Informer） |
-| 设置字段 | 由领域实例声明 | LTSF：`pred_len`（`integer`）、`lookback`（`integer`，可选）、`variate`（`enum[multivariate, univariate]`） |
+| `copied_from` | `ref[Paper]`，可选 | `origin: copied` 时的来源论文 |
+| `origin_source` | 来源引用，可选 | 说明数值来历的原文行（例如“基线结果取自某文”的那一句） |
+| 设置字段 | 由领域实例声明 | LTSF：`pred_len`（`integer`）、`lookback`（`integer`，可选）、`variate`（`enum[multivariate, univariate]`）、`training_data`（`enum[target_only, multi_dataset, pretrained]`，可选） |
 | `metric` | `enum[...]`，由领域实例声明 | LTSF：`MSE`、`MAE` 等 |
 | `value` | `number` | 原文数值，不换算 |
+| `stderr` | `number`，可选 | 原文给出的标准误或标准差 |
 | `source` | 来源引用 | 结果表中这一格所在的行 |
 
 - **论文**不作为字段：由 `source` 所指的材料推出，避免写错。
-- **记录键：** `method`、`dataset`、设置字段、`metric`。
+- **记录键：** `method`、`variant`、`dataset`、设置字段、`metric`。
+- **转录范围（`params.tables`）：** 列出本次转录的表 `[{source, complete}]`。`complete: true` 表示这张表的格子全部转录了。这样“表中没有这一格”和“没有转录这一格”可以区分：Leaderboard 能回答“这篇论文没有报告 ETTh1 的 96 步”（探针 A3），而不只是“库里没有”。
 - **设置字段与度量是领域实例的一部分。** 模型冻结下没有 Metric 类型，归一化放在声明的枚举里。这与“领域词表是参数”的立场一致：换领域时换这份声明，不改模型。
 - **粒度：** 一份产物转录一篇论文的一张或几张表，由写者决定；Leaderboard 对所有产物取并集。
 - **不做的事：** 不换算单位，不跨设置合并，不补原文没有的值。
@@ -192,7 +204,11 @@ value_entry = {value, paper, role, origin, artifact, formed_by, source}
   - 表格碎片化程度作为身份质量的下游指标。
 - **E2 充分性：** I3 的探针可以经 Leaderboard 回答。`store_only` 与 `with_papers` 的差距直接反映结果行的覆盖。
 - **E3 对等：** 混合标准，数值与主张自动判分，Generate 的撰写产出由 LLM judge 评。
-- **A0 的对等性：** 按“强基线、同等条件”的原则，A0 的写者也应拿到同一份结果行 schema，作为笔记约定（例如一个 YAML 模板）。这样两组的差别只在：引用是否被强制解析到唯一身份、有没有 Leaderboard。我建议这样做；否则 A3 的优势里混进了“A3 有 schema、A0 没有”。
+- **A0 不拿 schema（用户决定，2026-10-12）：** 统一的交流格式本身是本系统的优势之一，属于被评测的对象，不应送给基线。schema 的作用与机制的作用由 A2 分开：
+  - A2 是同一 schema 的裸 Neo4j + Cypher，写者拿到同样的类型与结果行格式（包括第 5 节的字段），但没有引用解析的强制、没有写入时的身份候选，也没有 Leaderboard；
+  - A0 与 A2 之差是“统一格式”的作用，A2 与 A3 之差是机制的作用。
+
+  论文中需要如实写明这一拆分。
 
 ## 9. 影响
 
@@ -211,6 +227,40 @@ value_entry = {value, paper, role, origin, artifact, formed_by, source}
    - 本稿按产物处理：只追加，不同写者的转录并存，Leaderboard 标出同一格的分歧，读者可以用一次 ReadEvidence 回原文核对。
    - 另一种做法是把结果行升格为“论文所说”的 Content：单值，带锚点修订。这需要新增 Content 类型，突破冻结。
    - **建议：** 先按产物做，看先导中同一格的转录分歧有多频繁，再决定。
-2. **A0 是否拿到同一份 schema。** 建议给，理由见第 8 节。
-3. **`op_version` 是否加。** 建议加。没有它，声明一旦修改，产物的来源就说不清。
-4. **Generate 是否要求每段带引用。** 建议先不收紧，在 LLM judge 的 rubric 里单列“出处”一项。
+2. ~~A0 是否拿到同一份 schema~~：不拿（已定，见第 8 节）。
+3. ~~`op_version` 是否加~~：加（已定）。
+4. ~~Generate 是否要求每段带引用~~：不要求（已定）。
+
+## 11. 按评测任务设计算子集合（提议，2026-10-12 第二轮）
+
+用户的判断：叙事已经支持“面向任务的算子层”，所以有理由按评测任务设计一套算子。下面从先导的 20 个探针（`experiments/t1/config/probes-ltsf.yml`，A–G 七类）倒推每类探针需要读到什么、由哪个算子写出来。
+
+| 探针类 | 问的是什么 | 需要读到的东西 | 由谁提供 |
+| --- | --- | --- | --- |
+| A 有据数值（A1–A3） | 某论文某设置下的数值；A1 还问 look-back；A3 问的是“没报告” | 带设置的结果行；表的转录范围 | `ExtractResults`（`lookback`、`params.tables` 的 `complete`）→ Leaderboard |
+| B 条件与来源（B1–B4） | 基线数值是自己跑的还是转录的；输入长度怎样定 | 每行的来历与设置 | `ExtractResults` 的 `origin`、`copied_from`、`origin_source`、`lookback` |
+| C 分歧可见（C1–C4） | 同一方法在不同论文中的值，是否一致，为什么 | 跨论文的同一格，以及不可比的原因 | Leaderboard 的多值格；`CompareSettings`（下文） |
+| D 跨意图（D1–D3） | 消融变体的数值；结论是否依赖某个条件；是否用了额外训练数据 | 消融行；条件 | `ExtractResults`（`table: ablation`、`variant`、`training_data`）；`Verify` |
+| E 针对产物（E1、E2） | 建一张跨论文的表；先前记录过哪些分歧 | 表格；分歧记录及其依据 | Leaderboard；`CompareSettings` 与 Observation |
+| F 对照（F1、F2） | 消融的一格；标准误 | 消融行；`stderr` | `ExtractResults` |
+| G 版本事件（G1、G2） | 论文换版本后的数值 | 所引版本与过时提示 | Leaderboard 的 `superseded` 标记 |
+
+**由此得到的算子集合：**
+
+| 算子 | 类别 | 说明 |
+| --- | --- | --- |
+| `ExtractResults` | 注入，Agent | 第 5 节；按上表补了 `variant`、`table`、`copied_from`、`origin_source`、`training_data`、`stderr` 与转录范围 |
+| `Leaderboard` | 内置，读 | 第 6 节；补一条：格子上附带指向该记录的 `CompareSettings` 判断 |
+| `CompareSettings` | 注入，Agent | 由 Check 改造：维度不再由每次调用自定，而是声明中的固定枚举，LTSF 为 `lookback`、`split`、`normalization`、`training_data`、`protocol`（如修复了测试数据加载的错误），另留 `other` 带文字。维度固定后，不同写者的可比性判断可以挂到 Leaderboard 的同一格上，探针 C、E2 直接受益 |
+| `Verify` | 注入，Agent | 保留；I2、I5 的条件与主张核查（D2、D3） |
+| `Summarize` | 注入，Agent | 保留；I4 |
+| `Generate` | 注入，Agent | 保留，最灵活；撰写类任务 |
+
+与第 4 节相比，Check 改成了 `CompareSettings`：理由与 Extract 改成 `ExtractResults` 相同，自由的维度让判断无法汇总。
+
+**“按评测设计”要防的质疑：** 审稿人会问，算子是不是照着探针量身定做的。应对：
+
+- 算子从意图推出，探针也从意图推出，两者有共同的来源，而不是互相迁就；`intents_decompose.md` 中每个意图都有公开任务作依据。
+- **先冻结算子集合，再写正式探针。** 正式运行的探针一部分从 PwC 抽取（外部、事先存在），一部分按意图新写；写探针的人不改算子。先导探针只用来设计，不进入最终结论。
+- 论文中如实写明：算子集合是按这个 workload 设计的，换 workload 要换声明。这正是“面向任务的算子层”的主张，不需要回避。
+
