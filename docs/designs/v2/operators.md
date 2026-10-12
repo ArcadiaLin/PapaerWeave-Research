@@ -448,6 +448,7 @@ verdict: U
 
 - **强制的部分：** `items`（被比较的两项，写成 Leaderboard 的记录引用或实验 id），用作身份键，也让读者从 Leaderboard 的格子找到对它的可比性判断；表中每个维度一行、`same` 为三值，`T` 与 `F` 带依据；`verdict` 为三值。
 - **维度：** 种子给出 `lookback`、`split`、`normalization`、`training_data`、`protocol`，另可加 `other` 等行。
+- **报告值关系（可选）：** 两项是不同论文对同一方法、同一格报告的值时，头部可写 `relation: same_source | independent | incomparable | unknown`，即“按论文自己的陈述，这两个值本该是什么关系”（[Workload 拆解](./intents_decompose.md) I3）。
 - 详细格式下一轮随种子一起定。
 
 ### 4.4 Verify
