@@ -1,6 +1,18 @@
 # 算子契约
 
-> **状态：** 本文是 V2 的现行算子契约，规定全部算子的定义、输入输出、校验与图模式映射。算子分两部分：中间件算子（Search、Resolve、Traverse、ReadEvidence、Commit）负责对知识库的定位、导航、读原文与入库；Agent 算子（Extract、Summarize、Generate、Check、Verify、Filter、MatrixConstruct）规定 Agent 使用知识时的工作行为，每次调用的结果持久化为第四类节点 Artifact。Agent 算子的名称沿用 AgenticScholar（[S]：Table 2 与 Appendix D），定义按本项目的使用场景与职责边界重新规定。对象与关系见 [Graph Model V2](./graph_model_v2.md)，入库见 `docs/experiments/e09/operators/commit.md`（早先的表单契约见 [Commit 契约](./commit_contract.md)），intent 与数据流见 [Workload 拆解](./intents_decompose.md)。E09 的实现状态见第 9 节。
+> **状态：** 设计已定（2026-10-12 修订），E09 实现待跟进：各算子的实现状态见第 9 节，正文中未实现的部分标“待实现”。
+>
+> 本文规定全部算子的定义、输入输出、校验与图模式映射。算子分两部分：
+> - **中间件算子**（Search、Resolve、Traverse、ReadEvidence、FetchArtifact、Commit）：对知识库的定位、导航、读原文、取产物文档与入库；
+> - **产物算子**（Leaderboard、CompareSettings、Verify、Summarize、Generate）：面向任务，每个算子对应一类产物。产物是有版本、可共同编辑的文档，持久化为第四类节点 Artifact。
+>
+> 2026-10-12 的修订依据 [`docs/discussions/2026-10-12-task-operators-and-leaderboard.md`](../../discussions/2026-10-12-task-operators-and-leaderboard.md)（下称“讨论稿”）：
+> - 原来的 Agent 算子（Extract、Summarize、Generate、Check、Verify、Filter、MatrixConstruct）改为面向任务的产物算子；
+> - 产物从“写入后不可修改”改为有版本、可共同编辑；
+> - 新增 FetchArtifact；
+> - 产物的格式由种子示例、工具说明与轻度校验引导，只在系统要用到的地方要求结构（讨论稿 2.1）。
+>
+> 旧版见 Git `d36aa54`。对象与关系见 [Graph Model V2](./graph_model_v2.md)，入库见 `docs/experiments/e09/operators/commit.md`（早先的表单契约见 [Commit 契约](./commit_contract.md)），intent 与数据流见 [Workload 拆解](./intents_decompose.md)。
 
 ## 1. 总览
 
@@ -9,24 +21,35 @@
 | 部分 | 算子 | 谁执行 | 结果 |
 | --- | --- | --- | --- |
 | 中间件算子 | `Search`、`Resolve`、`Traverse`、`ReadEvidence` | 中间件，确定性执行 | 任务内返回，不写库 |
+| 中间件算子 | `FetchArtifact` | 中间件，确定性执行 | 把产物文档写到工作目录，不写库 |
 | 中间件算子 | `Commit` | 中间件，确定性执行 | graph-doc 入库 |
-| Agent 算子：生成 | `Extract`、`Summarize`、`Generate` | Agent 生成内容，中间件校验 | 每次调用写一个 Artifact |
-| Agent 算子：判断 | `Check`、`Verify`、`Filter` | Agent 给出逐项判断，中间件校验 | 同上 |
-| Agent 算子：组织 | `MatrixConstruct` | Agent 填写矩阵，中间件校验表格结构 | 同上 |
+| 产物算子：结果表 | `Leaderboard` | Agent 编辑文档，中间件校验并登记版本 | 新建产物，或给已有产物加一个版本 |
+| 产物算子：判断 | `CompareSettings`、`Verify` | 同上 | 同上 |
+| 产物算子：文本 | `Summarize`、`Generate` | 同上 | 同上 |
 
-Agent 能用的工具就是这 12 个算子。中间件算子回答"库里有什么、原文写了什么"；Agent 算子记录"Agent 用这些做了什么"。
+Agent 能用的工具就是这 11 个算子，另有版本记录的读取接口（[读取接口](./versioning_interfaces.md)）。中间件算子回答“库里有什么、原文写了什么”；产物算子记录“Agent 用这些做了什么”，并让后来者在同一份产物上接着做。
 
 ### 1.2 职责边界
 
-- **中间件不调用 LLM。** Agent 算子的内容（抽取值、概述、判断）由 Agent 生成后作为参数交给中间件；中间件只校验结构、引用与出处，并持久化。跨论文的组织（`MatrixConstruct`）也由 Agent 填写：记录在 Artifact 文档中而不在图里，中间件不对其排序、分组或透视，只校验声明的表格结构。这与 AgenticScholar 不同：后者的这些算子是系统内部的一次 LLM 调用。
-- **所有写入经同一版本底层。** 每次写入先校验，再经 graph-vc 在一个事务中写入并产生一个提交记录（版本历史），提交后补算向量。`Commit` 是提交 graph-doc 的算子；Agent 算子不是 `Commit`，但它们写 Artifact 时使用同一底层（第 5.5 节）。校验不通过时不写入，返回错误。
-- **引用参数只接收已确认的 id。** 名称先经 `Resolve`，语义候选经 Agent 确认（通常用 `Filter`）后才能作为引用参数。
+- **中间件不调用 LLM。** 产物的内容（结果行、判断、概述）由 Agent 写在文档里交给中间件；中间件只做确定性的事：校验引用与出处、比对版本、计算编辑提示与读取时的附注，并持久化。这与 AgenticScholar 不同：后者的这些算子是系统内部的一次 LLM 调用。
+- **所有写入经同一版本底层。** 每次写入先校验，再经 graph-vc 在一个事务中写入并产生一个提交记录（版本历史），提交后补算向量。`Commit` 是提交 graph-doc 的算子；产物算子不是 `Commit`，但它们登记产物版本时使用同一底层（第 5.5 节）。校验不通过时不写入，返回错误。
+- **引用只接收已确认的 id。** 名称先经 `Resolve`，语义候选由 Agent 确认后才能作为引用；库中还没有的对象先经 `Commit` 新建。
 - **关系存在不是证据强度。** 路径、参与关系与 `USED` 只说明记录了这些关联；`SUPPORTED_BY`、`SUPPORTS` / `OPPOSES` 记录的是作者或 Agent 的陈述，不经验证。
-- **空结果不等于原文没有。** 论文表单选择性录入，按批次记录的 `coverage` 区分"原文没有报告"与"没有录入"（[Commit 契约](./commit_contract.md) §6）。数值、条件与结果行不在库中，由 Agent 读原文后经 `Extract` 取得。
+- **空结果不等于原文没有。** 论文表单选择性录入，按批次记录的 `coverage` 区分"原文没有报告"与"没有录入"（[Commit 契约](./commit_contract.md) §6）。数值、条件与结果行不在图中，由 Agent 读原文后写进 `Leaderboard`（第 4.2 节）。
 
-### 1.3 设计取向：质量优先
+### 1.3 设计取向：灵活，但不完全灵活
 
-Agent 算子要求声明输入、逐项给出判断与依据、在正文中标注引用，并把每次结果持久化。这些要求使回答和报告可以核查、可以复用，代价是更多的调用与 token。因此评测与叙事以回答和报告的质量为主（正确性、可核查性、依据是否充分、能否复用），不主张单次任务的成本优势；成本作为代价如实报告。
+产物文档的格式由种子示例、工具说明与轻度校验引导，不由中间件强制。**只在系统要用到的地方要求结构，其余一律自由。** 被要求的结构只有三种，每一种都说得出是哪个机制在用它：
+
+- **键**：让不同写者收敛到同一份产物、同一行（产物的身份键与行键，第 4.1 节）；
+- **引用**：让产物连进图里，可以沿关系找到、可以计算过期（第 5.2、5.6 节）；
+- **出处**：让值可以对照原文核查（来源引用，第 2.1 节）。
+
+其余的列、段落与说明文字都由写者决定。
+
+**种子示例。** 库的起始状态里每类产物至少有一份示例，由 `seed` 写入：种子论文（Informer、SCINet）在各数据集上的 Leaderboard，以及 CompareSettings、Verify 各一份。示例要包含难写的情况，如 look-back 写成说明文字的行。A0 同样拿到这些示例（作为文件），但不附任何“须一致维护”的提示（讨论稿第 7 节）。`Generate` 只要求“引用必须存在”，是最自由的产物，相当于通用的编辑。
+
+这些要求使产物可以核查、可以接着做，代价是更多的调用与 token。因此评测与叙事以回答和报告的质量为主（正确性、可核查性、依据是否充分、能否复用），不主张单次任务的成本优势；成本作为代价如实报告。
 
 ## 2. 共同约定
 
@@ -36,9 +59,9 @@ Agent 算子要求声明输入、逐项给出判断与依据、在正文中标�
 | --- | --- | --- |
 | 对象引用 | `<kind 前缀>_<序号>`，如 `method_0027`、`exp_0012`、`art_0003` | 一个节点；由入库分配，当前不修订、不合并 |
 | 来源引用 `source_ref` | `<material_id>::<章节>::<start>:<end>` | 一份固定材料（论文原文或 Artifact 文档）中的行范围；由 `FROM {material_ref, locators}` 或 `USED {material_ref, locators}` 逐个定位拼出 |
-| 记录引用 | `<artifact id>#<key>` | Artifact 中的一条记录（如 `Extract` 的一行、`Filter` 的一项、`MatrixConstruct` 的一格），`key` 为该记录的键 |
+| 记录引用 | `<artifact id>#<key>` | 产物文档中的一条记录（如 `Leaderboard` 的一行、`CompareSettings` 的一个维度），`key` 为该记录的行键（第 4.1 节），指向当前版本中的这一行 |
 
-正文中的引用处直接写引用本身，放在方括号里，例如 `[exp_0012]`、`[art_0003#dlinear-etth1-96]`、`[material_1ec346c934e6::5.3 ...::245:290]`。Agent 算子的文本、产物文档与最终回答都用这一写法，不另设脚注编号。
+正文中的引用处直接写引用本身，放在方括号里，例如 `[exp_0012]`、`[art_0003#method_0014+PatchTST/64+paper_0020+96+512]`、`[material_1ec346c934e6::5.3 ...::245:290]`。产物文档与最终回答都用这一写法，不另设脚注编号。
 
 ### 2.2 对象视图
 
@@ -47,7 +70,7 @@ Agent 算子要求声明输入、逐项给出判断与依据、在正文中标�
 - **字段。** `kind`、`name`、`aliases`（由 NameKey 装配，不含与 `name` 规范化后相同的写法）、`identifiers`、`stub`、`year`、`material`、`definition` / `description` / `text`、`anchors`、`stated_by`、`note` 等；自然键（`exp_key`、`content_key`）与 `embedding` 等派生属性不出现。
 - **关系。** 每个节点带它**全部**的模型出边，一个关系键列出该类型出边的完整集合（只列一部分交回时会删掉其余的边）；边上的属性写在边里，如 `{to, role}`、`{to, locators}`。入边不出现在节点上，经 `Traverse` 沿入边走到对方节点，对方节点的出边里就有这条边。
 - **只读字段**以 `_` 开头，交回时被忽略：有材料的节点与 `FROM` 边的 `_material`（材料 id），Agent 形成的记录与正反关系的 `_formed_by`、`_formed_at`。
-- **Artifact** 只由 Agent 算子写入，字段全部只读：`_op`、`_title`、`_abs`、`_params`、`_formed_by`、`_formed_at`、`_session`、`_material`、`_document`（文档路径）、`_stale`（第 5.6 节）与 `_USED`（`{to, role?, locators?}`，带来源引用的边另有 `_material`）。
+- **Artifact** 只由产物算子写入，字段全部只读：`_op`、`_op_version`、`_key`（身份键，没有时省略）、`_title`、`_abs`、`_formed_by`（创建者）、`_formed_at`、`_version`（`{n, commit, by, at, abstract}`，当前版本）、`_editors`（各编辑者及其版本）、`_material`、`_document`（当前版本的文档路径）、`_stale`（第 5.6 节）与 `_USED`（`{to, role?, locators?}`，带来源引用的边另有 `_material`）。版本与编辑者由提交记录推算，待实现。
 
 Observation 的 `ABOUT` 始终给出完整的对象集合：某个对象命中不代表结论对它单独成立。
 
@@ -80,7 +103,7 @@ AccessResult = {query, items, bindings, source_refs, missing, coverage, continua
 - **契约错误**（未知参数、类型不符的引用、该类别不支持的条件、图模型中不存在的端点组合）直接报错，不返回部分结果。所有算子没有完成时的返回同形：`{status, errors}`，`status` 为 `rejected`（请求没有被执行，什么也没有写入）、`blocked`（`Commit` 的阻塞项）或 `conflict`（提交时与并发写入冲突），`errors` 的每一项为 `{rule, at, msg}`，`at` 指向出错的参数或节点，`Commit` 的阻塞项另带 `candidates` 与 `fix`。请求的顶层形状不对（未知参数、缺少必填参数）记为 `format`，参数的取值不对记为 `schema`。
 - **数据缺失**（引用不在库中、关系无记录）返回空集合与覆盖信息，不当作错误。
 - **执行失败**（向量服务不可用、索引缺失）记入通道状态（`Search` 为 `meta.failed`）；因失败而没有结果时不当作空结果。
-- **会话**：Agent 算子的会话标识 `session` 与形成者 `formed_by` 记在 Artifact 上，用于按会话追溯产物。二者是调用环境的信息，由调用方给出（MCP 服务：进程启动时生成的会话与环境变量 `E09_FORMED_BY`；命令行：`--session`、`--formed-by`），不是算子参数；算子作为工具时，参数中也没有 `op`，工具名就是算子名。
+- **会话**：产物算子的会话标识 `session` 与形成者 `formed_by` 记在产物版本的提交上，用于按会话追溯产物。二者是调用环境的信息，由调用方给出（MCP 服务：进程启动时生成的会话与环境变量 `E09_FORMED_BY`；命令行：`--session`、`--formed-by`），不是算子参数；算子作为工具时，参数中也没有 `op`，工具名就是算子名。
 
 ## 3. 中间件算子
 
@@ -129,7 +152,8 @@ Search(type, query?, kinds?, where={}, expand={}, scope="global", budget, contin
 | Experiment | `on_task: ref` | `(x)-[:ON_TASK]->(ref)` |
 | Experiment | `evaluated_on: ref` | `(x)-[:EVALUATED_ON]->(ref)` |
 | Claim | `supported_by: ref` | `(x)-[:SUPPORTED_BY]->(ref)` |
-| Artifact | `op`、`formed_by`、`session` | Artifact 属性 |
+| Artifact | `op`、`formed_by`（创建者） | Artifact 属性 |
+| Artifact | `edited_by: str`（任一版本的编辑者，待实现） | 由提交链推算 |
 | Artifact | `used: ref` | `(x)-[:USED]->(ref)` |
 
 **诊断：** 写了 `uses` 条件时，另报 `role_missing`（`USES` 指向该数据集但没有 `role` 的实验）与 `expandable`（评测数据落在其组成部分上、本次没有用 `expand.parts` 选中的实验），只给数量与引用。
@@ -143,7 +167,7 @@ Search(type, query?, kinds?, where={}, expand={}, scope="global", budget, contin
 | Entity | `id`、`kind`、`name`、`year` | `description` |
 | Concept | `id`、`kind`、`name` | `definition` 或 `text` |
 | Content | `id`、`kind`、`paper`（`FROM` 的论文 id）、`anchors`、`source_refs` | `text`，另有 `note` |
-| Artifact | `id`、`op`、`title`、`document`（文档路径）、`stale`（有时） | `abs` |
+| Artifact | `id`、`op`、`title`、`document`（文档路径）、`version`（版本号、最近的编辑者与提交）、`stale`（有时） | `abs` |
 
 摘录字段即该类别全文与向量检索的字段；Content 另带 `note`，原文中的问题（印刷错误、推断的设置）常记在这里。
 
@@ -168,7 +192,7 @@ ref = {id, kind, name, aliases?, about?}
 - **只解析 Entity 与 Concept。** Content 与 Artifact 没有称呼，用 `Search` 定位。
 - **三级解析：** 已注册标识（唯一命名空间单个命中即 resolved，非唯一命名空间只缩小候选）→ NameKey 精确键（active 键唯一命中即 resolved）→ 名称词面、文本、向量三通道按 RRF 融合的语义候选。标识与名称同时给出时取交集；名称命中了对象而交集为空时记 `resolution=conflicting`。
 - **mode：** read 模式前两级 resolved 即停止；write 模式仍跑语义查重，近邻在 `similar` 中。
-- **不设阈值。** 库中没有的对象通常以 `candidates` 返回；"库中没有"由 Agent 对候选逐个否定（`Filter`，条件为同一对象）得出。因执行失败而没有引用时为 `unprocessed`，不当作 `none`。
+- **不设阈值。** 库中没有的对象通常以 `candidates` 返回；"库中没有"由 Agent 对候选逐个否定得出；入库时由 `Commit` 的查重把候选退回写者确认。因执行失败而没有引用时为 `unprocessed`，不当作 `none`。
 
 | 返回 | 下游处理 |
 | --- | --- |
@@ -218,10 +242,12 @@ hop = {rel, dir: out | in | both, kinds?, where?, edge?, depth?: 1–3}
 | 论文的引用与被引 | `Traverse([p], [{rel: CITES, dir: both}])` |
 | Benchmark 的成员数据集 | `Traverse([b], [{rel: PART_OF, dir: in, depth: 2}])` |
 | 用过某篇论文的工作产物 | `Traverse([p], [{rel: USED, dir: in, kinds: {Artifact}}])` |
+| 某数据集上的 Leaderboard | `Traverse([d], [{rel: USED, dir: in, kinds: {Artifact}, where: {op: Leaderboard}}])` |
+| 对某条主张的核查 | `Traverse([c], [{rel: USED, dir: in, kinds: {Artifact}, where: {op: Verify}}])` |
 
 ### 3.4 ReadEvidence
 
-**用途：** 按来源引用读取固定材料中的行。论文原文与 Artifact 文档都是材料，读法相同。
+**用途：** 按来源引用读取固定材料中的行。论文原文与 Artifact 文档都是材料，读法相同。读整份产物文档用 `FetchArtifact`（第 3.6 节）更方便。
 
 ```text
 ReadEvidence(source_refs, at?) -> {items, missing, coverage}
@@ -229,239 +255,317 @@ ReadEvidence(source_refs, at?) -> {items, missing, coverage}
 
 引用的开头写材料 id，或写带材料的节点 id（论文或 Artifact），两者等价。按 Material 节点的路径与内容哈希读取，只定位与读取，不解释内容；读到的每行带行号，便于引用其中更小的范围。逐项记录材料状态：`available`（读到，且文件哈希与入库时一致）、`missing`（引用格式不对、库中没有该材料或文件不在）、`error`（文件哈希变了或行号越界；不返回可能错位的文本）。`missing` 列出状态为 `missing` 的引用，各状态的数量在 `coverage` 中。
 
+读的是产物文档时，结果另带一行编辑提示（第 5.6 节），待实现。
+
+**只读产物文档的读者条件。** 服务启动时设 `E09_EVIDENCE_SCOPE=artifacts`，ReadEvidence 只读产物文档：引用落到论文材料时返回 `missing`，原因写明“这里只能读产物文档，不能读论文”。T1 的 `store_only` 读者用这一设置（[冻结记录](../../decisions/2026-10-11-t1-pilot-2-freeze.md) §6）。
+
 `at`（提交 id 或 `main`）给出时，按该提交时的状态解析引用，`coverage.at` 给出固定下来的提交。它用于读取 `AsOf` 旧视图中的材料：即使材料节点或它的归属关系后来被删除，也能读到；文件仍按登记的哈希核对（[读取接口](./versioning_interfaces.md) 第 6.2 节）。
 
 ### 3.5 Commit
 
 **用途：** 把论文知识与 Agent 的理解入库。提交物是 graph-doc（读写同形的子图，交上来的就是想要的状态），设计见 `docs/experiments/e09/operators/commit.md`：graph-doc → dry_run 返回 graph-plan（修改、阻塞项及候选与改法、提示）→ Agent 按阻塞项修改后重交 → apply（graph-vc 单事务提交，产生一个提交记录，提交后补算向量）返回 graph-result。新建、修改、删除与合并都用同一写法；早先的论文表单与增补表单（[Commit 契约](./commit_contract.md)）已转成 graph-doc。
 
-graph-doc 可以引用 Artifact：Observation 的 `ABOUT` 可指向 Artifact，`FROM` 可指向 Artifact 并带其文档的行范围，这是把工作产物提升为长期记录的途径（第 5.7 节）。Artifact 本身不能经 `Commit` 新建或修改；删除被 `USED` 指向的节点时，dry_run 提示用过它的 Artifact 将显示为可能过期。
+graph-doc 可以引用 Artifact：Observation 的 `ABOUT` 可指向 Artifact，`FROM` 可指向 Artifact 并带其文档的行范围，这是把工作产物提升为长期记录的途径（第 5.7 节）。Artifact 本身不能经 `Commit` 新建或修改，只能经产物算子；删除被 `USED` 指向的节点时，dry_run 提示用过它的 Artifact 将显示为可能过期。
 
-## 4. Agent 算子
+**返回相关的共同产物（待实现）。** 提交后，graph-result 列出这次提交涉及的对象上挂着的共同产物，让写者知道自己刚写的内容与哪些产物有关。当前只沿一条路径：本次写入或修改的 Experiment → 它 `USES` 的评测数据集 → 以该数据集为身份键的 `Leaderboard`；另列出“还没有 Leaderboard 的数据集”。
+
+```text
+Shared artifacts on objects this commit touches:
+  leaderboard art_0003 "ETTh1 multivariate long-term forecasting" — v3, last edited by bob (commit_000041)
+  ... 7 leaderboards in all (datasets used by exp_0031)
+  no leaderboard yet for: ILI
+```
+
+这是查询结果，不是要求：任务提示不要求写者维护 Leaderboard。是否沿更多路径（方法、主张）返回，待看采用率再定（讨论稿第 13 节）。
+
+### 3.6 FetchArtifact（待实现）
+
+**用途：** 把产物的文档取到工作目录，供阅读与编辑。它是检出：编辑后经对应的产物算子检入（第 4.1 节）。
+
+```text
+FetchArtifact(artifact | [artifact, ...], at?)
+  -> {items: [{artifact, path, version, hint}], missing}
+```
+
+- 文档写到工作目录的 `./artifacts/<标题>.md`；同名文件已存在时覆盖，并在返回中说明。
+- 写出的文档头部多两行 `id` 与 `base`（取出时的版本所在提交），检入时据此核对；写者不应修改这两行。
+- `at`（提交 id）给出时取该提交时的版本，只供阅读：检入时 `base` 不是最新版本会被拒绝。
+- `hint` 是编辑提示（第 5.6 节）：版本号、最近的编辑者与修改说明、各编辑者，以及“自你上次编辑以来别人改了哪些行”。Leaderboard 另带读取时现算的附注（第 4.2 节）。
+- 一次可取多份：一篇论文往往涉及多张 Leaderboard。
+- 只取产物文档，不取论文，所以在只读产物文档的读者条件下也可用。
+
+```text
+FetchArtifact(artifact: art_0003)
+→ wrote ./artifacts/ETTh1 multivariate long-term forecasting.md
+  art_0003 · version 3 · last edited by bob (commit_000041): "Add Autoformer's own results from Autoformer Table 1"
+  editors: seed (v1) · bob (v2, v3)
+  You have not edited it before.
+  To change it: edit the file, then call Leaderboard(artifact_doc, update_abstract). Do not edit the id and base lines.
+```
+
+工作目录与路径规则与草稿文件相同（[草稿文件](./draft_files.md) §6）。
+
+## 4. 产物算子（待实现）
 
 ### 4.1 共同契约
 
+**检出、编辑、检入。** 产物是工作目录里的一份 Markdown 文档。写者用 `FetchArtifact` 取出已有的产物（第 3.6 节），或照着种子示例新写一份；用自己的文件工具编辑；再调用对应的产物算子检入。
+
 ```text
-<Op>(title?, abs, inputs, params, payload)        # 调用环境另给 session、formed_by
-  -> {status: created | existing, artifact, commit, document, warnings, stats?, render}
+<Op>(artifact_doc | [artifact_doc, ...], update_abstract, confirm?)   # 调用环境另给 session、formed_by
+  -> {status: checked, items: [{doc, artifact?, action: create | update | noop, changes, others, errors, warnings}]}
+   | {status: committed, commit, items: [{doc, artifact, version, document, notes}]}
    | {status: rejected | conflict, errors}
 ```
 
-| 字段 | 说明 |
+| 参数 | 说明 |
 | --- | --- |
-| `title` | 产物标题；省略时由中间件按 `op` 与参数生成 |
-| `abs` | 几句话说明这个产物是什么、回答了什么，作为检索文本 |
-| `inputs` | 用到的对象引用、来源引用、Artifact 或记录引用；每项写成一条 `USED` 边（第 5.2 节） |
-| `params` | 各算子的声明参数，如抽取的 schema、检查维度、矩阵的行与列 |
-| `payload` | Agent 生成的内容：记录、文本、逐项判断或矩阵的格子 |
-| `session`、`formed_by` | 会话标识与形成者，由调用环境给出（第 2.4 节） |
+| `artifact_doc` | 工作目录中的文档路径，或路径列表。头部带 `id` 与 `base` 时是更新，不带时是新建。路径规则与草稿文件相同（[草稿文件](./draft_files.md) §6） |
+| `update_abstract` | 这次改了什么、为什么。必填，进入提交的 `message`，也作为编辑提示显示给后来者（第 5.6 节） |
+| `confirm` | 省略时只校验：返回每份文档的改动、错误与警告，不写入（`checked`）。`true` 时写入。改动了他人写的行时须写成 `{reason: <理由>}`（见下） |
+| `session`、`formed_by` | 会话标识与编辑者，由调用环境给出（第 2.4 节） |
 
-`inputs` 必填。列入哪些输入、是否先读原文，由 Agent 的使用指南约定（实际用到的才列入，数值与判断应来自读过的原文或记录）；中间件不追踪 Agent 读过什么。
+- **先校验、后写入**，与 `Commit` 的 dry_run → confirm 相同。警告在写入前就给出，不会为了改一个笔误多出一个版本。
+- **一次可交多份。** 每份各自校验；任一份有错误时整次不写入。全部通过时在一个提交中写入，每份产物各得一个新版本。
+- **文档按原样保存。** 中间件不重新生成文档：去掉头部的 `id`、`base` 两行后，交上来的就是新版本的内容。写者的排版、多加的列与段落都保留。
+- **与最新版本相同**时为 `noop`，不产生版本。
 
-**共同校验（任一不过即整次拒绝，不写入）：**
+**`changes` 与 `others`。** 校验时把交上来的文档与基础版本逐行比对：
 
-1. `inputs` 是不重复的引用列表。其中的对象引用、Artifact 与记录引用都在库中（记录引用的键须出现在该 Artifact 文档的数据块中）；来源引用格式正确，所指材料在库中，文件与登记的哈希一致，行号不越界。
-2. `params` 与 `payload` 中出现的每个引用（引用参数、`basis`、`source`、`ref` 字段与正文中方括号里的引用）都属于 `inputs`，即由 `inputs` 覆盖：与其中某一项相同；或是来源引用，所指的行落在同一材料的某个来源引用的行范围内（章节名不比较）；或是记录引用，所属的 Artifact 列在 `inputs` 中（记录须存在）；或是对象引用，正是某一项 `USED` 的终点（如论文，它的材料中的行已列在 `inputs` 中）。来源引用的开头写材料 id 或材料所属的节点 id 视为同一个引用。覆盖了某个引用的 `inputs` 项不再提示 `unused-input`。
-3. `params` 与 `payload` 符合该算子的 schema；判断类的每个单元恰有一条判断（不能遗漏，也不能重复）。给了判断但不合格的单元只报不合格，不再另报遗漏。
+- 表格中的行按该类产物的**行键**对齐（第 4.2–4.6 节），分出新增、修改、删除的行；
+- 表外的文字按行比对，同 `git blame`；
+- `others` 列出被改动或删除的、由他人写入的行，以及每一行最近的编辑者。种子写入的行也算他人的行。
 
-**返回：** `status` 为 `created`，或相同调用的重试返回 `existing`（第 5.4 节，此时 `commit` 为空）；`artifact` 为 Artifact 的 id；`commit` 为本次写入的提交 id；`document` 为产物文档的路径与 `material_ref`；`stats` 为该算子的统计（目前只有 `Generate`）；`render` 是文档正文（不含头部），可以直接放进回答，引用按第 2.1 节的方括号写法；`warnings` 为不阻塞的提示：`unused-input`（某个输入没有在 `params` 与 `payload` 中被引用）、`embedding`（提交后补算向量失败，提交保留）。
+**改动他人的内容须写理由。** `others` 非空时，`confirm` 须写成 `{reason: <理由>}`，否则拒绝。理由记入提交的 `meta`，并出现在编辑提示里。用了新证据时在理由中写出引用（按第 2.1 节的写法，会被校验），不强制。这与 `Commit` 修订有据层记录时要写理由相同（[Commit 契约](./commit_contract.md) §5）；不同的是这里不强制锚点，因为产物属于解释层。改自己写的行不受限制。
 
-**错误**的形状与 `Commit` 的阻塞项相同：`{rule, at, msg}`（第 2.4 节），`rule` 为 `format`（请求的形状）、`schema`（算子参数与内容）、`reference`（引用不在库中或不属于 `inputs`）、`judgment`（判断的取值、依据与覆盖）、`citation`（`Summarize` 的段落缺少引用）或 `conflict`（提交时与并发写入冲突）。命令行入口为 `python -m e09`（第 9 节）。
+**轻度校验。** 只拦会破坏库的东西，其余只警告：
 
-**判断的取值：** `T` 表示在声明的条件与依据下成立；`F` 表示有依据判断不成立；`U` 表示依据不足、相互冲突或条件含义不明。`T` 与 `F` 必须给出 `basis`（属于 `inputs` 的引用），`U` 必须给出 `reason`。执行中断与格式错误是 `errors`，不能写成 `U`。
+| 情况 | 处理 |
+| --- | --- |
+| 头部的 `id`、`base` 被改，或 `base` 不是该产物最新版本的提交 | 拒绝（`conflict`）：提示重新 fetch，把自己的改动合并进去后再交；不做自动合并 |
+| 新建的产物，其身份键已有一份产物 | 拒绝，返回已有那份的 id，让写者去 fetch 它 |
+| 更新时改了身份字段（如 Leaderboard 的 `dataset`），且新键已有一份产物 | 拒绝，同上。新键没有产物时允许，等于改键，并在 `changes` 中列出 |
+| 文档中出现的对象 id、产物 id 或记录引用不在库中 | 拒绝（`reference`） |
+| 来源引用格式错误、所指材料不存在或行号越界 | 拒绝（`reference`） |
+| 改动或删除了他人写的行，`confirm` 中没有 `reason` | 拒绝（`others`） |
+| 各类产物自己的轻度规则（第 4.2–4.6 节） | 拒绝（`schema`） |
+| 数字没有出现在所引来源的那几行中 | 警告 |
+| 文档结构与种子示例不同（缺列、多列），或某列的写法与示例不同（如该写数字处写了文字） | 警告，并给出示例的写法 |
 
-**文档正文：** 每个产物的文档都是"头部 + 正文"（第 5.3 节），正文结构按算子规定，见各节的"正文"一项。需要被其他算子读取的产物（`Extract`、`Check`、`Filter`、`MatrixConstruct`）在正文末尾附一个 `yaml` 数据块，其余产物只有可读正文。
+“数字是否出现在所引的行中”是确定性的检查，不需要 LLM，能抓住大部分抄错。
 
-### 4.2 Extract
+**产物的身份键。** 共同维护的前提是写者收敛到同一份产物上。每类产物有自己的身份键，由头部字段算出，按字符串规范化（去首尾空白、统一大小写与空白）后比较，不做模糊匹配。新建时同键已有产物，就像 `Commit` 的查重退回候选一样，把已有的那份退回写者。
 
-**用途：** 读原文后，把需要的具体信息取成结构化记录，例如结果表中的数值、实验设置、资源的发布地址。原文中的数值与条件经它进入任务。
+| 产物 | 身份键 | 行键 |
+| --- | --- | --- |
+| `Leaderboard` | （任务、数据集、设置） | 方法、变体、论文、预测长度、look-back |
+| `CompareSettings` | 被比较的两项（无序） | 维度 |
+| `Verify` | 被核查的主张 | 无，按行比对 |
+| `Summarize`、`Generate` | 无：每次新建都是一份新的产物 | 无，按行比对 |
 
-```text
-Extract(inputs, params: {schema: {fields: {name: type}, required: [...], key: [...]}},
-        payload: {rows: [{<fields>, source}], note?})
+行键的各字段按字符串比较，可以写说明文字（如 look-back 写“best of 24–720”），只警告不拒绝。记录引用 `<artifact id>#<key>` 中的 `key` 是行键各字段以 `+` 相连，空字段留空，如 `art_0003#method_0001++paper_0001+24+96`。不用逗号与分号，因为它们在方括号中分隔多个引用。
+
+**返回。** `checked` 时，每份文档给出：动作；`changes`（新增、修改、删除的行数，修改与删除的行逐一列出）；`others`；`errors`；`warnings`。`committed` 时给出提交 id、每份产物的 id 与新版本号、新版本的文档（路径与 `material_ref`），以及读取时现算的附注 `notes`（第 4.2 节）。
+
+**错误**的形状与 `Commit` 的阻塞项相同：`{rule, at, msg}`，`at` 写成 `<文件>:<行号>`，写者就地改那几行再交。`rule` 为 `format`、`schema`、`reference`、`others`、`identity`（身份键已有产物）或 `conflict`。
+
+**判断的取值。** `CompareSettings` 与 `Verify` 的结论沿用三值：`T` 表示在声明的条件与依据下成立；`F` 表示有依据判断不成立；`U` 表示依据不足、相互冲突或条件含义不明。`T` 与 `F` 须给出依据（引用），`U` 须写明原因。
+
+**文档头部。** 所有产物都是“头部 + 正文”。头部是 YAML：`id`、`base`（只在取出的文档中出现）、`title`、`abs`，以及各类产物的身份字段。`title` 与 `abs` 是检索文本。
+
+### 4.2 Leaderboard
+
+**用途：** 共同维护的结果表。一份对应一个（任务、数据集、设置），如“ETTh1 多变量长期预测”，跨论文、跨预测长度。论文中的结果数值经它进入库，取代原来的 `Extract` 与 `MatrixConstruct`。服务 I3；对应 PapersWithCode 的评测表。
+
+```markdown
+---
+id: art_0003
+base: commit_000057
+title: ETTh1 multivariate long-term forecasting
+abs: MSE and MAE reported for methods on ETTh1 (multivariate), by paper and forecasting horizon.
+task: task_0001          # Long-term time series forecasting
+dataset: dataset_0002    # ETTh1
+setting: {variate: multivariate}
+metrics: {MSE: lower, MAE: lower}
+---
+## Results
+
+| method | variant | paper | role | origin | lookback | pred_len | MSE | MAE | source |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| method_0001 Informer |  | paper_0001 Informer | target | run | 96 | 24 | 0.577 | 0.549 | material_a1::4.2::120 |
+
+## Papers covered
+
+| paper | tables | complete | note |
+| --- | --- | --- | --- |
+| paper_0001 Informer | Table 1 (material_a1::4.2::112:140) | yes | horizons 24, 48, 168, 336, 720 |
 ```
 
-- **字段类型：** `string`、`number`、`integer`、`boolean`、`ref`（图中对象引用）、`enum[...]`。单位、口径等写成独立字段，不混进数值。
-- **`source`：** 每行的出处，为 `inputs` 中的一个引用。
-- **记录键：** `key` 必填，列出决定一条记录的字段；记录键由这些字段的值依次转成小写、非字母数字换成 `-` 后用 `-` 连接，例如 `method_0003-dataset_0001-96`。
-- **校验：** 字段名为标识符（字母开头，由字母、数字与 `_` 组成，`key` 与 `source` 保留）；每行只含声明的字段与 `source`，值符合类型；`required` 与 `key` 中的字段非空；记录键在本次产物中唯一；`ref` 字段与 `source` 的引用都属于 `inputs`（因而在库中）。
-- **空结果：** `rows` 为空时必须写 `note`，说明读了什么、为什么没有，记录的是"材料中没有找到"。
-- **正文：** 一张记录表（第一列为记录键，未填的字段写"—"，最后一列为出处）；`note`（如有）；数据块 `{schema, rows: [{key, <fields>, source}], note?}`。每条记录可用 `<artifact>#<key>` 引用。
-- **不做的事：** 不跨行合并不同设置下的值，不换算单位，不补原文没有的值。
+- **列：** `variant` 记变体或配置名（如 `PatchTST/64`），变体不建节点；`role` 区分论文提出的方法（`target`）与基线（`baseline`）；`origin` 区分论文自己跑的（`run`）与转录他文的（`cited`）。
+- **“Papers covered”** 记录每篇论文转录了哪些表、是否完整。“论文没有报告这一格”与“没人转录这一格”由此区分。
+- **强制的部分及用它的机制：**
 
-### 4.3 Summarize
+  | 强制的部分 | 用它的机制 |
+  | --- | --- |
+  | 头部的 `task`、`dataset`、`setting` | 身份键：一个键只有一张表 |
+  | 头部的 `task`、`dataset` 写成 id | `USED` 边：从数据集出发能找到它的表；`Commit` 返回相关产物（第 3.5 节） |
+  | 行键 | 逐行归属与编辑规则；判断“同一篇论文的同一格出现两个值” |
+  | `method`、`paper` 写成 id（后面可跟名字） | 同一方法的行聚到一起；表格碎片化的测量 |
+  | 每个数值行带 `source` | 数字是否在所引行中的检查；所引论文换版本时的附注 |
 
-**用途：** 把多份材料或记录忠实地压缩成概述，例如一个方法的机制要点、几篇论文的共同设置与差异。所有内容都可追溯到输入。
+- **自己的轻度规则：** 新增与修改的行须带 `source`，且 `source` 落在该行 `paper` 的材料中；`metrics` 中声明的列须为数字或留空。
+- **读取时现算的附注**，不写进文档，随 `FetchArtifact` 与检入的返回给出：
 
-```text
-Summarize(inputs, params: {focus}, payload: {text})
+  ```text
+  --- computed at read (not part of the document) ---
+  rows by contributor: seed (40) · bob (+48, commit_000041) · alice (+32, commit_000057)
+  superseded sources: 4 rows cite FiLM v3; v4 exists (commit_000090) — rows 61–64
+  cells with several values: Autoformer · 96 · MSE: 0.449 (Autoformer paper) / 0.435 (PatchTST paper)
+  ```
+
+  “同一格有几个值”要分开两种情况：同一篇论文的同一格有不同的值，说明有人抄错了；不同论文对同一方法报告不同的值，是正常的并存。
+- **待定：** 消融表是同样写进 Leaderboard（加一列 `table: main | ablation`），还是每篇论文另建一份结果表。
+
+### 4.3 CompareSettings
+
+**用途：** 判断两组结果是否可比：look-back、数据切分、归一化、训练数据、评测协议等是否一致。服务 I3；由原来的 `Check` 改来。维度由种子示例给出，不再每次自定，这样不同写者的判断能对到同一处。
+
+```markdown
+---
+title: PatchTST/64 vs TiDE on ETTh1
+abs: Whether PatchTST/64 and TiDE results on ETTh1 are comparable.
+items:
+  - art_0003#method_0014+PatchTST/64+paper_0020+96+512
+  - art_0003#method_0031++paper_0033+96+720
+verdict: U
+---
+| dimension | left | right | same | basis |
+| --- | --- | --- | --- | --- |
+| lookback | 512 | 720 | F | [material_p1::4.1::164] [material_t1::4.1::223] |
+| split | 6:2:2 | 6:2:2 | T | ... |
+| normalization | ... | ... | U | not stated in TiDE |
 ```
 
-- **校验：** `text` 非空；**每个段落至少有一处引用**，引用都属于 `inputs`。段落以空行分隔，只有标题的段落不计。方括号中的内容全部是引用时才算引用（多个引用以逗号或分号分隔）；`[文字](链接)` 形式的 Markdown 链接不算。
-- **正文：** `text` 原样。
-- **与 Generate 的区别：** Summarize 只压缩与重组输入中已有的内容；需要推断、建议或新内容时用 `Generate`。
+- **强制的部分：** `items`（被比较的两项，写成 Leaderboard 的记录引用或实验 id），用作身份键，也让读者从 Leaderboard 的格子找到对它的可比性判断；表中每个维度一行、`same` 为三值，`T` 与 `F` 带依据；`verdict` 为三值。
+- **维度：** 种子给出 `lookback`、`split`、`normalization`、`training_data`、`protocol`，另可加 `other` 等行。
+- 详细格式下一轮随种子一起定。
 
-### 4.4 Generate
+### 4.4 Verify
 
-**用途：** 产出新内容：给用户的最终回答、写作草稿、研究点子、实验方案。
+**用途：** 一条主张在给定证据下是否成立、在什么范围内成立。服务 I2、I5。
 
-```text
-Generate(inputs, params: {purpose: answer | draft | idea | plan | other}, payload: {text})
+```markdown
+---
+title: Verify "channel independence reduces overfitting" (PatchTST)
+abs: ...
+claim: claim_0042
+verdict: T
+scope: on the 8 datasets of Table 3, with look-back 336/512
+---
+<依据与推理，引用写在方括号里>
 ```
 
-- **校验：** `text` 非空；出现的引用都属于 `inputs`。允许没有引用的段落；有引用的段落比例在返回的 `stats.cited_paragraphs` 中给出（如 `1/3`），不另存，需要时可从文档重算。
-- **正文：** `text` 原样。
-- **最终回答：** 回答中的数值、比较与判断应引用 `Extract`、`MatrixConstruct`、`Check`、`Verify` 的产物（第 6 节）。
+- **强制的部分：** `claim`（被核查的主张的 id），用作身份键，也让从 Claim 出发能看到对它的核查；`verdict` 为三值；`T` 与 `F` 时正文至少有一处引用，`U` 时写明原因。
+- 核查一条记录是否忠实于原文，写成 `Verify`；把产物内容采纳为 Observation 不算独立核查。
 
-### 4.5 Check
+### 4.5 Summarize
 
-**用途：** 两条以上的记录在声明的维度上是否一致、是否可比，例如两组结果的数据集切分、预测长度、指标口径是否相同，或两篇论文的设置是否矛盾。
+**用途：** 忠实压缩多份材料或记录。服务 I4。
 
-```text
-Check(inputs, params: {items: {key: 引用}, pairs: [[k1, k2], ...] | all_pairs, dimensions: [{id, question}]},
-      payload: {judgments: [{pair: [k1, k2], dimension, value: T | F | U, basis, reason}]})
-```
+- **强制的部分：** 每个段落至少有一处引用（段落以空行分隔，只有标题的段落不计；方括号中的内容全部是引用时才算引用）。这是忠实压缩的检查。
+- 没有身份键：每次新建都是一份新的产物；仍然可以被他人编辑。
 
-- `items` 的引用可以是对象、记录或来源引用，至少两项。
-- **校验：** 每个 `(pair, dimension)` 恰有一条判断；判断中的 `pair` 不计顺序，`[k2, k1]` 与声明的 `[k1, k2]` 是同一对。`all_pairs` 展开为 `items` 的全部两两组合。`T` 表示在该维度上一致或可比。
-- **正文：** 一张判断表（行为成对的项，列为维度，单元格为 `T` / `F` / `U`）；其下逐条列出 `F` 与 `U` 的依据和原因；数据块 `{items, pairs, dimensions, judgments}`，`pairs` 按声明的顺序。每个对可用 `<artifact>#<k1>~<k2>` 引用，`k1`、`k2` 的顺序与 `pairs` 中相同。
-- **不做的事：** 不给出总体结论（"这两组结果可比"）。维度的合取规则由调用方声明，或交给 `Generate` 说明。
+### 4.6 Generate
 
-### 4.6 Verify
+**用途：** 最灵活的产物：回答、草稿、点子、方案。服务撰写类任务，用 LLM judge 按 rubric 评，rubric 中单列“出处”一项。
 
-**用途：** 一条主张在指定证据下是否成立，以及在什么范围内成立。例如核对论文的主张是否被它自己的实验支持，或某个结论在另一篇论文的结果下是否还成立。
-
-```text
-Verify(inputs: 证据, params: {claim: 引用 | {text}},
-       payload: {value: T | F | U, conditions?, basis, reason})
-```
-
-- `claim` 可以是 Claim、Observation、记录引用，或一段写明的主张文本。
-- `T` 表示证据支持，`F` 表示证据反驳，`U` 表示不足以判断。**没有找到支持不等于反驳**，应为 `U`。
-- `conditions` 写成立的范围与限定，例如"仅在预测长度不超过 336 时成立"。
-- **正文：** 一行结论（主张与 `T` / `F` / `U`）、成立范围、依据与原因。`claim` 为引用时，它也须属于 `inputs`，其 `USED` 边的 `role` 含 `claim`。
-- 需要长期留存的结论，经 `Commit` 写成 Observation 或 Agent 的正反关系。
-
-### 4.7 Filter
-
-**用途：** 对一组对象逐项判断是否满足一个条件。这是最常用的判断：候选是不是同一个对象（`Resolve` 候选确认、入库查重）、方法是否适用于需求、记录是否与问题相关。
-
-```text
-Filter(inputs, params: {items: {key: 引用}, condition: {id, text}},
-       payload: {judgments: [{key, value: T | F | U, basis, reason}]})
-```
-
-- **校验：** 每个 `key` 恰有一条判断。
-- **正文：** 条件一行；按 `T` / `F` / `U` 分三节，每项一行（键、引用、依据或原因）；数据块 `{items, condition, judgments}`。`U` 不得当作 `F` 丢弃，必须保留。每项可用 `<artifact>#<key>` 引用。
-- 后续只用 `T` 项时，在后续算子的 `inputs` 中引用这些项（`<artifact>#<key>`）。
-
-### 4.8 MatrixConstruct
-
-**用途：** 把跨论文的比较组织成一张矩阵，例如方法 × 数据集的结果表、Issue × Method 的研究空白矩阵、方法 × 设计要素的路线对比。矩阵由 Agent 填写，中间件只校验表格结构。
-
-```text
-MatrixConstruct(inputs,
-                params: {rows: {key: 引用 | {text}}, columns: {key: 引用 | {text}},
-                         cell: {type, question?}},
-                payload: {cells: [{row, col, value, basis?, note?}], note?})
-```
-
-- **行与列：** 每个键对应一个引用（对象、记录或来源引用），或一段写明的标签 `{text}`。行、列中的引用写成 `USED` 边，`role` 记录键。
-- **格子：** `type` 与 `Extract` 的字段类型相同（第 4.2 节），`T` / `F` / `U` 写作 `enum[T, F, U]`。`value` 可为 `null`，表示空格子。`basis` 与 `note` 可选，不由中间件强制；是否给出依据、空格子写明"未报告""不适用"还是"未查"，由使用指南引导（第 6 节）。
-- **校验：** `rows`、`columns` 非空，键的写法与 `Check`、`Filter` 的项键相同；每个"行 × 列"恰有一个格子，不缺、不重复，不出现未声明的行或列；非空的 `value` 符合 `cell.type`；出现的引用（行、列、`ref` 类型的值、`basis`）都属于 `inputs`。不合格时按 `schema` 或 `reference` 报错。
-- **不做的事：** 不核对格子的值是否等于所引用记录中的值，不判断同一列的值是否可比（可比性先经 `Check` 判断），不排序、不汇总。排名与结论在 `Generate` 中说明。
-- **正文：** 一张矩阵表（行、列按声明的顺序，空格子写"—"，有 `basis` 的格子在值后附引用）；其下列出各格的 `note`；数据块 `{rows, columns, cell, cells}`，`cells` 按行优先、声明的顺序排列。每个格子可用 `<artifact>#<row>~<col>` 引用。
+- **强制的部分：** 只有“出现的引用必须存在”。不要求每段带引用。
+- 返回 `stats`：段落数、带引用的段落数。引用比例只是报告项，不是校验。
 
 ## 5. Artifact
 
 ### 5.1 定位
 
-Artifact 是第四类节点，与 Entity、Concept、Content 并列：记录 Agent 使用知识时做出来的东西。前三类来自阅读论文，Artifact 来自使用。它是通用节点：不分子类型，不用语义关系连接其他节点，只记录"用什么产出了什么"。名称取自溯源模型 OPM 中的 Artifact（过程产出的不可变状态）。
+Artifact 是第四类节点，与 Entity、Concept、Content 并列：记录 Agent 使用知识时做出来的东西。前三类来自阅读论文，Artifact 来自使用。它不分子类型，不用语义关系连接其他节点，只记录“用什么做出了什么”。
+
+**每个版本不可变，产物本身可以演进。** 2026-10-12 之前的设计取 OPM 的定义（过程产出的不可变状态），产物写入后不修改；这使一份结果表只能由一个人维护，多写者共同积累无从谈起，所以改为有版本、可共同编辑的文档。OPM 的不可变性落在版本上。
 
 ### 5.2 节点与关系
 
 ```text
-(:Artifact {id: art_<序号>, op, title, abs, params, formed_by, formed_at, session, artifact_key})
+(:Artifact {id: art_<序号>, op, op_version, key?, title, abs, formed_by, formed_at})
 (a:Artifact)-[:USED {role?: [..], material_ref?, locators?: [..]}]->(x)    x 为任意 Entity、Concept、Content 或 Artifact
-(m:Material {path, content_hash})-[:MATERIAL_OF]->(a:Artifact) 产物文档
+(m:Material {path, content_hash})-[:MATERIAL_OF]->(a:Artifact)            每个版本一份文档
 ```
 
 | 属性 | 说明 |
 | --- | --- |
-| `op` | 产出它的 Agent 算子 |
-| `title`、`abs` | 标题与摘要，与文档头部相同，参与检索与向量 |
-| `params` | 调用参数（键排序后的 JSON 字符串） |
-| `formed_by`、`formed_at`、`session` | 形成者、时间（写入时生成）与会话 |
-| `artifact_key` | `op`、`inputs`、`params`、`payload` 与 `formed_by` 的哈希（SHA-256 的前 16 位），用于幂等；唯一约束 |
+| `op` | 产物的类别，即检入它的算子 |
+| `op_version` | 该类产物当时的工具说明与校验规则的哈希。说明或规则改了，旧版本仍能知道自己是在哪套规则下写入的 |
+| `key` | 身份键（第 4.1 节）的规范化字符串；有键的产物上唯一约束 |
+| `title`、`abs` | 当前版本头部的标题与摘要，参与检索与向量；每次检入更新 |
+| `formed_by`、`formed_at` | 创建者与创建时间 |
 
-`USED` 的写法：
-
-- 对象引用 → `USED` 指向该对象，`role` 取它在 `params` 中的角色（Check、Filter 的项键，Verify 的 `claim`），没有角色时省略；
-- 来源引用 → `USED` 指向该材料所属的节点（论文或 Artifact），边上带 `material_ref` 与 `locators`，与 `FROM` 的写法相同；
-- 记录引用 → `USED` 指向该记录所属的 Artifact，`role` 记录键。
-
-同一 Artifact 到同一终点只有一条 `USED` 边（graph-vc 以起点、类型、终点标识一条边），所以 `role` 与 `locators` 都是列表：几个项键、记录键指向同一终点时合并为一个排序后的列表，同一材料的几个行范围合并到 `locators`。`USED` 只表示"产出时用到了它"，不表示支持、讨论或同一。
+- **版本不加字段。** 每次检入在同一个提交中：登记新版本文档的 Material 与 `MATERIAL_OF`；把上一版本的 Material 记上 `superseded_by`（与论文换版本的做法相同）；按新版本重写 `USED` 边；更新 `title`、`abs`。版本号、各版本的编辑者与修改说明都由提交链推算。
+- **`USED` 由文档中的引用得出**，不另外声明：头部的 id 字段与正文中方括号里的引用。对象引用指向该对象，`role` 取它所在的头部字段（如 `dataset`、`claim`）；来源引用指向材料所属的节点，边上带 `material_ref` 与 `locators`；记录引用指向所属的产物，边上的 `material_ref` 固定为引用时那个产物的当前版本。同一终点只有一条边，`role` 与 `locators` 都是列表。`USED` 只表示“这个版本用到了它”，不表示支持、讨论或同一。
 
 ### 5.3 文档
 
-每个 Artifact 有一份 Markdown 文档，登记为 Material（路径与内容哈希），因此可以用 `ReadEvidence` 读取、用来源引用引用其中的行。文档仿照 skill 文件，只有头部与正文：
+每个版本的文档登记为一个 Material（路径与内容哈希），可以用 `ReadEvidence` 读取、用来源引用引用其中的行。
 
-```text
----
-title: <自动生成或 Agent 撰写>
-nodes_used: [<inputs 中的引用>]
-abs: <Agent 撰写或自动生成>
----
-<正文：结构按算子规定（第 4.2–4.8 节）>
-<数据块（Extract、Check、Filter、MatrixConstruct）：正文末尾的 ```yaml 代码块>
-```
-
-- `nodes_used` 按 `inputs` 的顺序，来源引用统一写成材料 id 的形式，与 `ReadEvidence` 的写法相同。它是不可变的输入记录，读取时据此计算过期（第 5.6 节）。
-- 数据块是文档中最后一个 `yaml` 代码块；记录引用按它解析。
-- 文档按标题命名：存放在材料根目录下的 `artifacts/<标题>.md`，让读文件的 Agent 从文件名就能认出内容。标题中文件名不能用的字符换成空格，过长时按字节截断；文件名已被内容不同的文档占用时依次加 ` (1)`、` (2)`。对应的 Material id 仍由内容哈希给出（`material_<内容哈希前 12 位>`），与文件名无关，来源引用写的是 Material id。文件不进 git，版本由提交链记录（`docs/experiments/e09/operators/commit.md` §8.5）。
-- `op`、形成者、时间与参数记在节点上，不重复写进文档。
+- 文档存放在材料根目录下的 `artifacts/`，按标题与版本命名（如 `ETTh1 multivariate long-term forecasting.v4.md`），让读文件的 Agent 从文件名就能认出内容；文件名不能用的字符换成空格，过长时按字节截断。Material id 由内容哈希给出，与文件名无关。文件不进 git，版本由提交链记录。
+- `FetchArtifact` 写到工作目录的文件名不带版本号，头部加 `id` 与 `base` 两行；检入时去掉这两行再保存。
+- `op`、编辑者、时间不写进文档。
 
 ### 5.4 身份与幂等
 
-Artifact 没有同一性问题：不查重，不合并，只追加。相同 `artifact_key` 的调用视为重试，返回已有的 Artifact（`status: existing`），不重复写入。`session` 与 `title` 不在 `artifact_key` 中：换会话或只改标题的相同调用仍是重试。Artifact 及其文档写入后不修改，也不能经 `Commit` 修改或删除。
+- **有身份键的产物**按键收敛：新建时同键已有产物，拒绝并退回已有的那份（第 4.1 节）。不做合并：两份同键的产物不会同时存在。
+- **没有身份键的产物**（`Summarize`、`Generate`）不查重。新建时内容与某份已有产物的某个版本完全相同（同一 `op`、同一编辑者），视为重试，返回已有的产物。
+- **更新**按 `base` 做乐观校验：`base` 不是最新版本的提交时拒绝（`conflict`）。写者轮流执行，这种情况很少，但机制要有。
+- 产物不能经 `Commit` 新建、修改或删除。删除产物（例如撤回整份）当前不提供。
 
 ### 5.5 写入
 
-Agent 算子校验通过后，经与 `Commit` 相同的版本底层（graph-vc）写入，顺序是：
+产物算子带 `confirm` 且校验通过后，经与 `Commit` 相同的版本底层（graph-vc）写入：
 
-1. 按 `artifact_key` 查找，已有则作为重试返回（第 5.4 节）；
-2. 写文档：内容相同的文档已有 Material 时沿用它的文件；否则按标题取文件名，被内容不同的文件占用时加序号，同名文件内容相同时直接沿用；先写临时文件再改名；
-3. 分配 id，在一个事务中写 Artifact 节点、`USED` 边、Material（同一文档已登记时不重复建）与 `MATERIAL_OF`，产生一个提交记录：`source` 为 `operator:<op>`，`author` 为 `formed_by`，`meta` 记 Artifact 的 id 与会话，`files` 记文档的路径与哈希；
-4. 提交后补算 `title` 与 `abs` 的向量；失败不回滚，只在 `warnings` 中提示。
+1. 写文档：每份新版本的文档先写临时文件再改名；内容相同的文档已有 Material 时沿用；
+2. 在一个事务中：新建的产物分配 id、写节点；每份产物登记新版本的 Material，把上一版本记为 `superseded_by`，重写 `USED` 边，更新 `title`、`abs`；产生一个提交记录：`source` 为 `operator:<op>`，`author` 为 `formed_by`，`message` 为 `update_abstract`，`meta` 记各产物的 id、版本与会话、`confirm` 中的理由，`files` 记文档的路径与哈希；
+3. 提交后补算 `title` 与 `abs` 的向量；失败不回滚，只在 `warnings` 中提示。
 
-事务失败时文档文件留在原处：它没有节点引用，不影响库，重试时内容相同而直接复用。形成信息在节点与提交记录上。
+事务失败时文档文件留在原处：没有节点引用它，不影响库，重试时内容相同而直接复用。
 
-### 5.6 检索与过期
+### 5.6 检索、编辑提示与过期
 
-- **默认不进入 Search 的结果**，见第 3.1 节；经 `Search(type=Artifact)` 或沿 `USED` 的 `Traverse` 取得。
-- **过期在读取时计算，不存状态。** 视图的 `_stale` 逐项列出"可能过期"的原因 `{ref, reason}`：
+- **默认不进入 Search 的结果**，见第 3.1 节；经 `Search(type=Artifact)`、沿 `USED` 的 `Traverse` 或 `Commit` 的返回（第 3.5 节）取得。
+- **编辑提示**由提交链与相邻版本的比对算出，不写进文档：
+  - `FetchArtifact` 给出完整的提示：版本号；最近的编辑者、提交与修改说明；各编辑者及其版本；“自你上次编辑以来别人改了哪些行”（第 3.6 节）；
+  - `Search` 的结果与 `ReadEvidence` 读产物文档时，附一行：`art_0058 · v4 · last edited by writer-i3 at commit_000071 · 3 editors`。
 
-  | `reason` | 含义 |
-  | --- | --- |
-  | `document` | Artifact 自己的文档文件不在，或内容与登记的哈希不同 |
-  | `removed` | 文档头部 `nodes_used` 中的对象（或记录所属的 Artifact、来源引用的材料）已不在库中 |
-  | `material` | 所用材料的文件不在，或哈希与登记的不同 |
-  | `stale input` | 所用的 Artifact 本身可能过期（递归计算） |
+  “自你上次编辑以来别人改了哪些行”最有用：同一个写者隔几次会话回来，马上知道自己写的东西被谁动过。
+- **过期在读取时计算，不存状态。** 视图的 `_stale` 逐项列出“可能过期”的原因 `{ref, reason}`：
 
-  删除节点时 graph-doc 一并删掉指向它的 `USED` 边，所以 `removed` 按不可变的文档头部核对，而不是看现存的边。过期只是提示，不修改、不删除。
-- **价值信号：** 被其他 Artifact `USED` 的次数、被 Observation 引用的次数，供检索排序与日后清理使用。
+  | `reason` | 含义 | 状态 |
+  | --- | --- | --- |
+  | `document` | 当前版本的文档文件不在，或内容与登记的哈希不同 | 已实现 |
+  | `removed` | 当前版本引用的对象（或记录所属的产物、来源引用的材料）已不在库中 | 已实现 |
+  | `material` | 所用材料的文件不在，或哈希与登记的不同 | 已实现 |
+  | `superseded` | 所用材料已被新版本取代：论文有了新版本，或所引产物有了新版本；另带 `by` | 论文已实现，产物待实现 |
+  | `revised` | 所用的有据层记录在这个版本形成之后被修订过（比较之后的提交） | 待实现 |
+  | `stale input` | 所用的产物本身可能过期（递归计算） | 已实现 |
+
+  过期只是提示，不修改、不删除。产物的成本高、重算不确定，所以标记而不维护。
 
 ### 5.7 提升为长期记录
 
-Artifact 是未经审定的工作痕迹；Observation 是由提交者明确写入的理解。需要长期留存的产物，经 `Commit` 写成 Observation：`ABOUT` 指向该 Artifact，`FROM` 指向该 Artifact 并带其文档的行范围（如 `{to: art_0003, locators: ["Check::12:20"]}`）。读取时两者分开呈现，不把 Artifact 当作已确认的结论。
+Artifact 是解释层的工作产物；Observation 是由提交者明确写入的理解。需要作为一条记录留存的判断，经 `Commit` 写成 Observation：`ABOUT` 指向该 Artifact，`FROM` 指向该 Artifact 当前版本的文档并带行范围（如 `{to: art_0003, locators: ["Results::12:20"]}`）。读取时两者分开呈现，不把 Artifact 当作已确认的结论。
 
 ## 6. 使用约定
 
-- **按需使用。** 回答中含数值、比较或判断时使用 Agent 算子；简单的定位与阅读问题直接用中间件算子回答。
-- **使用指南。** `inputs` 怎么填、何时先读原文、引用怎么写，由 Agent 配置中的使用指南简单约定（第 4.1 节），不由中间件强制。跨论文的比较与对照用 `MatrixConstruct` 整理成矩阵；格子尽量给出 `basis`，空格子在 `note` 中写明是未报告、不适用还是未查。
-- **回答引用产物。** 最终回答中的数值、比较与判断应来自 Artifact，可直接粘贴其 `render`；每个数字都能经方括号中的引用追到记录与原文行。
-- **结果默认折叠。** 在 Agent 应用中，Agent 算子的调用以一行摘要呈现（如"抽取 12 行结果""核对可比性：3 对可比、1 对不确定"），用户展开时再看产物。用户读的始终是对话中的回答。
-- **判断与确认用 Filter。** `Resolve` 的候选确认、入库前的查重判断都以 `Filter`（条件为同一对象）记录，其成本计入构建成本。
+- **按需使用。** 回答中含数值、比较或判断时使用产物算子；简单的定位与阅读问题直接用中间件算子回答。
+- **先找已有的产物。** 新建之前，先经 `Search(type=Artifact)`、沿数据集或主张的 `Traverse`，或 `Commit` 的返回，看是否已有可以接着编辑的那一份。有身份键的产物，新建时撞键会被退回。
+- **照着已有的写。** 格式由种子示例与已有的产物示范；工具说明写明强制的部分，其余由写者决定。
+- **回答引用产物。** 最终回答中的数值、比较与判断应来自产物，每个数字都能经方括号中的引用追到行与原文。
+- **任务提示不要求维护产物。** 写者是否发现并维护共同的产物，是评测的观测量（采用率），不是指令。
 
 ## 7. 典型组合
 
@@ -469,12 +573,14 @@ Artifact 是未经审定的工作痕迹；Observation 是由提交者明确写�
 
 | Intent | 组合 |
 | --- | --- |
-| I1 发现适合需求的方法 | `Search(Concept, kinds={Method})` → `Traverse` 取讨论它们的主张与实验 → `ReadEvidence` → `Filter`（是否适用）→ `Generate`（回答） |
-| I2 理解机制与细节 | `Resolve` → `Traverse([m])` 及其 `ABOUT` 入边的 Content → `ReadEvidence` → `Extract`（设置细节）或 `Summarize`（机制要点） |
-| I3 组织结果并判断可比性 | `Resolve` → `Search(Content, kinds={Experiment}, where={evaluates, uses})` → `ReadEvidence`（按锚点读表）→ `Extract`（结果行）→ `Check`（切分、长度、口径）→ `MatrixConstruct`（方法 × 数据集，可比的结果）→ `Generate` |
-| I4 综合同一问题下的路线 | `Search(Concept, kinds={Issue})` → `Traverse` 取 `ABOUT` 它的主张与贡献 → `ReadEvidence` → `Extract`（路线要素）→ `MatrixConstruct`（Issue × Method）→ `Summarize` |
-| I5 核查主张的依据 | `Search(Content, kinds={Claim})` → `Traverse`（`SUPPORTED_BY`、`SUPPORTS` / `OPPOSES`）→ `ReadEvidence` → `Verify` → 需要留存时经 `Commit` 写 Observation |
-| I6 取得实现资源 | `Resolve` → `Traverse`（`IMPLEMENTS` 入边，当前无数据）或 `Search(Entity, kinds={Code, Model}, query)` → `ReadEvidence` → `Filter`（是否就是该实现）→ `Extract`（地址与设置） |
+| I1 发现适合需求的方法 | `Search(Concept, kinds={Method})` → `Traverse` 取讨论它们的主张与实验 → `ReadEvidence` → `Generate`（回答） |
+| I2 理解机制与细节 | `Resolve` → `Traverse([m])` 及其 `ABOUT` 入边的 Content → `ReadEvidence` → `Summarize`（机制要点）或 `Verify`（某条说法是否成立） |
+| I3 组织结果并判断可比性 | `Resolve` → `Traverse([dataset], [{rel: USED, dir: in, kinds: {Artifact}}])` 找到 Leaderboard → `FetchArtifact` → 读原文、编辑 → `Leaderboard` 检入 → `CompareSettings`（可比性）→ `Generate`（回答） |
+| I4 综合同一问题下的路线 | `Search(Concept, kinds={Issue})` → `Traverse` 取 `ABOUT` 它的主张与贡献 → `ReadEvidence` → `Summarize` |
+| I5 核查主张的依据 | `Search(Content, kinds={Claim})` → `Traverse`（`SUPPORTED_BY`、`SUPPORTS` / `OPPOSES`，以及 `USED` 入边上已有的 `Verify`）→ `ReadEvidence` → `Verify`（新建或编辑已有的那一份） |
+| I6 取得实现资源 | `Resolve` → `Traverse`（`IMPLEMENTS` 入边，当前无数据）或 `Search(Entity, kinds={Code, Model}, query)` → `ReadEvidence` → `Generate`（地址与设置） |
+
+入库时维护 Leaderboard 的完整过程见讨论稿 §6.1。
 
 ## 8. 本版不纳入
 
@@ -482,8 +588,10 @@ Artifact 是未经审定的工作痕迹；Observation 是由提交者明确写�
 | --- | --- |
 | 预设语义的读取算子（Experiments、Evidence、Context、Implementations、Get） | 由 `Search` 的结构条件、`Traverse` 的路径与对象视图覆盖，不单列 |
 | 关系检索 | 关系的 `description` 已建向量，但没有 workload 需要按关系检索；`Traverse` 返回边上的说明 |
-| AgenticScholar 的 Rank、GroupBy、Aggregate 等对记录做计算的算子 | 记录在 Artifact 文档中而不在图里，中间件不对其排序、分组或计数。跨论文的组织由 Agent 经 `MatrixConstruct` 填写；排名与结论写在 `Generate` 中，可比性先经 `Check` 判断 |
-| Artifact 的清理与归并 | 当前只追加；按价值信号清理留待有真实使用数据后再定 |
+| `Extract`（自由 schema）、`MatrixConstruct`、`Filter`、`Check` | 自由 schema 的抽取结果各写各的，无法合并，结果数值改写进 `Leaderboard`；矩阵由 `Leaderboard` 取代；身份确认由 `Commit` 的查重退回候选；`Check` 改为维度固定的 `CompareSettings`。旧版见 Git `d36aa54` |
+| AgenticScholar 的 Rank、GroupBy、Aggregate 等对记录做计算的算子 | 中间件不对产物内容排序、分组或计数；排名与结论写在 `Generate` 中，可比性先经 `CompareSettings` 判断 |
+| 产物的自动合并 | `base` 过期时拒绝，由写者重新 fetch 后合并 |
+| 产物的删除与清理 | 当前不提供；按价值信号清理留待有真实使用数据后再定 |
 | Concept 精炼与整理 | 日后增加专门的工具或算子，整理 Claim 与 Issue、Proposition 并建立正反关系 |
 
 ## 9. E09 实现对照
@@ -500,20 +608,22 @@ Artifact 是未经审定的工作痕迹；Observation 是由提交者明确写�
 
 | 算子 | 模块 | 状态 |
 | --- | --- | --- |
-| `Search` | `operators/db/search.py` | 已实现，含 `type=Artifact` |
+| `Search` | `operators/db/search.py` | 已实现，含 `type=Artifact` 与有据层记录的 `_revised`；产物的编辑提示待实现 |
 | `Resolve` | `operators/db/resolve.py`，三级解析在 `query/resolve.py` | 已实现；`Commit` 的查重也用它 |
-| `Traverse` | `operators/db/traverse.py` | 已实现，含 `USED` |
-| `ReadEvidence` | `operators/db/read_evidence.py` | 已实现，可读 Artifact 文档 |
-| `Commit` | `operators/db/commit.py`，写入管线在 `commit/` | 已实现：graph-doc → graph-plan / graph-result，经 graph-vc 提交 |
-| `Extract`、`Summarize`、`Generate`、`Check`、`Verify`、`Filter`、`MatrixConstruct` | `operators/agent/<算子>.py`（各算子的校验、正文与数据块），共用部件在 `operators/agent/_common.py` | 已实现 |
+| `Traverse` | `operators/db/traverse.py` | 已实现，含 `USED` 与 `_revised` |
+| `ReadEvidence` | `operators/db/read_evidence.py` | 已实现，可读 Artifact 文档，含 `E09_EVIDENCE_SCOPE`；编辑提示待实现 |
+| `Commit` | `operators/db/commit.py`，写入管线在 `commit/` | 已实现：graph-doc → graph-plan / graph-result，经 graph-vc 提交；`doc_file`、论文新版本已实现；返回相关的共同产物待实现 |
+| `FetchArtifact` | — | 待实现 |
+| `Leaderboard`、`CompareSettings`、`Verify`、`Summarize`、`Generate` | — | 待实现。现有的 `operators/agent/` 是旧版的 7 个 Agent 算子（Extract、Summarize、Generate、Check、Verify、Filter、MatrixConstruct，写入后不可修改），新算子实现后替换；`Summarize`、`Generate`、`Verify` 的引用校验可沿用 |
 
 | 支持 | 模块 |
 | --- | --- |
 | 结构条件、RRF 融合、读视图与只读字段、Search 的结果视图、固定材料 | `query/conditions.py`、`query/fusion.py`、`query/view.py`、`query/excerpts.py`、`query/materials.py` |
-| Artifact 的文档格式、共同写入路径、可能过期 | `artifact/document.py`、`artifact/write.py`、`artifact/stale.py` |
+| Artifact 的文档格式、共同写入路径、可能过期 | `artifact/document.py`、`artifact/write.py`、`artifact/stale.py`（版本、编辑提示与 `revised` 待实现） |
+| 草稿文件的路径、解析与报错行号 | `draft.py` |
 | 数据模型、引用写法、名称精确键 | `model/schema.py`、`model/refs.py`、`model/namekey.py` |
 | 算子环境、库的版本记录与约束索引、连接、向量 | `store/store.py`、`store/database.py`、`store/graph.py`、`store/embedding.py` |
 
-测试在 `experiments/e09/tests/operators/db/` 与 `tests/operators/agent/`，只在空的测试实例（`GRAPH_VC_TEST_NEO4J_URI`）上运行；写入管线的测试在 `tests/commit/`。neo4j-e09 中还没有 Artifact；Artifact 的约束与全文、向量索引在下一次写入时建立。
+测试在 `experiments/e09/tests/operators/db/` 与 `tests/operators/agent/`，只在空的测试实例（`GRAPH_VC_TEST_NEO4J_URI`）上运行；写入管线的测试在 `tests/commit/`。
 
-**参考：** [S] Hai Lan et al. *AgenticScholar: Agentic Data Management with Pipeline Orchestration for Scholarly Corpora.* PACMMOD 4(2), Article 131, 2026（本地精读见 `references/papers/2026-AgenticScholar-reread/`）。
+**参考：** [S] Hai Lan et al. *AgenticScholar: Agentic Data Management with Pipeline Orchestration for Scholarly Corpora.* PACMMOD 4(2), Article 131, 2026（本地精读见 `references/papers/2026-AgenticScholar-reread/`）。旧版的 Agent 算子名称沿用自 [S]（Table 2 与 Appendix D）。
