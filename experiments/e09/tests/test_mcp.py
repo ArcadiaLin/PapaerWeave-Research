@@ -53,6 +53,16 @@ async def test_each_operator_is_a_tool_and_commit_is_listed_only_when_enabled(mo
 
 
 @pytest.mark.anyio
+async def test_read_only_lists_only_tools_that_do_not_write(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("E09_READ_ONLY", "1")  # 读者：Commit 即使开启也不列出，Agent 算子也不列出
+    tools = await _tools(monkeypatch, commit=True)
+    assert list(tools) == [n for n, op in OPERATORS.items() if not op.writes]
+    assert {"Search", "Traverse", "ReadEvidence", "Log"} <= set(tools) and "Extract" not in tools
+    monkeypatch.setenv("E09_HIDE_TOOLS", "ReadEvidence")  # 只读库的读者：不按行号读原文
+    assert "ReadEvidence" not in await _tools(monkeypatch, commit=False)
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     ("name", "arguments", "at"),
     [

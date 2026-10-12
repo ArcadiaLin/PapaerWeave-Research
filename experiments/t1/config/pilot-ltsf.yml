@@ -21,7 +21,7 @@ corpus:
   papers:
     - {arxiv: 2106.13008v5, short: Autoformer, method: Autoformer}
     - {arxiv: 2107.08687v2, short: Query Selector, method: Query Selector}
-    - {arxiv: 2205.08897v4, short: FiLM, method: FiLM}
+    - {arxiv: 2205.08897v4, short: FiLM, method: FiLM, first_version: 2205.08897v3}  # 写者拿到 v3，见 events
     - {arxiv: 2211.14730v2, short: PatchTST, method: PatchTST}
     - {arxiv: 2304.08424v5, short: TiDE, method: TiDE}
     - {arxiv: 2310.09751v3, short: UniTime, method: UniTime}
@@ -84,6 +84,29 @@ writers:
       If the shared store already holds descriptions or claims about the same methods, relate what you
       find to them: note where this paper supports, refines or contradicts them.
 
+# 版本事件（t1.versions）：论文发布新版本。写者最初拿到早期版本（corpus.papers 的 first_version），检查点之后
+# 由维护者会话把新版本带进库；新版本的目录此刻才放入各组的论文副本。FiLM v3→v4 改动了主表 Exchange 一行
+# （如 720 步 MSE 0.536→0.727）与附录 Table 11 的 ETTm2 一行（v3 中与主表不一致，v4 改成一致），共 43 格；
+# 语料中没有后来的论文引用 FiLM，修订只影响 FiLM 自己的记录与用到它们的产物。
+# 只在检查点 2 之后放一次：检查点 2 的读者读到 v3 写成的库，检查点 3 起金标准是 v4（probes 中 G1、G2）。
+events:
+  - {after_checkpoint: 2, writer: paper-maintainer, paper: 2205.08897v4}
+
+event_writers:
+  - id: paper-maintainer
+    user: paper.maintainer@forecast-lab.example
+    agent: pi/sglang/qwen3.8-27b
+    task: |
+      A newer version of the paper "{title}" (arXiv {arxiv}) has been released: material {material}.
+      The shared store was built from the earlier version, material {old_material}, by sessions that
+      organized its results and studied its method, and may hold numbers, claims and descriptions taken
+      from that version.
+
+      Compare the two versions and find what changed: reported results, tables, claims and experimental
+      settings. Bring what the shared store holds about this paper up to date with the newer version, so
+      that someone who reads it later gets the paper's current results and can tell what changed between
+      the versions and why.
+
 # 两个写者都附上的结尾段，各组相同。
 writer_closing: |
   Write what you find into the shared store so that someone who works on these papers later, for a
@@ -107,16 +130,27 @@ arms:
     # 不预设目录约定或模板（预设就等于替 A0 设计了一个 schema）。
     template: store/README.md
 
+# 读者探针（t1.probe）：每个检查点上、下一个写者开始之前，各组的读者回答有效的探针。
+probes: experiments/t1/config/probes-ltsf.yml
+# 读者条件：store_only 为 T1 主测量（只有库），with_papers 为辅助（另能读论文，审计绕过）。
+probe_conditions: [store_only, with_papers]
+
 schedule:
   # 写者轮流执行。每篇论文两个会话；先后顺序逐篇交替，让两个写者都会遇到“论文还不在库中”的情况。
   order: alternate          # 第 1、3、5、7 篇 I3 先写，第 2、4、6、8 篇 I2 先写
-  sessions_per_arm: 16
+  sessions_per_arm: 17       # 16 个写者会话 + 1 个版本事件会话
   checkpoint_every_papers: 2 # 共 4 个检查点：A3 记 graph-vc head，A0 打 git tag
   repeats: 1                 # 先导只跑一遍；方差估计在正式运行中做
 
 runner:
   agent: pi                  # 默认配置：自带系统提示与内置工具，不换提示、不设工具白名单
   model: sglang/qwen3.8-27b
+  # 两个权重与配置相同的服务副本（sglang 0.5.18，tp=2，EAGLE；只 mem_fraction_static 与 random_seed 不同）。
+  # 每组独占一个，会话记录中记下所用的服务；多条时间线时下一条两组交换。我们不比较墙钟时间（构建成本按 token
+  # 与调用次数计）；速度只可能经超时影响结果，每次运行后检查超时会话数。
+  endpoints:
+    A3: http://192.168.163.112:30000/v1
+    A0: http://192.168.163.112:30001/v1
   # 思考级别（pi --thinking）：off 时模型不生成思考内容。2026-10-11 冒烟测试中 high 一次会话约 3.8 万输出 token、
   # 20 分钟以上（单路约 44 token/秒），按用户决定改为 off；各组相同。
   thinking: "off"
@@ -128,6 +162,9 @@ runner:
   http_idle_timeout_ms: 1800000
   mode: print                # pi -p：非交互，一次会话跑完一个任务
   session_timeout_min: 60    # 超时记为失败并保留轨迹，不重试
+  probe_timeout_min: 20      # 读者回答一个探针的时限
+  probe_workers: 2           # 一个检查点上同时回答的读者数（只读、互不相干；只缩短时间）。本机 7.8 GiB 内存：
+                             # 2026-10-12 两条时间线各 4 个并发读者时，宿主因内存不足终止了运行进程
   # 每组每个写者一个独立工作目录（~/t1-runs/<run>/<arm>/<writer>/），只含 MCP 登记、pi 会话设置与会话记录；
   # 工作目录之外的文件读取（包括直接读论文）不阻止，事后从轨迹审计。
   workdir_root: ~/t1-runs

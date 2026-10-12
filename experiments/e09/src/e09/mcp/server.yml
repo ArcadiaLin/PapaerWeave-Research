@@ -42,7 +42,7 @@ tools:
       - Content (records taken from papers): Claim, Experiment, Contribution, Observation
       - Artifact: work products of earlier sessions; no kinds, filter with where.op
 
-      Results are ranked and carry no relations: id, kind, name or title, and the opening part of the searched text (description, definition, text and note, or abs); Content results also give their paper and source_refs, Artifact results their document path. To see an object's full fields and relations, call Traverse with start [id] and an empty path; to read the source lines, pass source_refs to ReadEvidence; an artifact's document is a Markdown file you can read directly.
+      Results are ranked and carry no relations: id, kind, name or title, and the opening part of the searched text (description, definition, text and note, or abs); Content results also give their paper and source_refs, Artifact results their document path. To see an object's full fields and relations, call Traverse with start [id] and an empty path; to read the source lines, pass source_refs to ReadEvidence. An artifact's document lives in the store, not in your working directory: read it with ReadEvidence as <artifact id>::document::<start>:<end> (a range past the end reports the document's line count).
 
       The whole result is kept under 16 KB: the space is shared evenly between results, and a text cut short ends with … followed by <field>_bytes, its full length. Fewer results per page give longer excerpts.
 
@@ -96,6 +96,8 @@ tools:
       - USED: Artifact -> what it used; walk USED with dir in from an object to find the artifacts that used it.
       Example: the experiments that evaluate a method: start [<method id>], path [{rel: EVALUATES, dir: in}].
 
+      Fields starting with _ are read-only. An artifact's _stale lists why it may be out of date: something it used was revised or removed, or a paper material it read changed or was superseded by a newer version of the paper. A record's _revised gives its latest revision (commit, by, reason, anchor); Show that commit for the old values.
+
       Objects come back whole and are never cut. A page holds at most budget paths and at most 16 KB: when the objects do not fit, the last paths move to the next page, so meta.coverage.returned can be below budget; meta.continuation is then set, and meta.size gives the limit and the size used.
     parameters:
       start: List of ids to start from (from Search, Resolve or an earlier Traverse).
@@ -108,7 +110,7 @@ tools:
     description: >-
       Read the source lines behind a record: pass the source_refs given by Search or Traverse, written
       <material id>::<section>::<start>:<end> (the start may also be the paper or artifact id). Works for paper
-      materials and artifact documents. Each item is available (text with line numbers), missing or error.
+      materials and artifact documents; artifact documents are read only this way. Each item is available (text with line numbers), missing or error.
       Read only the lines you need; cite the same references (or narrower line ranges within them) in your artifacts.
     parameters:
       source_refs: List of source references, copied as given.
@@ -137,7 +139,7 @@ tools:
       - Observation: your own finding, such as a comparison across papers or a judgment about comparability. It is ABOUT the objects it concerns and comes FROM the artifacts (your Check, Extract or MatrixConstruct results) or paper lines it rests on. Do not record your conclusions as a Claim of some paper.
 
       Kinds and fields (* required unless stub: true):
-      - Paper: name*, description*, identifiers [arxiv:..., doi:..., url:...], year, material (path of the paper's Markdown file, relative to the store's material root, as other papers' material shows), aliases, note
+      - Paper: name*, description*, identifiers [arxiv:..., doi:..., url:...], year, material (path of the paper's Markdown file, relative to the store's material root, as other papers' material shows; giving a new file for a paper that has one records a newer version of the paper: references to the old version stay valid, and artifacts that read it are marked stale), aliases, note
       - Dataset, Code, Model, Benchmark, Tool: name*, description*, identifiers, aliases, note
       - Method, Task: name*, definition*, aliases, note. A named object not yet described can be a stub: {kind, name, stub: true}
       - Issue: text*, description, note. Proposition: text*, note

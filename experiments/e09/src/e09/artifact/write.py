@@ -14,8 +14,8 @@
    - ``params`` 与 ``payload`` 中出现的每个引用都由 ``inputs`` 覆盖：与某一项相同；或是来源引用，所指的行落在
      同一材料的某个来源引用的行范围内（章节名不比较）；或是记录引用，所属的 Artifact 列在 ``inputs`` 中（记录须
      存在）；或是对象引用，正是某一项 ``USED`` 的终点（如论文，它的材料中的行已列在 ``inputs`` 中）。来源引用的
-     开头写材料 id 或材料所属的节点 id 都算同一个引用；文档头部的 ``nodes_used`` 统一写成材料 id，与 ReadEvidence
-     读取的写法相同。
+     开头写材料 id 或材料所属的节点 id 都算同一个引用；文档头部的 ``nodes_used`` 与数据块中的来源引用统一写成
+     材料 id，与 ReadEvidence 读取的写法相同，论文换了新版本后仍指向写入时读的版本（:func:`pin_sources`）。
 
 2. **幂等**：相同 ``artifact_key``（``op``、``inputs``、``params``、``payload`` 与 ``formed_by`` 的哈希）视为重试，
    返回已有的 Artifact，不重复写入。
@@ -138,7 +138,8 @@ def write_artifact(
     setup_database(store.graph, store.driver, database=store.database)  # 通过校验、确实要写入时才建约束与索引
     title = request.get("title") or output.title
     nodes_used = [i.spelling for i in inputs]
-    document = compose(title, nodes_used, request["abs"].strip(), output.body, output.data)
+    data = pin_sources(store, output.data)
+    document = compose(title, nodes_used, request["abs"].strip(), output.body, data)
     path = _place(store, document, title)
     _store_file(store, path, document)
     art_id = store.graph.allocate_ids(PREFIX, 1)[0]
@@ -375,6 +376,40 @@ def _used(inputs: list[Input], output: Output, owner: Owner) -> dict[str, dict[s
             props["locators"] = list(dict.fromkeys(locators[target]))
         edges[target] = props
     return edges
+
+
+def pin_sources(store: Store, data: Any) -> Any:
+    """数据块中以节点 id 开头的来源引用改写成以材料 id 开头：论文换了新版本（材料被取代）之后，旧的数据行仍指向
+    写入时读的那个版本的行，不会错位到新版本上。"""
+    heads: set[str] = set()
+
+    def walk(value: Any, visit: Callable[[str], str]) -> Any:
+        if isinstance(value, str):
+            return visit(value)
+        if isinstance(value, Mapping):
+            return {k: walk(v, visit) for k, v in value.items()}
+        if isinstance(value, list):
+            return [walk(v, visit) for v in value]
+        return value
+
+    def collect(text: str) -> str:
+        ref = parse_ref(text)
+        if ref is not None and ref.kind == "source":
+            heads.add(ref.head)
+        return text
+
+    walk(data, collect)
+    found = {h: m["id"] for h, m in materials(store, heads).items() if m["id"] != h}
+    if not found:
+        return data
+
+    def pin(text: str) -> str:
+        ref = parse_ref(text)
+        if ref is None or ref.kind != "source" or ref.head not in found:
+            return text
+        return f"{found[ref.head]}::{ref.locator}"
+
+    return walk(data, pin)
 
 
 def _place(store: Store, document: Document, title: str) -> str:

@@ -85,6 +85,8 @@ def _head(type_: str, node_id: str, state: GraphState, artifact: Mapping[str, An
         head["paper"] = papers[0] if len(papers) == 1 else papers
         if props.get("anchors"):
             head["anchors"] = props["anchors"]
+        if artifact.get("_revised"):
+            head["revised"] = artifact["_revised"]
         head["source_refs"] = list(dict.fromkeys(source_refs_of(node_id, state)))
     return head
 

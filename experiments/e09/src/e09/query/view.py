@@ -61,8 +61,15 @@ _PROP_ORDER = (
 
 
 def material_of(node_id: str, state: GraphState) -> str | None:
-    """节点（Paper 或 Artifact）当前的材料 id：经 ``MATERIAL_OF`` 指向它的 Material。"""
-    owners = sorted(k.src for k in state.edges if k.dst == node_id and k.type == "MATERIAL_OF")
+    """节点（Paper 或 Artifact）当前的材料 id：经 ``MATERIAL_OF`` 指向它、且没有被新版本取代（``superseded_by``）的
+    Material。"""
+    owners = sorted(
+        k.src
+        for k in state.edges
+        if k.dst == node_id
+        and k.type == "MATERIAL_OF"
+        and not (k.src in state.nodes and state.nodes[k.src].props.get("superseded_by"))
+    )
     return owners[0] if owners else None
 
 
@@ -101,7 +108,8 @@ def render(
     extra: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """``ids`` 中节点的读视图。``state`` 须包含这些节点的全部关系及关系另一端的节点（``local_state``）；
-    ``extra`` 是需要另外读取的只读字段（Artifact 的 ``_document`` 与 ``_stale``），按节点 id 给出。"""
+    ``extra`` 是需要另外读取的只读字段（Artifact 的 ``_document`` 与 ``_stale``，有据层记录的 ``_revised``），
+    按节点 id 给出。"""
     out_edges = _out_edges(state)
     extra = extra or {}
     nodes = {}
@@ -110,6 +118,7 @@ def render(
             nodes[node_id] = artifact_view(node_id, state, extra.get(node_id))
         else:
             nodes[node_id] = node_view(node_id, state, out_edges.get(node_id, []))
+            nodes[node_id].update(extra.get(node_id) or {})
     return {"graph-doc": VERSION, "meta": meta, "nodes": nodes}
 
 

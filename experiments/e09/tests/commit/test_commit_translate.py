@@ -7,6 +7,7 @@ import hashlib
 from conftest import DLINEAR, MemoryGraph, doc, rules, with_confirm
 
 from e09.model.namekey import name_key
+from e09.query.view import material_of
 from graph_vc import EdgeKey, FileRef, NodeState
 
 
@@ -254,7 +255,6 @@ def test_w7_rejections(ingested: MemoryGraph) -> None:
         "method_0002:\n  BROADER: [task_0001]": "endpoint",
         "$p:\n  kind: Paper\n  name: B\n  description: x\n  identifiers: ['arxiv:2205.13504']": "identifier-taken",
         "$p:\n  kind: Paper\n  name: B\n  description: x\n  identifiers: ['isbn:1']": "identifier",
-        "paper_0001:\n  material: papers/2023-PatchTST/paper.md": "material",
         "paper_0001:\n  material: papers/missing.md": "material",
     }
     for body, rule in cases.items():
@@ -263,6 +263,16 @@ def test_w7_rejections(ingested: MemoryGraph) -> None:
             assert prepared.ok and not prepared.changeset, (body, prepared.errors)
         else:
             assert rule in rules(prepared), (body, prepared.errors)
+
+
+def test_a_new_version_supersedes_the_paper_material(ingested: MemoryGraph) -> None:
+    old = material_of("paper_0001", ingested.state)
+    refs = ingested.state.edges[EdgeKey("exp_0001", "FROM", "paper_0001")]
+    assert ingested.submit(doc("paper_0001:\n  material: papers/2023-PatchTST/paper.md"), "test").ok
+    new = material_of("paper_0001", ingested.state)
+    assert new != old and ingested.state.nodes[old].props["superseded_by"] == new
+    assert EdgeKey(old, "MATERIAL_OF", "paper_0001") in ingested.state.edges  # 旧材料留着
+    assert ingested.state.edges[EdgeKey("exp_0001", "FROM", "paper_0001")] == refs  # 已有的定位仍指向旧版本
 
 
 def test_readonly_fields_echoed_unchanged_are_accepted(ingested: MemoryGraph) -> None:

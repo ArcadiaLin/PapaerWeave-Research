@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ...artifact.stale import readonly
+from ...query.revisions import latest_revisions
 from ...model.schema import ARTIFACT, DERIVED_FIELDS, FAMILY, TRAVERSABLE
 from ...query.conditions import compile_where
 from ...query.excerpts import LIMIT
@@ -121,6 +122,7 @@ def traverse(
     shown = list(dict.fromkeys(n for p in page for n in p.nodes()))
     state = store.graph.local_state(shown)
     artifacts = readonly(store, [n for n in shown if ARTIFACT in state.nodes[n].labels])
+    artifacts |= {k: {"_revised": v} for k, v in latest_revisions(store, shown).items()}
     snapshot, changed = store.stable(before)
 
     def view(count: int) -> dict[str, Any]:

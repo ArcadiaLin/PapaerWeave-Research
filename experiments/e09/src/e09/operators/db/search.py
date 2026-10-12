@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ...artifact.stale import readonly
+from ...query.revisions import latest_revisions
 from ...model.namekey import name_key
 from ...model.schema import ARTIFACT, KINDS, NAMED, NAMESPACES
 from ...query.conditions import Compiled, compile_where
@@ -97,6 +98,8 @@ def search(
     page = found.page
     state = store.graph.local_state(page)
     artifacts = readonly(store, page) if type == ARTIFACT else {}
+    if type == "Content":
+        artifacts = {k: {"_revised": v} for k, v in latest_revisions(store, page).items()}
     snapshot, changed = store.stable(before)
     failed = {k: v for k, v in found.coverage.get("channels", {}).items() if v.startswith("error")}
     diagnostics = found.diagnostics | changed

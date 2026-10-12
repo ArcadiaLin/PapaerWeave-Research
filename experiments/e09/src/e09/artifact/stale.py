@@ -6,6 +6,7 @@
 - ``removed``：文档头部 ``nodes_used`` 中的对象（或记录所属的 Artifact、来源引用的材料）已不在库中。删除节点时
   graph-doc 一并删掉指向它的 ``USED`` 边，所以按不可变的文档头部核对，而不是看现存的边；
 - ``material``：所用材料的文件不在，或哈希与登记的不同；
+- ``superseded``：所用材料已被同一论文的新版本取代（材料上的 ``superseded_by``），另带 ``by`` 给出新材料；
 - ``revised``：所用的有据层或解释层记录在产物形成之后被修订过（改了内容、标签或出边），另带 ``commit`` 指出
   最早的那次提交，可以用 Show 查看改了什么。增删改出边时，agent 的正反关系不算；别人给解释层记录新增出边也不算。
   实体与概念的改动（如补别名、描述）不算，否则提示会被噪声淹没；
@@ -86,6 +87,8 @@ def stale(store: Store, ids: Iterable[str]) -> dict[str, list[dict[str, str]]]:
                     lines[head["id"]] = load_lines(store, head) is not None
                 if not lines[head["id"]]:
                     reasons.append({"ref": ref.text, "reason": "material"})
+                elif head.get("superseded_by"):
+                    reasons.append({"ref": ref.text, "reason": "superseded", "by": head["superseded_by"]})
             elif ref.head not in kinds:
                 reasons.append({"ref": ref.text, "reason": "removed"})
             elif kinds[ref.head] == ARTIFACT and visit(ref.head):

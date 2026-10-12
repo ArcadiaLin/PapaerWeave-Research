@@ -2,7 +2,9 @@
 
 沙箱里能看到的只有：系统目录与 node（只读）、本写者的工作目录 ``/work``（可写）、本写者的 ``HOME``（pi 的
 agent 目录：只有模型配置与设置，不带宿主机的扩展、skills 与认证）、论文材料 ``/work/papers``（只读）；A0 另有
-共享笔记库 ``/work/store``（可写，各写者共用一份）。仓库、``docs/``、金标准、其他组与其他写者的目录都不可见；
+共享笔记库 ``/work/store``（可写，各写者共用一份）。读者（:mod:`t1.probe`）的库只读：A0 的笔记库只读挂载，A3 的 MCP
+服务只列出不写入的工具；只读库的读者没有论文，A3 的 ReadEvidence 只读产物文档。闭卷与神谕参照线（``name`` 为 ``none``）
+既没有库，也没有论文。仓库、``docs/``、金标准、其他组与其他写者的目录都不可见；
 环境变量清空后只设必要的几个（宿主机的代理设置不带进去）。
 
 网络断开，只剩回环地址。与外面的联系只有挂载进去的 unix socket（:mod:`t1.bridge`）：
@@ -16,8 +18,11 @@ agent 目录：只有模型配置与设置，不带宿主机的扩展、skills �
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import re
+import signal
 import shutil
 import subprocess
 import time
@@ -40,12 +45,15 @@ class Writer:
 
 @dataclass(frozen=True)
 class Arm:
-    name: str  # A0 或 A3
-    papers: Path  # 论文材料目录（只读挂载到 /work/papers）
+    name: str  # A0、A3，或 none（参照线：没有库）
+    papers: Path | None  # 论文材料目录（只读挂载到 /work/papers）；参照线为 None
     store: Path | None = None  # A0：共享笔记库（git 仓库）
     neo4j: str | None = None  # A3：图库
     data: Path | None = None  # A3：材料根目录（E09_DATA：论文与产物文档）
     embeddings: bool = True
+    read_only: bool = False  # 读者：库只读
+    hide_tools: tuple[str, ...] = ()  # A3：不列出的 MCP 工具
+    evidence_scope: str | None = None  # A3：artifacts 时 ReadEvidence 只读产物文档（只读库的读者不读论文原文）
 
 
 @dataclass(frozen=True)
@@ -118,17 +126,25 @@ def run_session(paths: Paths, arm: Arm, writer: Writer, prompt: str, *, timeout_
             f"python3 /opt/t1/bridge.py tcp-to-unix 127.0.0.1:{LLM_PORT} /run/t1/llm.sock & "
             'sleep 0.3; exec pi -p --offline --approve --mode json "$T1_PROMPT"'
         )
+        killed: list[dict] = []
         with open(runs / f"{stamp}.jsonl", "wb") as out, open(runs / f"{stamp}.err", "wb") as err:
-            try:
-                code = subprocess.run(
-                    [*_bwrap(paths, arm, writer, prompt), "bash", "-c", inner],
-                    stdin=subprocess.DEVNULL,  # pi -p 在 stdin 不是终端时会读它
-                    stdout=out,
-                    stderr=err,
-                    timeout=timeout_s,
-                ).returncode
-            except subprocess.TimeoutExpired:
-                code = "timeout"
+            proc = subprocess.Popen(
+                [*_bwrap(paths, arm, writer, prompt), "bash", "-c", inner],
+                stdin=subprocess.DEVNULL,  # pi -p 在 stdin 不是终端时会读它
+                stdout=out,
+                stderr=err,
+            )
+            code: int | str | None = None
+            while code is None:
+                try:
+                    code = proc.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    if time.monotonic() - started > timeout_s:
+                        proc.kill()
+                        proc.wait()
+                        code = "timeout"
+                    else:
+                        killed += kill_long_tools(proc.pid, TOOL_LIMIT_S)
         seconds = round(time.monotonic() - started, 1)
     finally:
         for p in bridges:
@@ -137,7 +153,41 @@ def run_session(paths: Paths, arm: Arm, writer: Writer, prompt: str, *, timeout_
         stderr.close()
     after = set((paths.work / ".pi/sessions").rglob("*.jsonl"))
     session = sorted(str(p.relative_to(paths.root)) for p in after - before)
-    return {"exit": code, "seconds": seconds, "events": f"runs/{stamp}.jsonl", "session": session}
+    return {"exit": code, "seconds": seconds, "events": f"runs/{stamp}.jsonl", "session": session, "tool_kills": killed}
+
+
+TOOL_LIMIT_S = 600  # 单个 shell 工具命令的时限：超过即终止，pi 收到出错结果后继续（两组相同）
+
+
+def kill_long_tools(root: int, limit_s: int) -> list[dict]:
+    """终止沙箱中运行超过 ``limit_s`` 秒的 shell 工具命令（pi 为每次 bash 工具调用起的 ``bash -c``）及其子进程。
+    pilot-2 中一个写者的脚本陷入死循环，没有这个时限就要等到会话超时、整次会话作废。"""
+    rows = subprocess.run(["ps", "-eo", "pid=,ppid=,etimes=,args="], capture_output=True, text=True).stdout
+    procs = {}
+    for line in rows.splitlines():
+        parts = line.split(None, 3)
+        if len(parts) == 4:
+            procs[int(parts[0])] = (int(parts[1]), int(parts[2]), parts[3])
+    children: dict[int, list[int]] = {}
+    for pid, (ppid, _, _) in procs.items():
+        children.setdefault(ppid, []).append(pid)
+
+    def tree(pid: int) -> list[int]:
+        out = [pid]
+        for c in children.get(pid, []):
+            out += tree(c)
+        return out
+
+    killed = []
+    for pid in tree(root)[1:]:
+        ppid, age, args = procs[pid]
+        parent = procs.get(ppid, (0, 0, ""))[2]
+        if age > limit_s and re.match(r"(/usr)?(/bin/)?bash -c ", args) and re.search(r"\bpi\b|node", parent):
+            for victim in reversed(tree(pid)):
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(victim, signal.SIGKILL)
+            killed.append({"seconds": age, "command": args[:300]})
+    return killed
 
 
 def _bwrap(paths: Paths, arm: Arm, writer: Writer, prompt: str) -> list[str]:
@@ -153,11 +203,12 @@ def _bwrap(paths: Paths, arm: Arm, writer: Writer, prompt: str) -> list[str]:
         "--bind", str(paths.sock), "/run/t1",
         "--bind", str(paths.work), "/work",
         "--bind", str(paths.home), "/home/agent",
-        "--ro-bind", str(arm.papers), "/work/papers",
     ]  # fmt: skip
+    if arm.papers is not None:
+        args += ["--ro-bind", str(arm.papers), "/work/papers"]
     if arm.name == "A0":
         assert arm.store is not None
-        args += ["--bind", str(arm.store), "/work/store"]
+        args += ["--ro-bind" if arm.read_only else "--bind", str(arm.store), "/work/store"]
     env = {
         "HOME": "/home/agent",
         "PATH": f"{node}/bin:/usr/bin",
@@ -188,6 +239,13 @@ def _mcp_command(paths: Paths, arm: Arm, writer: Writer) -> list[str]:
     }
     if not arm.embeddings:
         env["E09_NO_EMBED"] = "1"
+    if arm.read_only:
+        env["E09_READ_ONLY"] = "1"
+        del env["E09_ENABLE_COMMIT"]
+    if arm.hide_tools:
+        env["E09_HIDE_TOOLS"] = ",".join(arm.hide_tools)
+    if arm.evidence_scope:
+        env["E09_EVIDENCE_SCOPE"] = arm.evidence_scope
     return ["env", *(f"{k}={v}" for k, v in env.items()), str(REPO / ".venv/bin/python"), "-m", "e09.mcp"]
 
 

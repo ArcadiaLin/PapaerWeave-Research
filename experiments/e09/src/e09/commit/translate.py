@@ -6,7 +6,9 @@
 - ``kind`` → 主 Label 与次级 Label；改 kind 只能在同一类别内。
 - ``name`` 与 ``aliases`` → ``(:NameKey {id: key})-[:NAMES]->(对象)``；名称变动时增删 NameKey，
   同一文档中从一个对象移到另一个对象的名称改指，而不是删了再建。
-- Paper 的 ``material`` → ``(:Material)-[:MATERIAL_OF]->(Paper)``，文件登记进变更集；暂不支持更换材料。
+- Paper 的 ``material`` → ``(:Material)-[:MATERIAL_OF]->(Paper)``，文件登记进变更集。更换材料（论文出了新版本）时
+  新材料挂到论文上，旧材料节点与它的 ``MATERIAL_OF`` 保留，记上 ``superseded_by``（新材料 id）：已有的引用按材料 id
+  固定在旧版本上，不会错位；论文当前的材料只有一份（:func:`e09.query.view.material_of`）。
 - ``FROM`` 边补上 ``material_ref``；边上的 ``source_refs`` 把 ``<节点>::<定位>`` 换成 ``<材料 id>::<定位>``。
 - Agent 形成的记录与正反关系补上 ``formed_by``、``formed_at``；Experiment 补 ``exp_key``，
   论文陈述的 Claim、Contribution 新建时补 ``content_key``。
@@ -51,6 +53,7 @@ from .reader import Reader
 from .review import Deduper
 
 _MISSING = object()
+HISTORY_FIELDS = frozenset({"_revised"})  # 读视图中从版本历史推算的只读字段（e09.query.revisions）
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,6 +298,8 @@ class _Translator:
 
     def check_readonly(self, at: str, written: Mapping[str, Any], view: Mapping[str, Any] | None) -> None:
         for key, value in written.items():
+            if key in HISTORY_FIELDS and view is not None:
+                continue  # 从版本历史推算的只读字段，读视图原样抄回时不核对
             if view is None:
                 self.error("readonly", f"{at}.{key}", "read-only fields only appear on existing records")
             elif key not in view:
@@ -410,9 +415,8 @@ class _Translator:
         current = material_of(node_id, self.local)
         if current == material.id:
             return
-        if current is not None:
-            self.error("material", at, f"changing a paper's material ({current}) is not supported yet")
-            return
+        if current is not None:  # 新版本：旧材料留着，标出被谁取代
+            self.nodes[current] = FragmentNode(props={"superseded_by": material.id})
         existing = self.local.nodes.get(material.id)
         if existing is None:
             props = {"path": material.path, "format": "markdown", "content_hash": material.sha256}

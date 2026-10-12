@@ -15,10 +15,20 @@ CONFIG = yaml.safe_load((REPO / "experiments/t1/config/pilot-ltsf.yml").read_tex
 
 def test_writers_alternate_and_checkpoints_follow_every_second_paper() -> None:
     slots = schedule(CONFIG)
-    assert len(slots) == 16
+    assert len(slots) == 17
     assert [s.writer["id"] for s in slots[:4]] == ["writer-i3", "writer-i2", "writer-i2", "writer-i3"]
     assert [s.paper["short"] for s in slots[:4]] == ["Autoformer", "Autoformer", "Query Selector", "Query Selector"]
-    assert [(s.index, s.checkpoint) for s in slots if s.checkpoint] == [(4, 1), (8, 2), (12, 3), (16, 4)]
+    assert [(s.index, s.checkpoint) for s in slots if s.checkpoint] == [(4, 1), (8, 2), (13, 3), (17, 4)]
+    assert [(s.index, s.writer["id"]) for s in slots if s.event] == [(9, "paper-maintainer")]  # 检查点 2 之后
+
+
+def test_writers_get_the_first_version_and_the_maintainer_both() -> None:
+    slots = schedule(CONFIG)
+    titles = {p["arxiv"].rsplit("v", 1)[0]: "T" for p in CONFIG["corpus"]["papers"]}
+    film = [prompt(CONFIG, "A3", s, titles) for s in slots if s.paper["short"] == "FiLM"]
+    assert all("papers/2205.08897v3/paper.md" in p and "v4" not in p for p in film[:2])
+    assert "material papers/2205.08897v4/paper.md" in film[2] and "material papers/2205.08897v3/paper.md" in film[2]
+    assert "{" not in film[2]
 
 
 def test_prompts_differ_between_arms_only_in_the_store_sentence() -> None:
@@ -54,7 +64,7 @@ def test_uncommitted_notes_are_saved_as_a_patch_and_discarded(tmp_path: Path) ->
     (store / "a.md").write_text("two\n", encoding="utf-8")
     (store / "methods").mkdir()
     (store / "methods/new.md").write_text("draft\n", encoding="utf-8")
-    assert discard_leftovers(store, tmp_path / "left.patch") == ["a.md", "methods/new.md"]
-    patch = (tmp_path / "left.patch").read_text(encoding="utf-8")
+    assert discard_leftovers(store, tmp_path / "runs/left.patch") == ["a.md", "methods/new.md"]  # 补丁目录可以还不存在
+    patch = (tmp_path / "runs/left.patch").read_text(encoding="utf-8")
     assert "+two" in patch and "+draft" in patch
     assert (store / "a.md").read_text(encoding="utf-8") == "one\n" and not (store / "methods").exists()

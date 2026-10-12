@@ -14,7 +14,8 @@
 
 环境变量：``E09_NEO4J_URI`` 等连接参数（:mod:`e09.config`）；``E09_USER`` 登录身份，Agent 算子写入时必需；
 ``E09_AGENT`` 所用的 Agent 与模型；
-``E09_ENABLE_COMMIT=1`` 时才列出 ``Commit``（它改动知识本身）；``E09_NO_EMBED=1`` 时关闭查询向量，写入后也不补算；
+``E09_ENABLE_COMMIT=1`` 时才列出 ``Commit``（它改动知识本身）；``E09_READ_ONLY=1`` 时只列出不写入的工具，``E09_HIDE_TOOLS`` 中的工具不列出；
+``E09_EVIDENCE_SCOPE=artifacts`` 时 ReadEvidence 只读 Artifact 的文档，不读论文原文（:func:`scoped`）；``E09_NO_EMBED=1`` 时关闭查询向量，写入后也不补算；
 ``E09_MCP_LOG`` 给出日志文件（追加写）；``E09_WORKDIR`` 是写者的工作目录，草稿文件（``payload_file``、
 ``doc_file``）只从这里读，不设时取服务进程的当前目录；``E09_WORKDIR_ALIAS`` 是写者看到的同一目录（如沙箱中的
 ``/work``，见 :mod:`e09.draft`）。库没有版本记录时服务不启动。
@@ -29,6 +30,7 @@ import logging
 import os
 import secrets
 import sys
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -39,7 +41,8 @@ from mcp.server.stdio import stdio_server
 
 from ..draft import Workdir
 from ..operators import Context
-from ..operators.base import rejected
+from ..operators.base import Operator, params_of, rejected
+from ..operators.db.read_evidence import read_evidence
 from ..store import Store, UnversionedDatabaseError, check_versioned, open_graph
 from ..tools import TOOLS
 from .spec import Spec, load
@@ -48,9 +51,36 @@ log = logging.getLogger("e09.mcp")
 
 
 def enabled(spec: Spec) -> dict[str, types.Tool]:
-    """列出的工具：``Commit`` 只在 ``E09_ENABLE_COMMIT=1`` 时列出。"""
+    """列出的工具：``Commit`` 只在 ``E09_ENABLE_COMMIT=1`` 时列出；``E09_READ_ONLY=1`` 时只列出不写入的工具
+    （读者：查找、读取与历史，不能写 Artifact，也不能提交）；``E09_HIDE_TOOLS`` 中逗号分隔的工具不列出。"""
     commit = os.environ.get("E09_ENABLE_COMMIT") == "1"
-    return {name: t for name, t in spec.tools.items() if name != "Commit" or commit}
+    read_only = os.environ.get("E09_READ_ONLY") == "1"
+    hidden = set(filter(None, os.environ.get("E09_HIDE_TOOLS", "").split(",")))
+    return {
+        name: t
+        for name, t in spec.tools.items()
+        if (name != "Commit" or commit) and not (read_only and TOOLS[name].writes) and name not in hidden
+    }
+
+
+def scoped(tools: dict[str, types.Tool]) -> tuple[dict[str, types.Tool], dict[str, Operator]]:
+    """``E09_EVIDENCE_SCOPE=artifacts`` 时把 ReadEvidence 换成只读产物文档的版本，说明中补一句。T1 中只读库的读者
+    这样设置：库的内容都能读，论文原文不能读（产物存在集中式的库中，ReadEvidence 是读产物文档的途径）。"""
+    ops = dict(TOOLS)
+    if os.environ.get("E09_EVIDENCE_SCOPE") != "artifacts" or "ReadEvidence" not in tools:
+        return tools, ops
+    base = TOOLS["ReadEvidence"]
+    ops["ReadEvidence"] = replace(base, execute=_artifacts_only(base))
+    note = " In this session only artifact documents can be read; source papers are not available."
+    tool = tools["ReadEvidence"]
+    return {**tools, "ReadEvidence": tool.model_copy(update={"description": (tool.description or "") + note})}, ops
+
+
+def _artifacts_only(base: Operator):
+    def execute(ctx: Context, request: Any) -> dict[str, Any]:
+        return read_evidence(ctx.store, **params_of(base.name, base.parameters, request), artifacts_only=True)
+
+    return execute
 
 
 def serve(
@@ -66,7 +96,7 @@ def serve(
     """MCP 服务：调用逐个执行（同一时间只有一个写入，不与自己的写入冲突）。"""
     spec = spec or load()
     server: Server = Server(spec.name, version=spec.version, instructions=spec.instructions)
-    tools = enabled(spec)
+    tools, ops = scoped(enabled(spec))
     lock = anyio.Lock()
 
     @server.list_tools()
@@ -75,7 +105,7 @@ def serve(
 
     @server.call_tool(validate_input=False)  # 参数由算子核对，错误与命令行同形
     async def call_tool(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
-        op = TOOLS[name] if name in tools else None
+        op = ops[name] if name in tools else None
         if op is None:
             result = rejected([{"rule": "format", "at": "tool", "msg": f"one of {list(tools)}"}])
         else:

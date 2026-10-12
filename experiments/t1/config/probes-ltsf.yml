@@ -1,0 +1,368 @@
+# T1 先导的读者探针（时序预测语料）。草案经用户同意（2026-10-11），冻结前可改；冻结记录见 docs/decisions/。
+#
+# 每个探针：
+#   id、class（A 有据数值 / B 条件与来源 / C 分歧可见 / D 跨意图 / E 针对产物 / F 对照）
+#   labels：intent、access（Q1–Q6，intents_decompose.md §7.1.3）、layer（grounded / interpretive）、crossing
+#   text：读者看到的问题（英文，与库中内容同语言）
+#   gold：
+#     values：应出现在回答中的数值，各带出处论文与原文锚点（<arxiv>:<行号>）；只计入检查点时已写入的论文。
+#       带 dataset / horizon / method / metric 的是结果表中的一格，按读者回答末尾的 claims 清单成对判分
+#       （出处论文、方法、指标与数值都对上才算），并由 t1.source_tables 核对它确实在锚点行的那一列；
+#       不带的（消融变体、标准误）只看数值是否出现在回答中
+#     rubric：按规则判分的要点；paper 字段给出时只在该论文已写入后计入
+#     dynamic：金标准在检查点时从库中取出（E2）
+#   oracle：神谕参照线交给读者的原文行（<arxiv>:<起>-<止>）
+# 探针在其 gold 涉及的论文中最早的一篇写入之后的检查点起有效（t1.probe.eligible）。
+# 锚点的行号对应 data/raw/t1-pilot-corpus/papers/<arxiv>/paper.md。
+
+schema_version: 2
+
+reader:
+  user: reader@t1.example
+  # 两种读者条件，各组的库说明不同，其余文字相同：
+  #   store_only（T1 主测量）：读者只有库，没有论文；A3 也不列出 ReadEvidence（它按任意行号读原文）。
+  #   with_papers（辅助）：读者另能读论文（只读），绕开库读原文的行为事后从轨迹审计，不阻止。
+  store:
+    store_only:
+      A3: >-
+        The shared store is the PaperWeave knowledge base, available through the PaperWeave tools. It was built
+        by earlier sessions from research papers; the papers themselves are not available to you.
+      A0: >-
+        The shared store is the git repository in ./store, a directory of notes written by earlier sessions from
+        research papers; the papers themselves are not available to you.
+    with_papers:
+      A3: >-
+        The shared store is the PaperWeave knowledge base, available through the PaperWeave tools. It was built
+        by earlier sessions from the papers under ./papers.
+      A0: >-
+        The shared store is the git repository in ./store, a directory of notes written by earlier sessions from
+        the papers under ./papers.
+  # 回答末尾的数值清单，各条件与参照线相同；t1.grade 按它成对判分。
+  claims: |
+    End your answer with a block that lists every result value you report, one per line:
+
+    ```claims
+    paper | method | dataset | horizon | metric | value
+    ```
+
+    where paper is the arXiv id (or short name) of the paper whose table reports the value, which is not
+    necessarily the paper that proposed the method. Write `none` inside the block if you report no values.
+  task: |
+    You are answering a question about long-term time series forecasting research. {store}
+
+    Question: {question}
+
+    Answer concisely. For each number or fact in your answer, say which paper it comes from and where you
+    found it. If the papers report different values, give each with its source. If something is not
+    reported, say so.
+
+    {claims}
+  closed_book: |
+    You are answering a question about long-term time series forecasting research from your own knowledge.
+    You have no documents or tools to consult.
+
+    Question: {question}
+
+    Answer concisely. If you do not know, say so.
+
+    {claims}
+  oracle: |
+    You are answering a question about long-term time series forecasting research. Below are the relevant
+    lines from the papers, quoted verbatim; each table excerpt starts with the table's caption and header.
+
+    {lines}
+
+    Question: {question}
+
+    Answer concisely, citing the paper for each number or fact.
+
+    {claims}
+
+probes:
+  - id: A1
+    class: A
+    labels: {intent: I3, access: [Q4, Q5], layer: grounded, crossing: multi-writer}
+    text: >-
+      What MSE and MAE does the PatchTST paper report for PatchTST/64 on ETTh1 (multivariate) at horizon 96,
+      and with what look-back window?
+    gold:
+      values:
+        - {paper: 2211.14730v2, method: PatchTST/64, dataset: ETTh1, horizon: 96, metric: MSE, value: 0.370, anchor: "2211.14730v2:188"}
+        - {paper: 2211.14730v2, method: PatchTST/64, dataset: ETTh1, horizon: 96, metric: MAE, value: 0.400, anchor: "2211.14730v2:188"}
+      rubric:
+        - {paper: 2211.14730v2, point: "look-back window L = 512", anchor: "2211.14730v2:164"}
+    oracle: ["2211.14730v2:164-164", "2211.14730v2:168-171", "2211.14730v2:188-188"]
+
+  - id: A2
+    class: A
+    labels: {intent: I3, access: [Q4], layer: grounded, crossing: multi-writer}
+    text: What MSE and MAE does TiDE report for itself on Traffic at horizon 96?
+    gold:
+      values:
+        - {paper: 2304.08424v5, method: TiDE, dataset: Traffic, horizon: 96, metric: MSE, value: 0.336, anchor: "2304.08424v5:223"}
+        - {paper: 2304.08424v5, method: TiDE, dataset: Traffic, horizon: 96, metric: MAE, value: 0.253, anchor: "2304.08424v5:223"}
+    oracle: ["2304.08424v5:215-218", "2304.08424v5:223-223"]
+
+  - id: A3
+    class: A
+    labels: {intent: I3, access: [Q4], layer: grounded, crossing: not-reported}
+    text: What does the Autoformer paper itself report for Autoformer on ETTh1 (multivariate) at horizon 96?
+    gold:
+      rubric:
+        - point: >-
+            says the Autoformer paper does not report ETTh1 at horizon 96 (its ETT table uses horizons
+            24, 48, 168, 288, 336, 672, 720)
+          anchor: "2106.13008v5:690"
+        - point: does not attribute any ETTh1 horizon-96 value to the Autoformer paper
+          anchor: "2106.13008v5:690"
+    oracle: ["2106.13008v5:690-698"]
+
+  - id: B1
+    class: B
+    labels: {intent: I3, access: [Q4], layer: grounded, crossing: cross-paper-provenance}
+    text: Were the baseline numbers in TiDE's main results table run by the TiDE authors or taken from another paper?
+    gold:
+      rubric:
+        - {paper: 2304.08424v5, point: "taken from Nie et al. 2022 (the PatchTST paper)", anchor: "2304.08424v5:215"}
+        - {paper: 2304.08424v5, point: "PatchTST numbers re-evaluated after fixing a test dataloader bug", anchor: "2304.08424v5:215"}
+        - {paper: 2304.08424v5, point: "DLinear numbers taken from the original DLinear paper", anchor: "2304.08424v5:252"}
+    oracle: ["2304.08424v5:215-215", "2304.08424v5:252-252"]
+
+  - id: B2
+    class: B
+    labels: {intent: I3, access: [Q4], layer: grounded, crossing: multi-writer}
+    text: How did the PatchTST paper obtain its FEDformer, Autoformer and Informer baseline numbers?
+    gold:
+      rubric:
+        - {paper: 2211.14730v2, point: "re-run by the authors", anchor: "2211.14730v2:569"}
+        - {paper: 2211.14730v2, point: "six look-back windows L in {24, 48, 96, 192, 336, 720}, best result chosen per task", anchor: "2211.14730v2:569"}
+    oracle: ["2211.14730v2:569-571"]
+
+  - id: B3
+    class: B
+    labels: {intent: I3, access: [Q4], layer: grounded, crossing: multi-writer}
+    text: What input length does CATS use for itself, and how were the baselines' input lengths chosen?
+    gold:
+      rubric:
+        - {paper: 2403.01673v1, point: "CATS (and ARM) fixed at input length 720", anchor: "2403.01673v1:621"}
+        - {paper: 2403.01673v1, point: "other models: best result over input lengths {96, 192, 336, 720}", anchor: "2403.01673v1:621"}
+    oracle: ["2403.01673v1:621-621"]
+
+  - id: B4
+    class: B
+    labels: {intent: I3, access: [Q4], layer: grounded, crossing: multi-writer}
+    text: Under what input length are the main results in the TimeMachine paper reported?
+    gold:
+      rubric:
+        - {paper: 2403.09898v2, point: "input length L = 96 for all baselines", anchor: "2403.09898v2:202"}
+        - {paper: 2403.09898v2, point: "following the iTransformer setting", anchor: "2403.09898v2:202"}
+    oracle: ["2403.09898v2:202-202"]
+
+  - id: C1
+    class: C
+    labels: {intent: I3, access: [Q4, Q6], layer: grounded, crossing: writer-divergence}
+    text: >-
+      What ETTh1 horizon-96 MSE is reported for PatchTST across the papers you can access? Do the values agree;
+      if not, why?
+    gold:
+      values:
+        - {paper: 2211.14730v2, method: PatchTST/64, dataset: ETTh1, horizon: 96, metric: MSE, value: 0.370, anchor: "2211.14730v2:188"}
+        - {paper: 2211.14730v2, method: PatchTST/42, dataset: ETTh1, horizon: 96, metric: MSE, value: 0.375, anchor: "2211.14730v2:188"}
+        - {paper: 2304.08424v5, method: PatchTST/64, dataset: ETTh1, horizon: 96, metric: MSE, value: 0.379, anchor: "2304.08424v5:231"}
+        - {paper: 2310.09751v3, method: "PatchTST^∗", dataset: ETTh1, horizon: 96, metric: MSE, value: 0.404, anchor: "2310.09751v3:232"}
+        - {paper: 2403.01673v1, method: PatchTST, dataset: ETTh1, horizon: 96, metric: MSE, value: 0.370, anchor: "2403.01673v1:637"}
+        - {paper: 2403.09898v2, method: PatchTST, dataset: ETTh1, horizon: 96, metric: MSE, value: 0.414, anchor: "2403.09898v2:218"}
+      rubric:
+        - {paper: 2304.08424v5, point: "TiDE's PatchTST numbers follow a fix of a test dataloader bug", anchor: "2304.08424v5:215"}
+        - {paper: 2310.09751v3, point: "values at input length 96 are not comparable with the PatchTST paper's L = 336/512", anchor: "2310.09751v3:217"}
+    oracle: ["2211.14730v2:164-164", "2211.14730v2:188-188", "2304.08424v5:215-215", "2304.08424v5:231-231",
+             "2310.09751v3:217-217", "2310.09751v3:232-232", "2403.01673v1:637-637", "2403.09898v2:202-202",
+             "2403.09898v2:218-218"]
+
+  - id: C2
+    class: C
+    labels: {intent: I3, access: [Q4], layer: grounded, crossing: writer-divergence}
+    text: What MSE does Autoformer achieve on ETTh1 at horizon 96?
+    gold:
+      values:
+        - {paper: 2211.14730v2, method: Autoformer, dataset: ETTh1, horizon: 96, metric: MSE, value: 0.435, anchor: "2211.14730v2:188"}
+        - {paper: 2211.14730v2, method: Autoformer, dataset: ETTh1, horizon: 96, metric: MSE, value: 0.449, anchor: "2211.14730v2:954"}  # Table 15，无通道独立，引自 Zeng et al.
+        - {paper: 2310.09751v3, method: Autoformer, dataset: ETTh1, horizon: 96, metric: MSE, value: 0.449, anchor: "2310.09751v3:232"}
+      rubric:
+        - {paper: 2106.13008v5, point: "the Autoformer paper itself does not report ETTh1 at horizon 96", anchor: "2106.13008v5:690"}
+        - {paper: 2211.14730v2, point: "0.435 and 0.449 differ because of the look-back setting (best of six re-runs vs L = 96 numbers cited from Zeng et al.)", anchor: "2211.14730v2:569"}
+    oracle: ["2106.13008v5:690-690", "2211.14730v2:188-188", "2211.14730v2:569-569", "2211.14730v2:954-954",
+             "2310.09751v3:217-217", "2310.09751v3:232-232"]
+
+  - id: C3
+    class: C
+    labels: {intent: I3, access: [Q4], layer: grounded, crossing: writer-divergence}
+    text: What is FEDformer's MAE on ETTh1 at horizon 96?
+    gold:
+      values:
+        - {paper: 2211.14730v2, method: FEDformer, dataset: ETTh1, horizon: 96, metric: MAE, value: 0.415, anchor: "2211.14730v2:188"}
+        - {paper: 2211.14730v2, method: FEDformer, dataset: ETTh1, horizon: 96, metric: MAE, value: 0.419, anchor: "2211.14730v2:954"}  # Table 15
+        - {paper: 2310.09751v3, method: FEDformer, dataset: ETTh1, horizon: 96, metric: MAE, value: 0.419, anchor: "2310.09751v3:232"}
+      rubric:
+        - {paper: 2211.14730v2, point: "two different values are reported (0.415 vs 0.419)", anchor: "2211.14730v2:954"}
+    oracle: ["2211.14730v2:188-188", "2211.14730v2:954-954", "2304.08424v5:231-231", "2310.09751v3:232-232"]
+
+  - id: C4
+    class: C
+    labels: {intent: I3, access: [Q4], layer: grounded, crossing: writer-divergence}
+    text: How well does TiDE do on ETTh1 at horizon 96?
+    gold:
+      values:
+        - {paper: 2304.08424v5, method: TiDE, dataset: ETTh1, horizon: 96, metric: MSE, value: 0.375, anchor: "2304.08424v5:231"}
+        - {paper: 2403.09898v2, method: TiDE, dataset: ETTh1, horizon: 96, metric: MSE, value: 0.479, anchor: "2403.09898v2:218"}
+      rubric:
+        - {paper: 2403.09898v2, point: "the difference comes from the input length (720 vs 96)", anchor: "2403.09898v2:202"}
+    oracle: ["2304.08424v5:231-231", "2304.08424v5:252-252", "2403.09898v2:202-202", "2403.09898v2:218-218"]
+
+  - id: D1
+    class: D
+    labels: {intent: I3, access: [Q4], layer: grounded, crossing: cross-intent}
+    text: >-
+      On Traffic at horizon 96, how much do patching and channel independence each contribute to PatchTST's
+      accuracy? Give the MSE of each variant.
+    gold:
+      values:
+        - {paper: 2211.14730v2, what: P+CI, value: 0.367, anchor: "2211.14730v2:273"}
+        - {paper: 2211.14730v2, what: CI only, value: 0.397, anchor: "2211.14730v2:273"}
+        - {paper: 2211.14730v2, what: P only, value: 0.595, anchor: "2211.14730v2:273"}
+      rubric:
+        - {paper: 2211.14730v2, point: "the variant with neither runs out of GPU memory (no number)", anchor: "2211.14730v2:264"}
+    oracle: ["2211.14730v2:264-268", "2211.14730v2:273-273"]
+
+  - id: D2
+    class: D
+    labels: {intent: I2, access: [Q4], layer: grounded, crossing: cross-intent}
+    text: Does PatchTST's advantage over other Transformer models depend on instance normalization?
+    gold:
+      rubric:
+        - {paper: 2211.14730v2, point: "slightly better with instance normalization", anchor: "2211.14730v2:739"}
+        - {paper: 2211.14730v2, point: "still significantly better than other Transformers on most datasets without it", anchor: "2211.14730v2:739"}
+    oracle: ["2211.14730v2:739-739"]
+
+  - id: D3
+    class: D
+    labels: {intent: I2, access: [Q4], layer: grounded, crossing: cross-intent}
+    text: Is UniTime's reported performance obtained with training data beyond the target dataset?
+    gold:
+      rubric:
+        - {paper: 2310.09751v3, point: "yes: UniTime is trained across datasets", anchor: "2310.09751v3:217"}
+    oracle: ["2310.09751v3:217-221"]
+
+  - id: E1
+    class: E
+    labels: {intent: I3, access: [Q6], layer: grounded, crossing: multi-writer}
+    text: >-
+      Build a table of ETTh1 horizon-96 MSE for PatchTST, DLinear, FEDformer and Autoformer as reported in each
+      paper that reports them, with each paper's input-length setting. Which numbers can be compared directly?
+    gold:
+      values:
+        - {paper: 2211.14730v2, method: PatchTST/64, dataset: ETTh1, horizon: 96, metric: MSE, value: 0.370, anchor: "2211.14730v2:188"}
+        - {paper: 2211.14730v2, method: DLinear, dataset: ETTh1, horizon: 96, metric: MSE, value: 0.375, anchor: "2211.14730v2:188"}
+        - {paper: 2211.14730v2, method: FEDformer, dataset: ETTh1, horizon: 96, metric: MSE, value: 0.376, anchor: "2211.14730v2:188"}
+        - {paper: 2211.14730v2, method: Autoformer, dataset: ETTh1, horizon: 96, metric: MSE, value: 0.435, anchor: "2211.14730v2:188"}
+        - {paper: 2304.08424v5, method: PatchTST/64, dataset: ETTh1, horizon: 96, metric: MSE, value: 0.379, anchor: "2304.08424v5:231"}
+        - {paper: 2304.08424v5, method: DLinear, dataset: ETTh1, horizon: 96, metric: MSE, value: 0.375, anchor: "2304.08424v5:231"}
+        - {paper: 2310.09751v3, method: "PatchTST^∗", dataset: ETTh1, horizon: 96, metric: MSE, value: 0.404, anchor: "2310.09751v3:232"}
+        - {paper: 2310.09751v3, method: DLinear, dataset: ETTh1, horizon: 96, metric: MSE, value: 0.386, anchor: "2310.09751v3:232"}
+        - {paper: 2310.09751v3, method: Autoformer, dataset: ETTh1, horizon: 96, metric: MSE, value: 0.449, anchor: "2310.09751v3:232"}
+        - {paper: 2403.01673v1, method: PatchTST, dataset: ETTh1, horizon: 96, metric: MSE, value: 0.370, anchor: "2403.01673v1:637"}
+        - {paper: 2403.09898v2, method: PatchTST, dataset: ETTh1, horizon: 96, metric: MSE, value: 0.414, anchor: "2403.09898v2:218"}
+      rubric:
+        - {paper: 2310.09751v3, point: "groups the numbers by input-length setting: L = 96 (UniTime, TimeMachine) vs per-paper best or long look-back (PatchTST, TiDE, CATS)", anchor: "2211.14730v2:569"}
+      reuse: true  # 另记：读者是否引用了库中已有的记录或产物，还是从原文重新抽取
+    oracle: ["2211.14730v2:164-164", "2211.14730v2:188-188", "2211.14730v2:569-569", "2304.08424v5:215-215",
+             "2304.08424v5:231-231", "2310.09751v3:217-217", "2310.09751v3:232-232", "2403.01673v1:621-621",
+             "2403.01673v1:637-637", "2403.09898v2:202-202", "2403.09898v2:218-218"]
+
+  - id: E2
+    class: E
+    labels: {intent: I3, access: [Q3, Q6], layer: interpretive, crossing: writer-divergence}
+    text: >-
+      What disagreements or comparability problems about Autoformer's and PatchTST's reported results did
+      earlier sessions record, and what did they base them on?
+    start: 1
+    gold:
+      dynamic: >-
+        At the checkpoint, the disagreement and comparability notes in the store about Autoformer or PatchTST
+        results (A3: Observations and Check judgments; A0: note passages). Scored by recall, and whether each
+        recalled note keeps its basis.
+
+  - id: F1
+    class: F
+    labels: {intent: I2, access: [Q4], layer: grounded, crossing: none}
+    text: >-
+      In FiLM's ablation of normalization and multiscale, what happens on Traffic when only normalization is
+      added?
+    gold:
+      values:
+        - {paper: 2205.08897v4, what: Original Traffic MSE, value: 0.528, anchor: "2205.08897v4:408"}
+        - {paper: 2205.08897v4, what: Normalization-only Traffic MSE, value: 0.656, anchor: "2205.08897v4:409"}
+      rubric:
+        - {paper: 2205.08897v4, point: "normalization alone makes Traffic worse", anchor: "2205.08897v4:409"}
+    oracle: ["2205.08897v4:404-412"]
+
+  - id: F2
+    class: F
+    labels: {intent: I3, access: [Q4], layer: grounded, crossing: none}
+    text: What standard error does TiDE report for its ETTh1 horizon-96 MSE?
+    gold:
+      values:
+        - {paper: 2304.08424v5, what: standard error, value: 0.0003, anchor: "2304.08424v5:760"}
+    oracle: ["2304.08424v5:737-737", "2304.08424v5:760-760"]
+
+  # G：版本事件（pilot-ltsf.yml 的 events）。FiLM 的写者拿到 v3，检查点 2 之后维护者带进 v4。金标准按检查点
+  # 分版本：until_checkpoint 2 的是 v3 的值，from_checkpoint 3 的是 v4 的值（t1.probe.gold_at）。
+  - id: G1
+    class: G
+    labels: {intent: I3, access: [Q4], layer: grounded, crossing: version-event}
+    text: >-
+      What MSE and MAE does FiLM report for itself on the Exchange dataset in its main multivariate results,
+      for each forecast horizon?
+    gold:
+      values:
+        - {paper: 2205.08897v3, method: FiLM, dataset: Exchange, horizon: 96, metric: MSE, value: 0.079, anchor: "2205.08897v3:247", until_checkpoint: 2}
+        - {paper: 2205.08897v3, method: FiLM, dataset: Exchange, horizon: 96, metric: MAE, value: 0.204, anchor: "2205.08897v3:247", until_checkpoint: 2}
+        - {paper: 2205.08897v3, method: FiLM, dataset: Exchange, horizon: 192, metric: MSE, value: 0.159, anchor: "2205.08897v3:248", until_checkpoint: 2}
+        - {paper: 2205.08897v3, method: FiLM, dataset: Exchange, horizon: 192, metric: MAE, value: 0.292, anchor: "2205.08897v3:248", until_checkpoint: 2}
+        - {paper: 2205.08897v3, method: FiLM, dataset: Exchange, horizon: 336, metric: MSE, value: 0.270, anchor: "2205.08897v3:249", until_checkpoint: 2}
+        - {paper: 2205.08897v3, method: FiLM, dataset: Exchange, horizon: 336, metric: MAE, value: 0.398, anchor: "2205.08897v3:249", until_checkpoint: 2}
+        - {paper: 2205.08897v3, method: FiLM, dataset: Exchange, horizon: 720, metric: MSE, value: 0.536, anchor: "2205.08897v3:250", until_checkpoint: 2}
+        - {paper: 2205.08897v3, method: FiLM, dataset: Exchange, horizon: 720, metric: MAE, value: 0.574, anchor: "2205.08897v3:250", until_checkpoint: 2}
+        - {paper: 2205.08897v4, method: FiLM, dataset: Exchange, horizon: 96, metric: MSE, value: 0.086, anchor: "2205.08897v4:256", from_checkpoint: 3}
+        - {paper: 2205.08897v4, method: FiLM, dataset: Exchange, horizon: 96, metric: MAE, value: 0.204, anchor: "2205.08897v4:256", from_checkpoint: 3}
+        - {paper: 2205.08897v4, method: FiLM, dataset: Exchange, horizon: 192, metric: MSE, value: 0.188, anchor: "2205.08897v4:257", from_checkpoint: 3}
+        - {paper: 2205.08897v4, method: FiLM, dataset: Exchange, horizon: 192, metric: MAE, value: 0.292, anchor: "2205.08897v4:257", from_checkpoint: 3}
+        - {paper: 2205.08897v4, method: FiLM, dataset: Exchange, horizon: 336, metric: MSE, value: 0.356, anchor: "2205.08897v4:258", from_checkpoint: 3}
+        - {paper: 2205.08897v4, method: FiLM, dataset: Exchange, horizon: 336, metric: MAE, value: 0.433, anchor: "2205.08897v4:258", from_checkpoint: 3}
+        - {paper: 2205.08897v4, method: FiLM, dataset: Exchange, horizon: 720, metric: MSE, value: 0.727, anchor: "2205.08897v4:259", from_checkpoint: 3}
+        - {paper: 2205.08897v4, method: FiLM, dataset: Exchange, horizon: 720, metric: MAE, value: 0.669, anchor: "2205.08897v4:259", from_checkpoint: 3}
+      rubric:
+        - {paper: 2205.08897v4, point: "says an earlier version of the paper reported different Exchange values (e.g. 720 MSE 0.536)", anchor: "2205.08897v4:259", from_checkpoint: 3}
+    oracle: ["2205.08897v4:256-259"]
+
+  - id: G2
+    class: G
+    labels: {intent: I3, access: [Q4, Q6], layer: grounded, crossing: version-event}
+    text: >-
+      What MSE does FiLM report for itself on ETTm2 (multivariate) at horizons 192, 336 and 720? If the paper
+      gives these results in more than one table, do the tables agree?
+    gold:
+      values:
+        - {paper: 2205.08897v3, method: FiLM, dataset: ETTm2, horizon: 192, metric: MSE, value: 0.222, anchor: "2205.08897v3:240", until_checkpoint: 2}
+        - {paper: 2205.08897v3, method: FiLM, dataset: ETTm2, horizon: 336, metric: MSE, value: 0.277, anchor: "2205.08897v3:241", until_checkpoint: 2}
+        - {paper: 2205.08897v3, method: FiLM, dataset: ETTm2, horizon: 720, metric: MSE, value: 0.371, anchor: "2205.08897v3:242", until_checkpoint: 2}
+        - {paper: 2205.08897v3, method: FiLM, dataset: ETTm2, horizon: 192, metric: MSE, value: 0.240, anchor: "2205.08897v3:810", until_checkpoint: 2}  # Table 11
+        - {paper: 2205.08897v3, method: FiLM, dataset: ETTm2, horizon: 336, metric: MSE, value: 0.286, anchor: "2205.08897v3:811", until_checkpoint: 2}
+        - {paper: 2205.08897v3, method: FiLM, dataset: ETTm2, horizon: 720, metric: MSE, value: 0.393, anchor: "2205.08897v3:812", until_checkpoint: 2}
+        - {paper: 2205.08897v4, method: FiLM, dataset: ETTm2, horizon: 192, metric: MSE, value: 0.222, anchor: "2205.08897v4:249", from_checkpoint: 3}
+        - {paper: 2205.08897v4, method: FiLM, dataset: ETTm2, horizon: 336, metric: MSE, value: 0.277, anchor: "2205.08897v4:250", from_checkpoint: 3}
+        - {paper: 2205.08897v4, method: FiLM, dataset: ETTm2, horizon: 720, metric: MSE, value: 0.371, anchor: "2205.08897v4:251", from_checkpoint: 3}
+      rubric:
+        - {paper: 2205.08897v3, point: "the main table (Table 1) and the ETT full benchmark (Table 11) disagree for FiLM on ETTm2", anchor: "2205.08897v3:810", until_checkpoint: 2}
+        - {paper: 2205.08897v4, point: "the tables agree in the current version; the earlier version's Table 11 reported higher values (e.g. 0.393 at 720)", anchor: "2205.08897v4:844", from_checkpoint: 3}
+    oracle: ["2205.08897v4:249-251", "2205.08897v4:842-844"]

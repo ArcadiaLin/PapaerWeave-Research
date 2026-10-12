@@ -4,18 +4,26 @@
 
 运行目录 ``<workdir_root>/<运行名>/``：
 
-- ``run.yml``：配置副本、仓库提交与是否有未提交改动、开始时间；
+- ``run.yml``：配置副本、仓库提交与是否有未提交改动、开始时间；``code.tar.gz``：开始时 t1、e09 与 packages 的
+  源码（仓库有未提交改动时据此复现）；
+- ``A3/neo4j-export.jsonl``：各组跑完后 A3 图库的全部节点与关系（图库会被下一次运行清空）；
 - ``sessions.jsonl``：每次会话一行（组、序号、论文、写者、退出码、用时、事件流与会话记录的位置、会话前后的库版本、
   模型请求出错的次数与原因；A0 另记会话结束时笔记库中没有提交的改动）；
 - ``checkpoints.yml``：各组每个检查点的库版本（A3 为 graph-vc 的提交 id，A0 为 git 标签 ``checkpoint-<k>``）；
-- ``A3/data/``：A3 的材料根目录（论文副本与产物文档，``E09_DATA``）；``A0/store/``：A0 的笔记库（git 仓库）；
+- ``probes.jsonl``：配置给出 ``probes`` 时，每个检查点上读者对有效探针的回答（:mod:`t1.probe`），在下一个写者开始
+  之前跑完，所以读到的就是检查点的库；
+- ``A3/data/``：A3 的材料根目录（论文副本与产物文档，``E09_DATA``）；``A0/store/``：A0 的笔记库（git 仓库），
+  ``A0/papers/``：A0 的论文副本。两组的论文副本起初只有写者最初拿到的版本，版本事件开始前才放入新版本
+  （:mod:`t1.versions`）；
 - ``<组>/<写者>/``：写者的沙箱目录（见 :mod:`t1.sandbox`）。
 
 A3 的起点：清空图库（``--reset-a3``，只允许配置中的 T1 图库），按 ``seed_docs`` 的顺序
 （作者取文档的 ``by``）提交，再与内存重放的状态逐项比较，不一致即停止。A0 的起点由同一个内存重放渲染（:mod:`t1.a0_seed`）。两组内容因此相同。
 
-会话按“槽位”调度：每个槽位是一篇论文的一个写者。组内按槽位顺序逐个运行（写者轮流写），各组同时运行：
-两组的存储互不相干，并行只缩短总时间。中断后用同一个运行名重跑，已记录的会话跳过。
+会话按“槽位”调度：每个槽位是一篇论文的一个写者，或一个版本事件（``events``：某个检查点之后，维护者把论文的新版本
+带进库）。组内按槽位顺序逐个运行（写者轮流写），各组同时运行：两组的存储互不相干，并行只缩短总时间。
+``runner.endpoints`` 可以给各组指定模型服务（权重与配置相同的副本），会话记录中记下所用的服务。中断后用同一个
+运行名重跑，已记录的会话跳过。
 """
 
 from __future__ import annotations
@@ -38,6 +46,7 @@ from urllib.parse import urlsplit
 import yaml
 from e09.config import REPO
 
+from . import probe, versions
 from .a0_seed import commit_seed, render, seed_docs, write
 from .replay import replay
 from .sandbox import Arm, Paths, Writer, prepare, run_session
@@ -52,19 +61,27 @@ class Slot:
     paper: dict[str, Any]
     writer: dict[str, Any]
     checkpoint: int | None  # 这个槽位之后存档的检查点编号
+    event: dict[str, Any] | None = None  # 版本事件的槽位：配置中 events 的一项
 
 
 def schedule(config: dict[str, Any]) -> list[Slot]:
-    """每篇论文两个写者；``alternate`` 时奇数篇按写者列表顺序，偶数篇反过来。"""
+    """每篇论文两个写者；``alternate`` 时奇数篇按写者列表顺序，偶数篇反过来。版本事件的槽位紧接在它的检查点之后。"""
     plan = config["schedule"]
     writers, papers = config["writers"], config["corpus"]["papers"]
     every = plan["checkpoint_every_papers"]
+    by_arxiv = {p["arxiv"]: p for p in papers}
+    event_writers = {w["id"]: w for w in config.get("event_writers") or []}
     slots: list[Slot] = []
     for n, paper in enumerate(papers, 1):
         order = writers if plan["order"] != "alternate" or n % 2 else writers[::-1]
         for i, writer in enumerate(order):
             last = i == len(order) - 1 and n % every == 0
             slots.append(Slot(len(slots) + 1, paper, writer, n // every if last else None))
+            if last:
+                for event in versions.events(config):
+                    if event["after_checkpoint"] == n // every:
+                        writer = event_writers[event["writer"]]
+                        slots.append(Slot(len(slots) + 1, by_arxiv[event["paper"]], writer, None, event))
     if len(slots) != plan["sessions_per_arm"]:
         raise ValueError(f"schedule has {len(slots)} sessions, config says {plan['sessions_per_arm']}")
     return slots
@@ -72,10 +89,12 @@ def schedule(config: dict[str, Any]) -> list[Slot]:
 
 def prompt(config: dict[str, Any], arm: str, slot: Slot, titles: dict[str, str]) -> str:
     paper = slot.paper
+    given = paper["arxiv"] if slot.event else paper.get("first_version") or paper["arxiv"]
     task = slot.writer["task"].format(
         title=titles[paper["arxiv"].rsplit("v", 1)[0]],
-        arxiv=paper["arxiv"],
-        material=f"papers/{paper['arxiv']}/paper.md",
+        arxiv=given,
+        material=f"papers/{given}/paper.md",
+        old_material=f"papers/{paper.get('first_version')}/paper.md",
         method=paper["method"],
     )
     closing = config["writer_closing"].format(store=config["arms"][arm]["store"])
@@ -95,7 +114,7 @@ def setup_a3(run: Path, config: dict[str, Any], *, reset: bool) -> None:
     material = REPO / config["corpus"]["material_root"]
     data = run / "A3/data"
     if not (data / "papers").exists():
-        shutil.copytree(material / "papers", data / "papers")
+        copy_papers(config, data / "papers", versions.initial_papers(config))
     driver = _driver(arm["neo4j"])
     try:
         nodes = driver.execute_query("MATCH (n) RETURN count(n) AS n").records[0]["n"]
@@ -126,8 +145,23 @@ def setup_a0(run: Path, config: dict[str, Any]) -> None:
     if store.exists():
         return
     material = REPO / config["corpus"]["material_root"]
+    copy_papers(config, run / "A0/papers", versions.initial_papers(config))
     write(render(replay(seed_docs(_config_path(config)), material)), store)
     commit_seed(store)
+
+
+def papers_dir(run: Path, config: dict[str, Any], arm: str) -> Path:
+    """组的论文副本；早先的运行没有 A0 副本时用语料目录。"""
+    own = run / ("A3/data/papers" if arm == "A3" else "A0/papers")
+    return own if own.exists() else REPO / config["corpus"]["material_root"] / "papers"
+
+
+def copy_papers(config: dict[str, Any], target: Path, arxivs: list[str]) -> None:
+    """把语料中的这些论文目录复制到 ``target``（已有的不动）。"""
+    source = REPO / config["corpus"]["material_root"] / "papers"
+    for arxiv in arxivs:
+        if not (target / arxiv).exists():
+            shutil.copytree(source / arxiv, target / arxiv)
 
 
 def _compare(config: dict[str, Any], arm: dict[str, Any], data: Path) -> list[str]:
@@ -190,7 +224,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     arms = args.arms.split(",")
     run = Path(config["runner"]["workdir_root"]).expanduser() / args.name
     run.mkdir(parents=True, exist_ok=True)
-    _record_run(run, config_path, arms)
+    overrides = {"neo4j": args.neo4j, "endpoints": dict(e.split("=", 1) for e in args.endpoints.split(","))} if args.endpoints else {"neo4j": args.neo4j}
+    _record_run(run, config_path, arms, {k: v for k, v in overrides.items() if v})
+    config = run_config(run, config)
 
     if "A3" in arms and "A3" not in _checkpoints(run):
         setup_a3(run, config, reset=args.reset_a3)
@@ -199,15 +235,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         setup_a0(run, config)
         checkpoint(run, config, "A0", 0)
 
+    probes = probe.load(REPO / config["probes"]) if config.get("probes") else None
+    if probes is not None and (problems := probe.check_anchors(probes, REPO / config["corpus"]["material_root"])):
+        raise SystemExit("probe gold does not match the papers:\n" + "\n".join(problems))
     titles = titles_of(config)
     done = _done(run)
-    llm = _llm_url(config["runner"]["model"])
+    default_llm = _llm_url(config["runner"]["model"])
     slots = schedule(config)[: args.limit] if args.limit else schedule(config)
 
     def run_arm(arm: str) -> None:
-        for slot in slots:
+        llm = (config["runner"].get("endpoints") or {}).get(arm, default_llm)
+        for i, slot in enumerate(slots):
             if (arm, slot.index) in done:
+                following = slots[i + 1] if i + 1 < len(slots) else None
+                if slot.checkpoint is not None and (following is None or (arm, following.index) not in done):
+                    # 续跑：上次停在这个检查点之后、下一个写者之前，补齐检查点与读者（已记录的探针跳过）
+                    if slot.checkpoint not in (_checkpoints(run).get(arm) or {}):
+                        checkpoint(run, config, arm, slot.checkpoint)
+                    if probes is not None:
+                        probe.run_probes(run, config, probes, arm, slot.checkpoint, llm)
                 continue
+            if slot.event:  # 新版本此刻才出现在论文副本中
+                copy_papers(config, papers_dir(run, config, arm), [slot.event["paper"]])
             record = _session(run, config, arm, slot, prompt(config, arm, slot, titles), llm)
             with _LOCK, open(run / "sessions.jsonl", "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -218,18 +267,41 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             if slot.checkpoint is not None:
                 checkpoint(run, config, arm, slot.checkpoint)
+                if probes is not None:  # 下一个写者开始之前：读者读到的就是检查点的库
+                    probe.run_probes(run, config, probes, arm, slot.checkpoint, llm)
 
     with ThreadPoolExecutor(max_workers=len(arms)) as pool:
         for future in [pool.submit(run_arm, arm) for arm in arms]:
             future.result()  # 一组出错时报出，另一组照常跑完
+    if "A3" in arms:
+        export_a3(run, config)
     return 0
+
+
+def export_a3(run: Path, config: dict[str, Any]) -> Path:
+    """A3 图库的全部节点与关系（含版本记录）写成 JSONL，供图库清空后复查。"""
+    out = run / "A3/neo4j-export.jsonl"
+    driver = _driver(config["arms"]["A3"]["neo4j"])
+    try:
+        nodes = driver.execute_query("MATCH (n) RETURN elementId(n) AS id, labels(n) AS labels, properties(n) AS props")
+        edges = driver.execute_query(
+            "MATCH (a)-[e]->(b) RETURN elementId(a) AS a, type(e) AS type, elementId(b) AS b, properties(e) AS props"
+        )
+    finally:
+        driver.close()
+    with open(out, "w", encoding="utf-8") as f:
+        for r in nodes.records:
+            f.write(json.dumps({"node": r["id"], "labels": r["labels"], "props": r["props"]}, default=str) + "\n")
+        for r in edges.records:
+            f.write(json.dumps({"edge": [r["a"], r["type"], r["b"]], "props": r["props"]}, default=str) + "\n")
+    return out
 
 
 def _session(run: Path, config: dict[str, Any], arm: str, slot: Slot, text: str, llm: str) -> dict[str, Any]:
     spec = config["arms"][arm]
     w = slot.writer
     writer = Writer(w["id"], w["user"], w["agent"])
-    papers = run / "A3/data/papers" if arm == "A3" else REPO / config["corpus"]["material_root"] / "papers"
+    papers = papers_dir(run, config, arm)
     if arm == "A3":
         sandbox_arm = Arm(
             "A3", papers, neo4j=spec["neo4j"], data=run / "A3/data", embeddings=spec.get("embeddings", True)
@@ -241,6 +313,10 @@ def _session(run: Path, config: dict[str, Any], arm: str, slot: Slot, text: str,
     prepare(
         paths, sandbox_arm, runner["model"], runner["thinking"], runner["context_window"], runner["http_idle_timeout_ms"]
     )
+    interrupted: list[str] = []
+    if arm == "A0":  # 上一次运行在会话中途被终止时留下的改动：同样存档后丢弃，不留给这个写者
+        stale = Path(f"runs/{datetime.now(UTC):%Y%m%dT%H%M%S}.interrupted.leftover.patch")
+        interrupted = discard_leftovers(run / "A0/store", paths.root / stale)
     before = version(run, config, arm)
     started = datetime.now(UTC).isoformat(timespec="seconds")
     result = run_session(
@@ -249,8 +325,10 @@ def _session(run: Path, config: dict[str, Any], arm: str, slot: Slot, text: str,
     record = {
         "arm": arm,
         "index": slot.index,
-        "paper": slot.paper["arxiv"],
+        "paper": slot.paper["arxiv"] if slot.event else slot.paper.get("first_version") or slot.paper["arxiv"],
         "writer": writer.id,
+        "event": bool(slot.event),
+        "llm": llm,
         "started": started,
         **result,
         "events": f"{arm}/{writer.id}/{result['events']}",
@@ -265,6 +343,9 @@ def _session(run: Path, config: dict[str, Any], arm: str, slot: Slot, text: str,
         record["leftover"] = discard_leftovers(run / "A0/store", paths.root / patch)
         if record["leftover"]:
             record["leftover_patch"] = f"{arm}/{writer.id}/{patch}"
+        if interrupted:
+            record["interrupted_leftover"] = interrupted
+            record["interrupted_leftover_patch"] = f"{arm}/{writer.id}/{stale}"
     return record
 
 
@@ -295,15 +376,41 @@ def discard_leftovers(store: Path, patch: Path) -> list[str]:
     changed = [line[3:] for line in git("status", "--porcelain", "--untracked-files=all").splitlines()]
     if changed:
         git("add", "-A")
+        patch.parent.mkdir(parents=True, exist_ok=True)
         patch.write_text(git("diff", "--cached", "--binary", "HEAD"), encoding="utf-8")
         git("reset", "--hard", "HEAD")
         git("clean", "-fd")
     return changed
 
 
-def _record_run(run: Path, config_path: Path, arms: list[str]) -> None:
+def run_config(run: Path, config: dict[str, Any]) -> dict[str, Any]:
+    """配置加上这次运行的基础设施覆盖（``run.yml`` 的 ``overrides``：A3 图库、各组的模型服务）。覆盖不改协议，
+    只决定在哪个图库、哪个服务副本上跑；t1.health、t1.probe、t1.grade 读同一份。"""
     path = run / "run.yml"
+    overrides = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("overrides") or {} if path.exists() else {}
+    config = {**config, "arms": {**config["arms"]}, "runner": {**config["runner"]}}
+    if overrides.get("neo4j"):
+        config["arms"]["A3"] = {**config["arms"]["A3"], "neo4j": overrides["neo4j"]}
+    if overrides.get("endpoints"):
+        config["runner"]["endpoints"] = overrides["endpoints"]
+    return config
+
+
+def _record_run(run: Path, config_path: Path, arms: list[str], overrides: dict[str, Any]) -> None:
+    """第一次运行记下 ``run.yml``；之后每次（续跑）另存一份源码快照 ``code-<时间>.tar.gz``。覆盖只能在第一次给出，
+    续跑时给出不同的覆盖即停止。"""
+    path = run / "run.yml"
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+    sources = ["experiments/t1", "experiments/e09/src", "packages"]
     if path.exists():
+        recorded = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("overrides") or {}
+        if overrides and overrides != recorded:
+            raise SystemExit(f"this run was started with overrides {recorded}; resume it without new ones")
+        subprocess.run(
+            ["tar", "czf", str(run / f"code-{stamp}.tar.gz"), "--exclude=__pycache__", "--exclude=.pytest_cache", *sources],
+            cwd=REPO,
+            check=True,
+        )
         return
     sha = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
     dirty = subprocess.run(
@@ -317,9 +424,15 @@ def _record_run(run: Path, config_path: Path, arms: list[str]) -> None:
         "repo_dirty": bool(dirty),
         "arms": arms,
         "config_file": str(config_path.relative_to(REPO)),
+        "overrides": overrides,
     }
     path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
     shutil.copy(config_path, run / "config.yml")
+    subprocess.run(
+        ["tar", "czf", str(run / "code.tar.gz"), "--exclude=__pycache__", "--exclude=.pytest_cache", *sources],
+        cwd=REPO,
+        check=True,
+    )
 
 
 def _checkpoints(run: Path) -> dict[str, Any]:
@@ -365,6 +478,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--arms", default="A3,A0", help="逗号分隔，按此顺序在每个槽位运行")
     parser.add_argument("--limit", type=int, help="只跑前 N 个槽位（冒烟测试）")
     parser.add_argument("--reset-a3", action="store_true", help="A3 图库非空时清空它（只允许 T1 图库）")
+    parser.add_argument("--neo4j", help="A3 用这个图库（另一条时间线并行时），记入 run.yml")
+    parser.add_argument("--endpoints", help="各组的模型服务，如 A3=http://…/v1,A0=http://…/v1，记入 run.yml")
     return parser
 
 
@@ -372,4 +487,4 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["Slot", "checkpoint", "main", "prompt", "schedule", "setup_a0", "setup_a3"]
+__all__ = ["Slot", "checkpoint", "copy_papers", "run_config", "main", "papers_dir", "prompt", "schedule", "setup_a0", "setup_a3"]
