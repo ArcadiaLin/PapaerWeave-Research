@@ -1,6 +1,6 @@
 # Commit 契约：论文增量的入库
 
-> **状态：** 本文是 paper-form-v4 与 supplement-form-v1 的现行入库契约：论文表单写入实验（按研究问题分组，只存描述、锚点和方法、数据、Benchmark、任务关联）、主张与自述贡献；增补表单写入 Observation、Agent 认为的贡献与正反关系。Agent 算子写 Artifact 时共用本文的提交机制（第 7 节）。E09 的 compile、dry_run 与 apply 已对齐本文，尚待重新入库验证。抽取范围见 [抽取原则](./extraction_principles.md)，对象映射见 [Graph Model V2](./graph_model_v2.md)，算子见 [算子契约](./operators.md)，intent 与数据流见 [Workload 拆解](./intents_decompose.md) §5。
+> **状态：** 本文是 paper-form-v4 与 supplement-form-v1 的现行入库契约：论文表单写入实验（按研究问题分组，只存描述、锚点和方法、数据、Benchmark、任务关联）、主张与自述贡献；增补表单写入 Observation、Agent 认为的贡献与正反关系。产物算子检入 Artifact 的新版本时共用本文的提交机制（第 7 节，2026-10-12 修订）。E09 的 compile、dry_run 与 apply 已对齐本文，尚待重新入库验证。抽取范围见 [抽取原则](./extraction_principles.md)，对象映射见 [Graph Model V2](./graph_model_v2.md)，算子见 [算子契约](./operators.md)，intent 与数据流见 [Workload 拆解](./intents_decompose.md) §5。
 
 ## 1. 流程与职责
 
@@ -65,7 +65,7 @@
 | `create_object` | Entity / Concept 节点；桩节点带 `stub: true` |
 | `register_name` | `NameKey` 与 `NAMES` |
 | `fill_stub` | 补全桩节点（含论文表单的 `paper`）：**只填空字段**，去掉 `stub` |
-| `add_material` | `Material`（路径、内容哈希）与 `MATERIAL_OF` |
+| `add_material` | `Material`（路径、内容哈希）与 `MATERIAL_OF`。论文已有材料时（论文出了新版本），新材料挂到论文上，旧材料保留并记 `superseded_by`；已有的引用按材料 id 固定在旧版本上，读过旧版本的产物显示为可能过期（`superseded`） |
 | `add_experiment` | `Content:Experiment`，与 `FROM {material_ref, locators}`、`ON_TASK`、`EVALUATES {role}`、`USES {role: evaluation_data}`、`EVALUATED_ON` |
 | `add_content` | `Content:Claim`、`Content:Contribution`、`Content:Observation`，与 `FROM`、`ABOUT`、`SUPPORTED_BY`；Agent 形成的记录带 `formed_by`、`formed_at` |
 | `link` | 论文表单的 `CITES`，边上存 `source_refs`（`<material_id>::<定位>`）与 `description`；增补表单的 `SUPPORTS` / `OPPOSES`，边上存 `description`、`stated_by`、`formed_by`、`formed_at` |
@@ -91,6 +91,8 @@ Experiment 上的属性：`exp_key`、`anchors`、`text`；Claim、Contribution 
 | dry_run | 实验的自然键已存在：`anchors`、`text`、`FROM.locators`、`ON_TASK`、`EVALUATES` 与 `USES` 绑定都相同为不变，否则为冲突 | **不变** / **冲突** |
 | dry_run | `CITES` 的两端已在库中且边已存在：`source_refs` 与 `description` 都相同为不变，否则为冲突（`rel-changed`） | **不变** / **冲突** |
 | dry_run | Claim、Contribution 的自然键已存在：`text`、`FROM.locators` 与 `ABOUT`、`SUPPORTED_BY` 绑定都相同为不变，否则为冲突；Observation 与 Agent 贡献的 `formed_by`、`text` 与对象集合（贡献另加所属论文）都相同时，`FROM` 也相同为不变，否则为冲突；正反关系按起点、终点、类型与 `formed_by` 已存在时，`description` 相同为不变，否则为冲突 | **不变** / **冲突** |
+
+apply 成功后，返回中另列出这次提交涉及的对象上挂着的共同产物（当前只沿“实验 → 评测数据集 → Leaderboard”），以及还没有 Leaderboard 的数据集。这是查询结果，不是阻塞项，也不是要求（[算子契约](./operators.md) §3.5，待实现）。
 
 三类阻塞项的处理方不同：**错误**由 Agent 改表单；**待确认**由 Agent 做语义判断；**冲突**是与库内状态矛盾，由外部决定（改为引用、`fill`、改名或交人工）。有任何一类时 apply 拒绝整批。
 
@@ -121,18 +123,21 @@ Experiment 上的属性：`exp_key`、`anchors`、`text`；Claim、Contribution 
 - 来回轮数与提交者取自表单的 `x-ingest`，由提交者如实填写；中间件的偶发故障（如语义查重通道失败后重跑）不计入轮数，在表单注释中说明。
 - 出处：表单的内容哈希（`form_hash`，两种表单都记）、论文表单的材料哈希、提交者、时间；增补表单另记 `formed_by`。
 
-## 7. Agent 算子的写入
+## 7. 产物算子的写入
 
-Agent 算子（[算子契约](./operators.md) §4）每次调用写一个 Artifact。它们不是 `Commit`，不经表单与 dry_run 循环，但使用本文的同一提交机制：
+产物算子（[算子契约](./operators.md) §4）检入的是产物文档的新版本，不经表单，但与本文共用提交机制：先校验、后确认，单事务写入，一个提交记录。2026-10-12 之前的版本是“每次调用新建一个 Artifact、写入后不修改、按 `artifact_key` 幂等”，已改为有版本、可共同编辑的产物。
 
 | 环节 | 规定 |
 | --- | --- |
-| 校验 | 引用都在库中；正文中的引用属于声明的输入；参数与内容符合该算子的 schema；判断类每个单元恰有一条判断。任一不过则整次拒绝，返回与本文阻塞项同形的错误 `{rule, where, msg}` |
-| 写入 | 先写文档文件，再在单事务中写 Artifact 节点、`USED` 边、`Material` 与 `MATERIAL_OF` |
-| 复核 | 写后在同一事务内确认节点与边都在、文档哈希一致；不一致则回滚，文件作废 |
-| 幂等 | 相同 `artifact_key`（`op`、输入、参数、内容与形成者的哈希）视为重试，返回已有 Artifact，不重复写入 |
+| 校验 | 不带 `confirm` 时只校验：引用都在库中，来源引用格式正确、不越界；`base` 是最新版本；新建时身份键没有已有产物；改动他人写的行时须在 `confirm` 中写理由；各类产物自己的轻度规则。错误按文件行号返回，形状与本文的阻塞项相同；数字不在所引行中等只警告 |
+| 写入 | 先写新版本的文档文件，再在单事务中：新建时写 Artifact 节点；登记新版本的 `Material` 与 `MATERIAL_OF`，上一版本记 `superseded_by`；重写 `USED` 边；更新 `title`、`abs` |
+| 提交记录 | `source` 为 `operator:<op>`，`author` 为编辑者，`message` 为 `update_abstract`，`meta` 记各产物的 id、版本、会话与改动他人内容的理由，`files` 记文档路径与哈希 |
+| 复核 | 写后在同一事务内确认节点、边与文档哈希一致；不一致则回滚，文件作废 |
+| 幂等 | 与最新版本相同为 `noop`；没有身份键的产物，新建内容与已有版本完全相同时视为重试 |
 | 向量 | 写入后补算 `title` 与 `abs` 的向量 |
-| 批次 | 不写 `IngestBatch`；形成者、时间与会话记在 Artifact 上 |
+| 批次 | 不写 `IngestBatch` |
+
+与有据层修订的区别：产物属于解释层，改动他人的内容只须理由，不强制锚点；有据层记录的修订须同时有锚点与理由（第 5 节）。
 
 ## 8. 尚未覆盖
 

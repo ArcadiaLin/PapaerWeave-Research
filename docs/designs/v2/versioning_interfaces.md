@@ -1,10 +1,19 @@
 # 版本记录的读取接口：Log、Show、Diff、AsOf
 
-> **记录日期：** 2026-10-07。**状态：** 四个接口已在 E09 实现（`experiments/e09/src/e09/interfaces/`，作为 MCP 工具提供）；ReadEvidence 的 `at` 参数（第 6.2 节）与 Search、Traverse 的头提交核对（第 2.1 节）已实现（2026-10-08）。运行测试的方法见 `docs/experiments/e09/testing.md`。实现中定下的写法已补入第 2.1、2.2、2.3、3、4 节与第 9 节。同日按评审修订：`AsOf` 以完整状态的逆向重放为准（第 6 节）；历史读取的材料访问与只读字段（第 6.2 节）；分支名与分页固定到具体提交（第 2.1 节）；容量与不截断的冲突规则（第 2.2 节）；Fork 与 Merge 的定位（第 1 节）。
+> **记录日期：** 2026-10-07。**状态：** 四个接口已在 E09 实现（`experiments/e09/src/e09/interfaces/`，作为 MCP 工具提供）；ReadEvidence 的 `at` 参数（第 6.2 节）与 Search、Traverse 的头提交核对（第 2.1 节）已实现（2026-10-08）。运行测试的方法见 `docs/experiments/e09/testing.md`。2026-10-12：产物改为有版本的文档（[算子契约](./operators.md) §5），产物的每次检入也是一个提交，四个接口照常适用，见第 1.1 节。实现中定下的写法已补入第 2.1、2.2、2.3、3、4 节与第 9 节。同日按评审修订：`AsOf` 以完整状态的逆向重放为准（第 6 节）；历史读取的材料访问与只读字段（第 6.2 节）；分支名与分页固定到具体提交（第 2.1 节）；容量与不截断的冲突规则（第 2.2 节）；Fork 与 Merge 的定位（第 1 节）。
 >
 > 依据：[版本化知识管理备忘](../../discussions/2026-10-05-versioned-knowledge-management.md) 的第 3、4 节，[Commit 工具设计](../../experiments/e09/operators/commit.md) 的第 8 节，以及 `packages/graph-vc` 的现状。
 
 ## 1. 定位：接口，而不是算子
+
+### 1.1 产物的版本（2026-10-12）
+
+产物的每次检入是一个提交，新版本的文档是一份新的 Material，上一版本记 `superseded_by`。因此：
+
+- `Log(node=art_0003)` 列出这份产物的全部版本，`by` 是各版本的编辑者，`message` 是 `update_abstract`；
+- `Show` 与 `Diff` 中，产物的版本变化显示为 `_document`、`_title`、`_abs` 与 `_USED` 的变化；文档内的逐行差异不在这里给出，由 `FetchArtifact` 的编辑提示给出（[算子契约](./operators.md) §5.6）；
+- `AsOf` 给出产物在某个提交时的读视图，`_document` 指向当时的版本，可用 `ReadEvidence(at=…)` 或 `FetchArtifact(at=…)` 读取。
+
 
 本系统对外提供的操作分为三类，来源各不相同：
 
@@ -64,7 +73,7 @@
 - 关系挂在起点一侧的节点下，与读视图一致。只有入边变化的节点不单列，它的变化在起点节点下。
 - 系统关系按读视图的写法显示为字段：`NAMES` 的变化显示为对象的 `aliases` 变化，`MATERIAL_OF` 的变化显示为 `material`（Artifact 为 `_document`）变化。它们是指向对象的入边，所以求差时要把对象的这两类入边一并算入。
 - 新建与删除的节点给出全部字段；修改的节点只给变化的字段。`kind` 只在外层给出，只有修改时 kind 本身变了才出现在 `fields` 中。
-- Artifact 按它的读视图比较：`_op`、`_title`、`_params` 等只读字段与 `_USED`（按关系比较）；`_params` 不另作处理，过长时按第 2.2 节截短。
+- Artifact 按它的读视图比较：`_op`、`_title`、`_abs`、`_document` 等只读字段与 `_USED`（按关系比较）。2026-10-12 之前的 `_params` 随旧版产物算子去掉。
 
 ## 3. Log：发生过哪些写入
 
@@ -76,7 +85,7 @@ Log(branch="main", node?, by?, source?, since?, until?, budget=50, continuation?
 | --- | --- |
 | `node` | 只列触及这些节点的提交：新建、修改、删除了它，或增删改了它的关系 |
 | `by` | 写入者 |
-| `source` | 写入来源，按前缀匹配，如 `operator:`（Agent 算子写的 Artifact）、`operator:Check` |
+| `source` | 写入来源，按前缀匹配，如 `operator:`（产物算子写的 Artifact 版本）、`operator:Leaderboard` |
 | `since` / `until` | 时间范围，或提交 id（不含 `since` 本身） |
 
 输出从新到旧排列：
@@ -166,7 +175,7 @@ AsOf(at, ids, field?, offset?, continuation?)
 **材料访问。** 现在 ReadEvidence 在当前图中查找 Material 节点（`query/materials.py`）。如果材料节点或它的归属关系后来被删除了，即使文件还在，也会返回 missing。因此要规定：
 
 1. **旧视图给出的材料标识要能用于访问。** ReadEvidence 增加 `at` 参数：给出时按 $S_{at}$ 中登记的材料（路径与内容哈希）解析引用，`coverage.at` 给出固定下来的提交。
-2. **文件保留。** 被任何提交引用过的材料文件不删除、不覆盖，按登记的哈希核对后读取（备忘第 7.3 节的保留根）。现在 Artifact 文档写入后不再改动，论文材料不能更换，实际上满足；但这要写成约束，而不是依赖现状。
+2. **文件保留。** 被任何提交引用过的材料文件不删除、不覆盖，按登记的哈希核对后读取（备忘第 7.3 节的保留根）。产物的新版本与论文的新版本都登记为新的材料文件，旧文件不覆盖，实际上满足；但这要写成约束，而不是依赖现状。
 
 ## 7. 暂缓的接口
 
@@ -192,7 +201,7 @@ AsOf(at, ids, field?, offset?, continuation?)
 实现时定下（2026-10-07）：
 
 - **`input` 按行分页**，一行放不下时在行内断开（第 4 节）。
-- **Artifact 在变更视图中按读视图显示**，`_params` 不单独处理，由容量规则截短（第 2.3 节）。
+- **Artifact 在变更视图中按读视图显示**，由容量规则截短（第 2.3 节）。
 
 仍待定：
 

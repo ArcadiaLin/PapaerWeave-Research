@@ -1,10 +1,10 @@
 # Graph Model V2
 
-> **状态：** 本文规定当前图模型及其工程映射；标为“待定”的项目不属于已确认实现要求。当前论文入库范围是 Paper、Method、Dataset、Benchmark、Task、Experiment、Claim、Contribution、来源与参与关系，以及选择性 `CITES`；Observation 与 Agent 提交的贡献、正反关系经增补表单写入；Agent 算子每次调用的产物写为 Artifact（第 8 节）。E09 的入库代码已对齐论文表单与增补表单，尚待重新入库验证，见 [Commit 契约](./commit_contract.md)。算子契约见 [算子契约](./operators.md)，intent 与数据流见 [Workload 拆解](./intents_decompose.md)。
+> **状态：** 本文规定当前图模型及其工程映射；标为“待定”的项目不属于已确认实现要求。当前论文入库范围是 Paper、Method、Dataset、Benchmark、Task、Experiment、Claim、Contribution、来源与参与关系，以及选择性 `CITES`；Observation 与 Agent 提交的贡献、正反关系经增补表单写入；产物算子写入的产物为 Artifact，有版本、可共同编辑（第 8 节）。2026-10-12 修订：Artifact 由“每次调用新建、写入后不修改”改为有版本的文档；论文材料的新版本（第 5 节）；有据层修订（第 7 节）。E09 的入库代码已对齐论文表单与增补表单，尚待重新入库验证，见 [Commit 契约](./commit_contract.md)。算子契约见 [算子契约](./operators.md)，intent 与数据流见 [Workload 拆解](./intents_decompose.md)。
 
 `V2` 设计一个面向研究 Agent 的论文知识图：保存阅读后形成的索引（轻度提炼、原文锚点与关联），通过论文引用、共享方法、资源和命题连接不同论文，让后续研究能够查找、比较和复用已有经验。
 
-模型区分四类节点：`Entity`、`Concept`、`Content` 来自阅读论文，以主 Label 表达类别、次级 Label 表达类内类型；`Artifact` 来自使用知识，是 Agent 算子产出的通用节点，不分类内类型（第 8 节）。类别与访问契约共同设计，其有效性需通过真实 workload 检验。
+模型区分四类节点：`Entity`、`Concept`、`Content` 来自阅读论文，以主 Label 表达类别、次级 Label 表达类内类型；`Artifact` 来自使用知识，是产物算子写入的通用节点，不分类内类型，有版本、可由任何写者编辑（第 8 节）。类别与访问契约共同设计，其有效性需通过真实 workload 检验。
 
 采用 Neo4j 的 Labeled Property Graph 模型，统一使用 `Node`、`Relationship`、`Label`、`Type`、`Property` 描述。概念依据见 [Neo4j 图模型](https://neo4j.com/docs/getting-started/appendix/graphdb-concepts/)。
 
@@ -15,7 +15,7 @@ Graph Model
 │    ├── Entity     资源对象：Paper、Dataset、Benchmark、Code、Model、Tool
 │    ├── Concept    定义对象：Method、Task、Issue、Proposition
 │    ├── Content    来源化内容：Claim、Experiment、Contribution、Observation
-│    ├── Artifact   使用产物：Agent 算子每次调用的结果（通用节点，不分类内类型）
+│    ├── Artifact   使用产物：结果表、可比性与核查判断、概述与生成的文本（通用节点，有版本）
 │    └── 系统记录   NameKey、Material、IngestBatch（支撑解析与来源，不是语义对象）
 │
 ├── Relationship
@@ -41,7 +41,7 @@ Graph Model
 | --- | --- | --- |
 | 轻度提炼 | 用自己的话写到足以判断"要不要去读这里"为止，不写到足以替代阅读 | Experiment 的 `text`（目的、设计、论文的主张，4.2）；Concept 的 `definition`（3.2） |
 | 阅读理解与评估 | 独立记录形成者、时间与依据 | Observation（4.5）；`note` 是对象上的备注与笔记 |
-| 使用产物 | Agent 使用知识时的抽取、概述、判断与整理结果，正文存为文档 | Artifact（第 8 节） |
+| 使用产物 | Agent 使用知识时整理的结果表、可比性与核查判断、概述与生成的文本，正文存为有版本的文档 | Artifact（第 8 节） |
 | 锚点 | 在原文哪里 | `FROM` 的 locators；Experiment 的 `anchors` |
 | 关联 | 和谁有关、以什么角色 | 参与边、`CITES`、概念之间的关系 |
 
@@ -131,7 +131,7 @@ Graph Model
 id 级：   url = zhouhaoyi/ETDataset          → {ETT, ETTh1, ETTh2, ETTm1, ETTm2}
 别名级：  mention = "ETTh1", kind = Dataset  → {ETTh1}
 交集唯一  → status=resolved，match_trace 记录两级依据
-仍不唯一或交集为空 → 保留 ambiguous，交 Agent 以 Filter 确认
+仍不唯一或交集为空 → 保留 ambiguous，交 Agent 确认（入库时由 Commit 的查重退回候选）
 名称命中了其他对象（如 mention = "Weather"）→ 交集为空且另记 resolution=conflicting
 名称未注册 → 交集为空只是缺信息，不记冲突
 ```
@@ -202,13 +202,13 @@ Contribution 是检索论文的重要依据：经 `ABOUT` 连到它提出或改�
 
 一个 Experiment 对应论文结果部分中的一个研究问题，可以覆盖多张表、图和正文段落。附录对正文实验的补全并入同一组，不按数据集、指标或预测长度拆分。自然键使用论文 id 与主锚点，分组与覆盖规则见 [抽取原则](./extraction_principles.md) §4。
 
-实验视图（经 `Search` 或 `Traverse` 取得）给出实验、参与对象、角色及材料位置。库内不存数值或结果行；Agent 按锚点读原文，经 `Extract` 取得结果行并保留条件与来源，产物为 Artifact。同一实验内的共同参与只提供查找与配对线索，不建立行级对应。
+实验视图（经 `Search` 或 `Traverse` 取得）给出实验、参与对象、角色及材料位置。图中不存数值或结果行；Agent 按锚点读原文，把结果行写进对应的 Leaderboard 产物（[算子契约](./operators.md) §4.2），每个数值带来源引用。同一实验内的共同参与只提供查找与配对线索，不建立行级对应。
 
 ### 4.4 实验条件与可比性
 
 当前论文表单只记录方法及其 target / baseline 角色、数据集与任务。指标在必要时写入实验描述，不建 Metric 节点或指标参与边，也不作为 `Search` 的结构条件。
 
-数据版本、切分、回看窗口、预测长度、评测协议、指标口径等具体条件由 Agent 读原文取得和比较。Benchmark 自身规定的评测规则随其描述与定义锚点保存；当前论文表单不结构化写入实验条件。条件相同、可比、同源等结论不能由共同实验或共享数据集推出。
+数据版本、切分、回看窗口、预测长度、评测协议、指标口径等具体条件由 Agent 读原文取得和比较。Benchmark 自身规定的评测规则随其描述与定义锚点保存；当前论文表单不结构化写入实验条件。条件相同、可比、同源等结论不能由共同实验或共享数据集推出；Agent 的可比性判断写成 CompareSettings 产物（[算子契约](./operators.md) §4.3），不写进图。
 
 ### 4.5 Observation：持久化理解、结论与评估
 
@@ -221,7 +221,7 @@ Observation 保存阅读者或 Agent 自己形成的内容，包括对单篇论�
 - **对象**：经 `ABOUT` 关联论文、方法、实验、资源或其他 Content；比较可关联多个对象，读取时保留完整对象集合，不能拆成对每个对象独立成立的判断。
 - **依据**：材料位置经 `FROM` 保存；依赖的其他记录经 `ABOUT` 关联并在 `text` 中说明。`ABOUT` 只表达对象，不自动表示证据支持。
 
-Agent 算子（`Extract`、`Check`、`Verify` 等）每次调用的产物自动写为 Artifact（第 8 节），是未经审定的工作痕迹。需要长期积累的理解与结论，由提交者经 `Commit` 的增补表单显式写成 Observation（[Commit 契约](./commit_contract.md) §2.2）：可经 `ABOUT` 关联相关的 Artifact，以 Artifact 文档的行范围为依据。不要求 Observation 采用结构化的 T / F / U 判断形态。Content 不原地修改。读取已有 Observation 只取得一份有依据的记录，是否适用于新任务由外部判断。
+产物算子写入的 Artifact（第 8 节）是解释层的工作产物。需要长期积累的理解与结论，由提交者经 `Commit` 的增补表单显式写成 Observation（[Commit 契约](./commit_contract.md) §2.2）：可经 `ABOUT` 关联相关的 Artifact，以 Artifact 文档的行范围为依据。不要求 Observation 采用结构化的 T / F / U 判断形态。Content 的修改按层处理（[Commit 契约](./commit_contract.md) §5）：有据层的记录附锚点与理由时可以修订，旧值留在版本历史中；Observation 等解释层记录只由形成者本人修改，他人有不同意见就另写一条，两者并存。读取已有 Observation 只取得一份有依据的记录，是否适用于新任务由外部判断。
 
 ## 5. 系统记录
 
@@ -230,7 +230,7 @@ Agent 算子（`Extract`、`Check`、`Verify` 等）每次调用的产物自动�
 | Label | 作用 | 状态 | Property 与关系 |
 | --- | --- | --- | --- |
 | `NameKey` | 精确键注册表 | 已定 | `key`（规范化名称、kind、scope 拼成的单个字符串，带唯一约束）、`normalized`、`raw`、`kind`、`scope`（global 或父对象 id）、`normalizer_ref`（属性不能存 map，编码为字符串，如 `name-key-v1@unicode-15.0.0`）、`status: active / ambiguous`、注册来源与提交者（`registered_from`、`registered_by`）；`(:NameKey)-[:NAMES]->(对象)` |
-| `Material` | 固定版本的材料 | 已定 | `path`、`format`、`content_hash`、`derived_from`（如原 PDF）、`created_at`；论文原文 `(:Material)-[:MATERIAL_OF]->(:Entity:Paper)`，Artifact 文档 `(:Material)-[:MATERIAL_OF]->(:Artifact)`；`FROM.material_ref` 与 `USED.material_ref` 引用其 id |
+| `Material` | 固定版本的材料 | 已定 | `path`、`format`、`content_hash`、`derived_from`（如原 PDF）、`created_at`、`superseded_by`（被同一论文或同一产物的新版本取代时，记新材料的 id）；论文原文 `(:Material)-[:MATERIAL_OF]->(:Entity:Paper)`，Artifact 文档 `(:Material)-[:MATERIAL_OF]->(:Artifact)`；`FROM.material_ref` 与 `USED.material_ref` 引用其 id。一个节点可以有多份材料，未被取代的那份是当前版本：论文出了新版本（如 arXiv v2）时经 `Commit` 挂上新材料，产物每次检入挂上新版本的文档；已有的引用按材料 id 固定在原来的版本上，不会错位 |
 | `IngestBatch` | 论文入库批次 | 已定 | 锚点覆盖、解析与写入统计、表单和材料哈希、提交者与时间；连到 Paper，见 [Commit 契约](./commit_contract.md) §6 |
 
 **为什么用 `NameKey`，而不是 `aliases` 列表。** 每个 alias 是一条带属性的注册记录。
@@ -330,7 +330,7 @@ Claim 与 Issue、Proposition 之间用 `ABOUT` 关联，不设专门关系。
 
 | Type | 端点 | Property | 状态 | 说明 |
 | --- | --- | --- | --- | --- |
-| `USED` | Artifact → Entity / Concept / Content / Artifact | `role`（可选）；引用原文或文档行范围时带 `material_ref`、`locators` | 已定 | 产出时用到了它；不表示支持、讨论或同一（第 8 节） |
+| `USED` | Artifact → Entity / Concept / Content / Artifact | `role`（可选）；引用原文或文档行范围时带 `material_ref`、`locators` | 已定 | 当前版本用到了它：由文档中的引用得出，每次检入重写；不表示支持、讨论或同一（第 8 节） |
 
 ## 7. 实现范围与待定事项
 
@@ -340,8 +340,8 @@ Claim 与 Issue、Proposition 之间用 `ABOUT` 关联，不设专门关系。
 | --- | --- |
 | 论文表单与入库 | 契约为 paper-form-v4（新增 Claim、Contribution 与 Benchmark 引用）；E09 代码已对齐，尚待重新入库验证 |
 | 增补写入 | Observation、Agent 认为的贡献与正反关系经增补表单写入；E09 已实现，尚待真实数据验证 |
-| Artifact | 契约见第 8 节与 [算子契约](./operators.md) §4–§5；E09 尚待实现 |
-| 修订、撤回与合并 | 当前不做：引用即 `id`，内容变化按冲突拒绝，需要时清库重建 |
+| Artifact | 契约见第 8 节与 [算子契约](./operators.md) §4–§5；E09 现有的是旧版（每次调用新建、写入后不修改），有版本的产物待实现 |
+| 修订、撤回与合并 | 有据层附锚点与理由时可修订，删除即撤回（[Commit 契约](./commit_contract.md) §5，已实现）；论文新版本已实现；对象的合并与拆分不实现，重复与误合并只测量，作为局限报告 |
 | Proposition | 保留；名称待定 |
 | Concept 精炼与整理 | 日后必须增加专门的工具或算子，整理 Claim 与 Concept（含 Issue、Proposition）并建立正反关系；当前不实现 |
 | 唯一命名空间标识 | 当前由 Commit 在事务内复查；后端键节点方案待维护与并发需求确定 |
@@ -350,15 +350,19 @@ Claim 与 Issue、Proposition 之间用 `ABOUT` 关联，不设专门关系。
 
 ## 8. Artifact：使用产物
 
-Artifact 是第四类节点，记录 Agent 使用知识时做出来的东西：Agent 算子（`Extract`、`Summarize`、`Generate`、`Check`、`Verify`、`Filter`、`Rank`、`MatrixConstruct`）的每次调用产出一个 Artifact。前三类来自阅读论文，Artifact 来自使用。名称取自溯源模型 OPM 中的 Artifact（过程产出的不可变状态）。算子的行为与校验见 [算子契约](./operators.md) §4，本节只规定存储。
+Artifact 是第四类节点，记录 Agent 使用知识时做出来的东西：结果表、可比性与核查判断、概述与生成的文本，由产物算子（`Leaderboard`、`CompareSettings`、`Verify`、`Summarize`、`Generate`）写入。前三类来自阅读论文，Artifact 来自使用。算子的行为与校验见 [算子契约](./operators.md) §4–§5，本节只规定存储。
+
+**每个版本不可变，产物本身可以演进。** 2026-10-12 之前取溯源模型 OPM 的定义（过程产出的不可变状态），产物写入后不修改；这使一份结果表只能由一个人维护，所以改为有版本、任何写者都可编辑的文档。不可变性落在版本上。
 
 | 项 | 规定 |
 | --- | --- |
-| Label | 只有主 Label `Artifact`，不分类内类型；产出它的算子记在 `op` |
-| Property | `id`（`art_<序号>`）、`op`、`title`、`abs`、`params`（调用参数，JSON 字符串）、`formed_by`、`formed_at`、`session`、`artifact_key`（幂等键） |
-| 关系 | 只有出边 `USED`（6.2.6）：指向用到的对象；引用原文或文档行范围时，指向材料所属的节点并在边上带 `material_ref`、`locators`；引用其他 Artifact 中的记录时，指向该 Artifact 并以 `role` 记录键 |
-| 文档 | 正文存为 Markdown 文档，登记为 `Material` 并经 `MATERIAL_OF` 连到 Artifact；头部只有 `title`、`nodes_used`、`abs`，正文结构按算子规定 |
-| 身份 | 不查重、不合并、只追加；相同 `artifact_key` 的写入视为重试；写入后不修改 |
+| Label | 只有主 Label `Artifact`，不分类内类型；类别记在 `op` |
+| Property | `id`（`art_<序号>`）、`op`、`op_version`（该类产物当时的工具说明与校验规则的哈希）、`key`（身份键的规范化字符串，有键的产物上唯一约束）、`title`、`abs`（当前版本的标题与摘要）、`formed_by`、`formed_at`（创建者与时间） |
+| 版本 | 每次检入是一个提交：登记新版本文档的 `Material`，上一版本的 `Material` 记 `superseded_by`，重写 `USED`，更新 `title`、`abs`。版本号、编辑者与修改说明由提交链推算，不另加字段 |
+| 关系 | 只有出边 `USED`（6.2.6），由当前版本文档中的引用得出：对象引用指向该对象；来源引用指向材料所属的节点并在边上带 `material_ref`、`locators`；记录引用指向所属的产物，`material_ref` 固定为引用时的版本 |
+| 文档 | 每个版本一份 Markdown 文档，登记为 `Material` 并经 `MATERIAL_OF` 连到 Artifact；头部是 `title`、`abs` 与各类产物的身份字段，正文由写者编辑，格式由种子示例引导 |
+| 身份 | 有身份键的产物（Leaderboard：任务、数据集、设置；CompareSettings：被比较的两项；Verify：主张）一个键只有一份，新建时撞键退回已有的那份；Summarize、Generate 没有身份键。不做合并 |
+| 编辑 | 任何写者都可编辑；改动他人写的行须写理由，记入提交；`base` 不是最新版本时拒绝，不做自动合并 |
 | 检索 | `title` 与 `abs` 进全文与向量检索；默认不出现在 Entity、Concept、Content 的检索结果中，需显式检索 Artifact |
-| 过期 | 读取时计算：用到的节点已不在、用到的材料文件哈希变化，或用到的 Artifact 本身过期，均标为可能过期；不存状态，不修改 |
-| 与 Observation | Artifact 是未经审定的工作痕迹；需要长期留存的结论经增补表单写成 Observation，`ABOUT` 指向该 Artifact、以其文档行范围为 `FROM` 依据（4.5） |
+| 过期 | 读取时计算：用到的节点已不在、材料文件哈希变化、所用材料已被新版本取代、所用的有据层记录在这个版本之后被修订，或用到的 Artifact 本身过期，均标为可能过期；不存状态，不修改 |
+| 与 Observation | Artifact 是解释层的工作产物；需要作为一条记录留存的判断经增补表单写成 Observation，`ABOUT` 指向该 Artifact、以其当前版本文档的行范围为 `FROM` 依据（4.5） |
