@@ -17,6 +17,9 @@
 \settopmatter{printacmref=false}
 \renewcommand\footnotetextcopyrightpermission[1]{}
 
+% 草稿期标记：refs.bib 里还没有的文献。定稿前全部换成 \cite。
+\newcommand{\citeneeded}[1]{\textcolor{red}{[cite: #1]}}
+
 % —— camera-ready 时启用，内容以 ACM eRights 邮件为准 ——
 % \copyrightyear{2027}
 % \acmYear{2027}
@@ -71,11 +74,191 @@ store integrity and downstream answer accuracy as the number of writers grows.
 
 \section{Introduction}
 \label{sec:intro}
-LLM agents are increasingly being developed to assist researchers across the scientific workflow,
 
-（from finding relevant
-studies and understanding their methods to comparing experimental results, synthesizing
-findings, verifying claims, and obtaining implementation resources.）
+LLM agents are increasingly being developed to assist researchers across the
+scientific workflow, from finding relevant studies and understanding their
+methods to comparing experimental results, synthesizing findings, verifying
+claims, and obtaining implementation resources~\citeneeded{research agents}.
+These tasks repeatedly extract and interpret overlapping information from
+papers, including methods, experimental results, and supporting evidence.
+Popular methods, datasets, and benchmarks recur across research projects, so
+agents often redo costly reading and comparison work even when earlier sessions
+have already extracted relevant results and evidence. These outputs can inform
+later studies, making scientific research a natural setting for accumulating
+knowledge across tasks and over time.
+
+Long-term memory lets agents retain useful information from prior interactions
+\cite{2025-Zep}, and recent work has begun to share reusable experience across
+agents~\cite{2024-MemorySharing,2025-CollaborativeMemory,2026-SkillClaw}.
+This line of work establishes the value of cross-agent reuse. Research tasks
+produce evidence-bearing knowledge about papers, methods, and experiments.
+Its value depends on links to stable identities and source evidence that
+remain usable as writers add, revise, and reinterpret content. A shared
+research memory therefore calls for database-style management of identity,
+provenance, change, and retrieval.
+
+This need is especially tractable in scholarly research. Paper-derived
+entities have external identity anchors such as DOIs and arXiv IDs; revisions,
+errata, and retractions expose knowledge change; and public sources and later
+research choices make many records checkable. These properties create both
+substantial opportunity for reuse and a practical basis for evaluating whether
+an accumulated store remains findable and reliable. Scholarly knowledge
+graphs~\citeneeded{ORKG}, in turn, rely on human curators and templates, while
+data systems for scholarly corpora~\cite{2026-AgenticScholar} operate over
+documents rather than knowledge contributed by many independent agents.
+
+In this setting, writers may be agents of different people or projects, or
+independent sessions of one researcher over time. Each writes for its own task
+without knowing what others have added or how they interpreted the literature;
+the shared store is their only channel, and later readers were not present when
+its content was written. We call these writers \emph{uncoordinated} in this
+semantic sense: writes may be serialized, while atomicity and isolation remain
+the responsibility of the underlying database. The challenge is to preserve a
+useful shared body of knowledge as these independent contributions accumulate.
+
+Many agent memory systems are organized around the state an individual agent
+needs across interactions, increasingly using knowledge graphs with entity
+resolution and temporal validity. For a single owner, resolving conflicting
+writes by recency or internal judgment can be reasonable: a newer write may
+reflect newer knowledge. Under independent writing, however, recency alone
+cannot establish which account is correct, and different interpretations may
+both be defensible under different conditions.
+
+Without mechanisms for shared accumulation, new content tends to remain
+unlinked to, and uninformed by, existing content (Figure~\ref{fig:scenario}).
+The sources themselves also change through new arXiv versions, errata, and
+retractions. The same method is recorded
+twice under different names, or two datasets that share a name are merged into
+one; in our pilot corpus on long-term time-series forecasting, for example, the
+\emph{Weather} dataset used by Informer~\citeneeded{Informer} differs from the
+dataset of the same name commonly used by later papers. A later reading of a
+result silently replaces an earlier, conflicting one, and a comparison built on
+numbers that a paper has since revised continues to be served with no sign that
+its input changed. We hypothesize that, as writers and writes accumulate, such
+a store degrades both in store integrity, through duplicate and wrongly merged
+entities, dangling references, unnoticed conflicts, and stale derived results,
+and in the accuracy of the answers later readers derive from it. These answers
+can be wrong while appearing well supported.
+
+The store cannot avoid this by deciding which writer is right. It has no better
+access to the truth than its writers, and ranking content by usage or citation
+would favor what was written first or most often. We therefore argue for
+accountability rather than authority: a shared store should not adjudicate
+correctness, but should keep every write attributable to its writer and
+traceable to its evidence and to the prior content it builds on. Authority
+remains outside the store, in fixed versions of the source papers and in
+external identifiers such as DOIs and arXiv IDs. This principle separates what
+a paper states from what a writer judges. \emph{Source-grounded records} state
+what a paper says, such as an experiment, a claim, or a contribution as its
+authors present it. Their correctness means fidelity to the source and can be
+checked against anchors in the paper, so a disagreement among writers is a
+temporary error, resolved by a revision that cites an anchor and a reason while
+the prior value remains in history. \emph{Interpretations} state what a writer
+judges, such as an observation, a judgment that one claim supports or opposes
+another, or a derived artifact such as a cross-paper comparison. They have no
+single correct value, so competing interpretations coexist, each attributed to
+the writer that formed it.
+
+Realizing this principle raises five challenges.
+\textbf{C1, identity under independent writes:} identities must converge across
+writers without wrong merges, under rules that are explicit, checkable, and
+uniform.
+\textbf{C2, self-describing contributions:} because writers share no context,
+every contribution must carry its conditions, evidence, and inputs, so that
+readers who were not present can use or check it.
+\textbf{C3, disagreement and change:} conflicts and staleness must be surfaced,
+neither overwritten nor rejected.
+\textbf{C4, isolated work, shared delivery:} project work needs a stable base
+and must deliver its results back without breaking the shared store.
+\textbf{C5, discoverability across writers:} content stored for one purpose
+must be findable, within a bounded context, by a reader with another purpose
+who knows neither the writer's wording nor its organization.
+C1--C4 determine whether readers can trust and build on what others wrote; C5
+determines whether they can find it.
+
+We present \textbf{PaperWeave}, a data management system for paper-derived
+knowledge that addresses these challenges. General-purpose agents use it
+through the Model Context Protocol (MCP)~\citeneeded{MCP}, under a strict
+division of labor: agents read papers and make every semantic judgment, while
+PaperWeave validates structure and references, executes operations, persists
+artifacts, and records lineage and state changes, without any internal LLM
+reasoning. Its data model and write operators enforce the two layers:
+source-grounded records hold one value, revisable by any writer with a source
+anchor and a reason, while interpretations belong to their writers, who alone
+may modify them. PaperWeave keeps a thin graph of identity anchors, references,
+and commits, and places rich content in artifact documents whose structure
+agents declare by contract.
+
+None of PaperWeave's mechanisms is new in isolation, and we claim no new theory
+of provenance, versioning, or concurrency. Our contribution is to select
+classical mechanisms and adapt them to agent writers, whose errors are semantic
+and fluent and whose derived content is costly and nondeterministic to
+recompute. \emph{Entity resolution}~\citeneeded{entity resolution} addresses C1,
+but adjudication returns to the writer: at write time, PaperWeave returns
+candidate matches to the writer, which either reuses an existing object or
+declares the new one distinct, and the decision is recorded in the commit.
+\emph{Provenance}~\citeneeded{W3C PROV; nanopublications} addresses C2: every
+artifact declares its inputs, and source materials are pinned by content hash.
+\emph{View invalidation}~\citeneeded{materialized view maintenance} addresses C3
+for derived content: PaperWeave flags artifacts whose inputs have since been
+revised instead of recomputing them, and because readers rarely query
+provenance on their own, conflicts and staleness travel with query results.
+\emph{Data versioning}~\cite{2026-Git4Data}\citeneeded{OrpheusDB; Decibel}
+addresses C3 and C4: every write is a commit with before and after values, any
+past state can be reconstructed, and projects fork from a fixed state and push
+their results back.
+% C4 的 fork / push 目前只有设计（docs/designs/v2/project_views.md），尚未实现。
+For C5, PaperWeave derives its retrieval surface and access operators from
+research intents, combining structural navigation with semantic
+search~\citeneeded{dataspaces; keyword search over databases}.
+In this sense, writers collaborate without coordinating: the invariants that
+PaperWeave maintains, namely that every write is attributed, every reference
+resolves, and every derived artifact declares its inputs, can be checked at
+each write against the current store, without knowledge of what other writers
+intend; correctness, which would require such knowledge, is left outside the
+store.
+% 上面一句试图回应标题引出的 I-confluence / CALM 期待，措辞待定。
+
+We scope our study to scientific literature, which makes the problem both
+pronounced and measurable. Writes overlap heavily on popular methods, datasets,
+and benchmarks; identities are hard to resolve yet anchored by external
+identifiers; disagreement and revision arise naturally; and public gold
+resources, together with the choices that later papers actually made, provide
+ground truth. Our claims and results cover this domain only. The mechanisms are
+domain-agnostic by design, and we discuss generalization separately.
+
+We evaluate PaperWeave on an intent-grounded workload. Six research intents,
+each backed by public task sources, generate both writer tasks, so that writers
+with different purposes write to the same objects at different granularities,
+and reader probes, so that probes are grounded in real tasks rather than
+tailored to our system. Writers are runs of an unmodified general-purpose agent
+that take turns on a shared store, interleaved with events of revision,
+retraction, and divergence. We compare PaperWeave with files under Git in their
+strongest configuration, retrieval-augmented generation, the same schema on a
+graph database queried with Cypher, and an agent memory system, and we ablate
+its mechanisms one at a time. Our central hypothesis, which the experiments can
+falsify, is that PaperWeave's store integrity and downstream answer accuracy
+degrade significantly more slowly than those of the baselines as the number of
+writers grows. We also test whether construction cost, shifted from use to
+build, amortizes across later readers.
+% TODO: 实验完成后在此报告主要发现；agent-memory 基线尚未写入 evaluation_draft.md。
+
+In summary, this paper makes the following contributions.
+\begin{itemize}
+  \item \textbf{Problem and workload.} We formulate shared accumulation of
+    paper-derived knowledge by uncoordinated agent writers, and give an
+    intent-grounded workload of writer tasks and reader probes derived from six
+    research intents, together with events of revision, retraction,
+    divergence, and branching.
+  \item \textbf{Design.} We present PaperWeave, which separates
+    source-grounded records from interpretations and adapts entity resolution,
+    provenance, view invalidation, and data versioning to agent writers, with a
+    retrieval surface and access operators derived from research intents.
+  \item \textbf{Evaluation.} We test whether these mechanisms slow the
+    degradation of shared accumulation against strong baselines under equal
+    access and budgets, isolate the effect of each mechanism by ablation, and
+    measure whether construction cost amortizes across readers.
+\end{itemize}
 
 \section{Conclusion}
 \label{sec:conclusion}
