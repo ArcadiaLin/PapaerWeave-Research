@@ -2,8 +2,9 @@
 
 ## Overview
 
-This repository supports an ongoing research project targeting **SIGMOD**. The
-system is called PaperWeave. The repository name CachePlan is historical; cache
+This repository supports an ongoing data management research project, aimed at
+one of the top database venues (SIGMOD, VLDB, ICDE, or similar). The system is
+called PaperWeave. The repository name CachePlan is historical; cache
 optimization and inference scheduling are no longer research objectives.
 
 This file states the current agreed framing. Earlier framings (single-agent
@@ -164,31 +165,44 @@ operators, so readers can find what others stored for other purposes.
 3. **Evaluation.** T1 against strong baselines, per-mechanism ablations, and
    T2.
 
-### Venue positioning
+### Paper positioning
 
-- **Tentative title:** *Collaborating without Coordinating: Data Management for
-  Knowledge Accumulated by LLM Agents*. The title states the general problem;
-  the abstract scopes the study back to scientific literature ("acute and
-  checkable"), and the system name PaperWeave marks the domain. The title
-  invites reviewers to expect a coordination-avoidance analysis in the spirit
-  of I-confluence and CALM; the body must answer it.
-- **Positioned as a data management system**, not a middleware. MCP is only
-  how agents connect.
-- **SIGMOD subject areas** (agreed 2026-10-10). Primary: *AI & knowledge
-  bases* (Modern AI & Data Management), the home of agent-memory work such as
-  GEM, which the abstract implicitly answers. The collaborative area sits
-  under Human-Centric Data Management, whose reviewers assume human
-  participants, so it is a secondary rather than the primary. Secondaries:
-  - *Crowdsourced and collaborative data management*: the multi-writer setting
-    and the collaborative data sharing lineage (ORCHESTRA);
-  - *Data provenance and workflows*: C2 provenance and lineage, version history;
-  - *Data integration, information extraction, and schema matching*: C1 entity
-    resolution, extraction from papers;
-  - *Data models and semantics*: the accumulation meta-model, the grounded and
-    interpretive layers.
+- **Tentative title:** *Collaboration without Coordination: Managing Scientific
+  Memory for Agentic Research* (2026-10-13). The title names the domain, and
+  "memory" places the paper in the agent-memory lineage (GEM, Collaborative
+  Memory, ShareMem). The abstract must therefore say that this memory is
+  anchored to sources, not rewritten by a consolidator. Avoid "shared memory",
+  which reads as the hardware architecture. The title invites reviewers to
+  expect a coordination-avoidance analysis in the spirit of I-confluence and
+  CALM; the body must answer it.
+- **A data management systems paper**, not a middleware or an agent paper. MCP
+  is only how agents connect. The novelty is new abstractions and an effective
+  combination of existing techniques, namely classical mechanisms adapted to
+  agent writers, backed by a principled design, a working prototype, and
+  end-to-end evaluation.
+- **Stay inside data management.** Each mechanism engages its classical
+  predecessor in DB literature substantively, not as a bare citation. The
+  evaluation is framed in data management terms (see "Evaluation principles").
+- **Topics.** Primary: AI and knowledge bases, that is, agent memory as a data
+  management problem, the home of GEM, which the abstract implicitly answers.
+  Secondaries:
+  - knowledge graphs and knowledge management;
+  - provenance and lineage, version history (C2, C4);
+  - data discovery and search, metadata management (C5 retrieval surface, C1
+    identity anchors);
+  - entity resolution and information extraction from papers (C1);
+  - data models and semantics: the accumulation meta-model, the grounded and
+    interpretive layers;
+  - collaborative data sharing and multi-writer accumulation (ORCHESTRA
+    lineage);
+  - scientific data management: the domain;
+  - LLM-assisted data processing: agent writers.
 
-  *Data quality, data cleaning* is deliberately excluded: it would recast store
-  health as the story and dilute the intent-derived workload.
+  Data cleaning and data quality are deliberately not claimed: they would recast
+  store health as the story and dilute the intent-derived workload.
+- **Keywords:** agent memory; shared accumulation; uncoordinated writers;
+  scientific knowledge; entity resolution; provenance; data versioning;
+  coexisting alternatives; staleness; MCP.
 
 ## System and Engineering Status
 
