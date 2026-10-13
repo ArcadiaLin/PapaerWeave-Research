@@ -153,3 +153,63 @@
   - 实验中的 Agent 定为经 MCP 使用中间件的通用 Agent（10/06）。
 
 ## 正在进行的工作
+
+### 实验
+
+- 2026-10-11：T1 沙箱完成。
+  - t1.bridge 用 unix socket 转发大模型和 MCP 服务；t1.sandbox 用 bwrap 隔离运行默认配置的 pi：断网、只读论文、清空环境变量，MCP 服务在沙箱外按登录身份启动。
+  - 隔离探测通过。A3 冒烟会话通过：33 秒，调用 Resolve 和 Traverse，身份记录正确。6 个测试通过。
+  - 下一步：T1 运行框架（调度、检查点、每次运行重建存储）。
+
+- 2026-10-11：T1 冒烟测试 smoke-3 通过，两组各跑一个会话：A3 用时 632 秒，A0 用时 446 秒。
+  - A3：补全了 Autoformer 方法桩，写入 3 个实验和 3 份 Extract 结果表（MSE/MAE 全量）。
+  - A0：写了 623 行的论文笔记，并在 Informer 笔记里记下与 Autoformer 的分歧，但引用了 SCINet 不存在的章节 A1.T4。
+- 改动：
+  - 上下文窗口改为 262144（之前在 12.8 万左右触发自动压缩）；
+  - Commit 的 source 可省略；
+  - 两组并行运行。
+- 已启动完整先导 ~/t1-runs/pilot-1，两组各 16 个会话。
+- 下一步：运行结束后检查各检查点，并开始写探针。
+
+- 2026-10-11：实现了草稿文件接口（docs/designs/v2/draft_files.md）。Extract 和 MatrixConstruct 用 payload_file（CSV，带模板，报错带行号），Commit 用 doc_file，且一次调用即提交。另外修了 T1 框架：pi 空闲超时、工作目录映射、请求出错计数、A0 残留改动处理。
+- A3 冒烟（~/t1-runs/smoke-4、smoke-5，同 pilot-1 槽位 1）：会话时长从 1321 s 降到 351 s / 556 s；输出 token 从 112k 降到 28k / 54k；这三个算子被拒调用的 token 占比从 52% 降到 18% / 21%（经文件提交的部分只有 14.5% / 1.0%）；模型请求没有出错。写者会用脚本从论文生成 CSV。
+- 冒烟后追加了三处修复：声明的问题先报告；回执最多回显 40 行；错误最多列 30 条。
+- 未解决：MatrixConstruct 的文件路径没有在实际运行中用到；Summarize 和 Generate 仍常因参数位置错误被 pi 拒绝（smoke-5 中占 17.5%），可以作为下一轮改动对象；设计文档还没写入上面三处追加修复。
+- 下一步：提交改动；考虑把 Generate 也改为通过文件提交；然后启动新的先导运行（A0 + A3）。
+
+- 2026-10-11：提交了草稿文件的实现（a8ec86f）和 commit.md 中调用参数一段（478cbff）。
+- 核对了冒烟产物的准确度：smoke-4 的 584 个数值全部与所引的论文行一致；smoke-5 有 192 个 std 值取自 Table 10，却标为 Table 1 的出处。值是对的，出处不完整，现有契约发现不了。
+- smoke-4 写出了有用的跨论文 Observation：可比条件、与 SCINet 记录的分歧、与 Informer 数值一致。
+- 未解决：
+  - commit.md 还没写 doc_file 和 MCP 中 apply 默认提交；
+  - 两次运行的写法差别大，正式实验需要多次重复；
+  - 要不要加"数值是否出现在所引的行"的警告；
+  - Generate 要不要改为通过文件提交。
+- 下一步：在同一槽位跑 A0 冒烟，然后跑 pilot-2（A0 + A3）。
+
+2026-10-12：叙事调整与算子层设计（提交 ed1004e）：
+ - paper/narrative-draft.md 改为领域优先：标题点出 research knowledge；加入 agent memory 的谱系；写出四类对象在写入机制下的一致方式（主张收回到机制，不归于模型）；评测归为 E1 完整性 / E2 充分性 / E3 对等。
+ - docs/discussions/2026-10-12-task-operators-and-leaderboard.md：面向任务的可注入算子（声明格式、op_version）、ExtractResults 的 schema、内置的 Leaderboard 读算子；去掉 Filter、MatrixConstruct，保留 Generate 用于 LLM judge 评撰写任务。
+ - PwC 快照覆盖先导语料 10 篇中的 7 篇（CATS 无，UniTime、TimeMachine 各 1 格）。
+ - 待定：结果行作为产物还是论文陈述的记录；A0 是否给同一份 schema；op_version；Generate 的引用约束。
+ - 下一步：定下以上 4 点，再改 operators.md 与代码。
+
+2026-10-12（续）：算子层决定：A0 不给 schema（统一格式是被评对象，schema 与机制的作用由 A2 分开）、加 op_version、Generate 不要求每段带引用。按 T1 先导探针（A–G）倒推出算子集合：ExtractResults（补变体、表类型、数值来历、训练数据、标准误、转录范围）、CompareSettings（由 Check 改造，维度固定）、Verify、Summarize、Generate，以及内置的 Leaderboard。约束：先冻结算子集合，再写正式探针。见 docs/discussions/2026-10-12-task-operators-and-leaderboard.md §11。待定：结果行作为产物还是论文陈述的记录。
+
+### 论文
+
+- 与 Graphiti 的区别
+  - 补充研究操作契约与 Artifact 回流机制的定位；下一步检查候选段落是否准确表达这条积累链，并以跨 agent 的后续使用验证其价值。
+
+问：
+接着回到评测草案。上一轮要你定的四件事还在：
+1. 主指标是不是用下游探针正确率；
+2. 是否采用"不变式 × 合并"骨架，Fork/Merge 要不要提前；
+3. A4 选 Mem0、Graphiti 中的一个还是两个都上；
+4. 论文截稿日期是哪天。
+
+要防一个质疑： 审稿人会问，算子是不是照着探针量身定做的。我在稿子里写了应对：
+
+- 算子和探针都从意图推出，有共同的来源，不是互相迁就；
+- 先冻结算子集合，再写正式探针。 正式探针一部分从 PwC 抽取，一部分按意图新写；先导探针只用来设计，不进入最终结论；
+- 论文中坦白写明：算子集合是按这个 workload 设计的，换 workload 就换声明。
