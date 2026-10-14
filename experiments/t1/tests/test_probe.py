@@ -6,8 +6,9 @@ import json
 from pathlib import Path
 
 import yaml
-from e09.config import REPO
+
 from t1.grade import claims_in, grade, numbers_in
+from t1.paths import REPO
 from t1.probe import answer_of, audit, baseline_prompt, check_anchors, eligible, excerpt, gold_at, load, reader_prompt
 from t1.source_tables import lookup, same_method
 

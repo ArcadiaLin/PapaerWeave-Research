@@ -7,8 +7,10 @@ import subprocess
 from pathlib import Path
 
 import yaml
-from e09.config import REPO
-from t1.run import discard_leftovers, prompt, request_errors, schedule
+
+from t1 import seeding
+from t1.paths import REPO, SEEDS
+from t1.run import check_checkpoint0, discard_leftovers, prompt, request_errors, schedule
 
 CONFIG = yaml.safe_load((REPO / "experiments/t1/config/pilot-ltsf.yml").read_text(encoding="utf-8"))
 
@@ -68,3 +70,26 @@ def test_uncommitted_notes_are_saved_as_a_patch_and_discarded(tmp_path: Path) ->
     patch = (tmp_path / "runs/left.patch").read_text(encoding="utf-8")
     assert "+two" in patch and "+draft" in patch
     assert (store / "a.md").read_text(encoding="utf-8") == "one\n" and not (store / "methods").exists()
+
+
+def test_checkpoint0_holds_every_seed_verbatim(tmp_path: Path) -> None:
+    snap = tmp_path / "checkpoints/0/A3"
+    rows, docs = [], [d for pattern, _ in seeding.BATCHES for d in seeding.documents(pattern)]
+    for i, doc in enumerate(docs, start=1):
+        art, material, path = f"art_{i:04d}", f"material_{i:04x}", f"artifacts/{i}.v1.md"
+        rows += [
+            {"node": art, "labels": ["Artifact"], "props": {"id": art, "title": doc}},
+            {"node": material, "labels": ["Material"], "props": {"id": material, "path": path}},
+            {"edge": [material, "MATERIAL_OF", art], "props": {}},
+        ]
+        (snap / "documents" / path).parent.mkdir(parents=True, exist_ok=True)
+        (snap / "documents" / path).write_text((SEEDS / doc).read_text(encoding="utf-8"), encoding="utf-8")
+    (snap / "graph.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    commits = len(CONFIG["seed_docs"]) + len(seeding.BATCHES)
+    lines = "".join(json.dumps({"seq": i}) + "\n" for i in range(commits))
+    (snap / "commits.jsonl").write_text(lines, encoding="utf-8")
+    assert check_checkpoint0(tmp_path, CONFIG) == []
+
+    changed = snap / "documents/artifacts/1.v1.md"
+    changed.write_text(changed.read_text(encoding="utf-8") + "edited\n", encoding="utf-8")
+    assert check_checkpoint0(tmp_path, CONFIG) == [f"{docs[0]}: stored 0 times verbatim"]

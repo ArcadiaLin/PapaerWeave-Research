@@ -2,8 +2,8 @@
 （一个提交，id 按文件名顺序为 art_0001…），再是 ../skills/*/SKILL.md（另一个提交）。
 
 按 evaluation_draft §10.1，这里不 import e09：种库用 e09 的命令行（``python -m e09 <文档> --source ... --apply``），
-检入用 MCP 入口（``python -m e09.mcp``，子进程，经 :mod:`t1.mcp_client`），写者工作目录（``E09_WORKDIR``）
-是 ``seeds/``，登录身份 ``E09_USER=seed``。论文材料复制到临时目录，作为 ``E09_DATA``。
+检入用 MCP 入口（``python -m e09.mcp``，子进程；批次与身份见 :mod:`t1.seeding`，与运行框架的
+A3 起点相同）。论文材料复制到临时目录，作为 ``E09_DATA``。
 
     E09_NEO4J_URI=bolt://localhost:7692 .venv/bin/python experiments/t1/seeds/scripts/checkin.py [--check-only]
 
@@ -24,11 +24,11 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
-from t1.mcp_client import Client, field, status
+from t1.mcp_client import field, status
+from t1.seeding import check_in
 
 REPO = Path(__file__).resolve().parents[4]
 CORPUS = REPO / "data/raw/t1-pilot-corpus"
-SEEDS = Path(__file__).resolve().parents[1]
 PAPERS = ["2012.07436v3", "2106.09305v3"]
 SEED_DOCS = [  # (入库文档, 来源标签, 额外参数)；与先导配置的检查点 0 相同
     ("00-anchors.yml", "seed:t1-anchors", ["--no-dedup"]),
@@ -36,10 +36,6 @@ SEED_DOCS = [  # (入库文档, 来源标签, 额外参数)；与先导配置的
     ("02-2021-SCINet.yml", "paper:2021-SCINet", []),
 ]
 LONG_LIVED_PORTS = {7687, 7688, 7689}
-BATCHES = [  # (文档的 glob，update_abstract)；按顺序各检入一次
-    ("leaderboards/*.md", "Seed leaderboards from the seed papers' main tables."),
-    ("skills/*/SKILL.md", "Seed skills for paper forms, Leaderboards and Generate documents."),
-]
 
 
 def main() -> int:
@@ -65,20 +61,7 @@ def main() -> int:
             print(run.stdout[-2000:], run.stderr[-2000:], sep="\n")
             return 1
 
-    mcp_env = {**env, "E09_WORKDIR": str(SEEDS), "E09_USER": "seed", "E09_AGENT": "seed-script"}
-    replies = []
-    ok = True
-    with Client([sys.executable, "-m", "e09.mcp"], mcp_env, name="t1-seed-checkin") as client:
-        for pattern, abstract in BATCHES:
-            docs = sorted(p.relative_to(SEEDS).as_posix() for p in SEEDS.glob(pattern))
-            request = {"artifact_doc": docs, "update_abstract": abstract}
-            replies.append((f"check {pattern}", client.call("CheckIn", request)))
-            ok = status(replies[-1][1]) == "checked"
-            if ok and not args.check_only:
-                replies.append((f"confirm {pattern}", client.call("CheckIn", {**request, "confirm": True})))
-                ok = status(replies[-1][1]) == "committed"
-            if not ok:
-                break
+    ok, replies = check_in(env, confirm=not args.check_only)
     out = args.out or data / "checkin.txt"
     out.write_text("".join(f"## {phase}\n\n{text}\n\n" for phase, text in replies), encoding="utf-8")
     for phase, text in replies:

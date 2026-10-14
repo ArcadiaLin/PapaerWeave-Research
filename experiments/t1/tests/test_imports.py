@@ -16,7 +16,7 @@ SOURCES = sorted([*(T1 / "src/t1").glob("*.py"), *(T1 / "seeds/scripts").glob("*
 SYSTEM = {"e09", "graph_doc", "graph_vc"}
 MEASURE = {"health", "grade", "source_tables"}  # 测量层：只读快照，不连库
 MEASURE_OK = {"yaml", "t1"}
-PENDING = {"a0_seed", "replay", "run", "health"}
+PENDING = {"health"}
 
 
 def imports(path: Path) -> set[str]:

@@ -9,7 +9,8 @@
 - ``A3/neo4j-export.jsonl``：各组跑完后 A3 图库的全部节点与关系（图库会被下一次运行清空）；
 - ``sessions.jsonl``：每次会话一行（组、序号、论文、写者、退出码、用时、事件流与会话记录的位置、会话前后的库版本、
   模型请求出错的次数与原因；A0 另记会话结束时笔记库中没有提交的改动）；
-- ``checkpoints.yml``：各组每个检查点的库版本（A3 为 graph-vc 的提交 id，A0 为 git 标签 ``checkpoint-<k>``）；
+- ``checkpoints.yml``：各组每个检查点的库版本（A3 为分支头的提交 id，A0 为 git 标签 ``checkpoint-<k>`` 的提交）；
+- ``checkpoints/<k>/<组>/``：检查点的快照；
 - ``probes.jsonl``：配置给出 ``probes`` 时，每个检查点上读者对有效探针的回答（:mod:`t1.probe`），在下一个写者开始
   之前跑完，所以读到的就是检查点的库；
 - ``A3/data/``：A3 的材料根目录（论文副本与产物文档，``E09_DATA``）；``A0/store/``：A0 的笔记库（git 仓库），
@@ -17,8 +18,12 @@
   （:mod:`t1.versions`）；
 - ``<组>/<写者>/``：写者的沙箱目录（见 :mod:`t1.sandbox`）。
 
-A3 的起点：清空图库（``--reset-a3``，只允许配置中的 T1 图库），按 ``seed_docs`` 的顺序
-（作者取文档的 ``by``）提交，再与内存重放的状态逐项比较，不一致即停止。A0 的起点由同一个内存重放渲染（:mod:`t1.a0_seed`）。两组内容因此相同。
+A3 的起点：清空图库（``--reset-a3``，只允许配置中的 T1 图库），用系统的命令行按 ``seed_docs`` 的顺序（作者取文档的
+``by``）提交，再经 MCP 检入种子 Leaderboard 与 skill（:mod:`t1.seeding`）。A0 的起点由 A3 检查点 0 的快照渲染，加上
+同样的种子 Leaderboard（:mod:`t1.a0_seed`），两组内容因此相同。
+
+每个检查点导出冻结的快照 ``checkpoints/<k>/<组>/``（:mod:`t1.snapshot`），之后的测量只读快照。评测代码不导入被测
+系统（evaluation_draft §10.1）：A3 的库只经命令行、MCP 与 Cypher 读取接触。
 
 会话按“槽位”调度：每个槽位是一篇论文的一个写者，或一个版本事件（``events``：某个检查点之后，维护者把论文的新版本
 带进库）。组内按槽位顺序逐个运行（写者轮流写），各组同时运行：两组的存储互不相干，并行只缩短总时间。
@@ -44,11 +49,10 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import yaml
-from e09.config import REPO
 
-from . import probe, versions
-from .a0_seed import commit_seed, render, seed_docs, write
-from .replay import replay
+from . import probe, seeding, snapshot, versions
+from .a0_seed import commit_seed, read_boards, render, write
+from .paths import REPO, SEEDS
 from .sandbox import Arm, Paths, Writer, prepare, run_session
 
 PROTECTED = {7687, 7688}  # neo4j-e09 与 neo4j-test：不清空
@@ -111,11 +115,10 @@ def titles_of(config: dict[str, Any]) -> dict[str, str]:
 
 def setup_a3(run: Path, config: dict[str, Any], *, reset: bool) -> None:
     arm = config["arms"]["A3"]
-    material = REPO / config["corpus"]["material_root"]
     data = run / "A3/data"
     if not (data / "papers").exists():
         copy_papers(config, data / "papers", versions.initial_papers(config))
-    driver = _driver(arm["neo4j"])
+    driver = snapshot.driver(arm["neo4j"])
     try:
         nodes = driver.execute_query("MATCH (n) RETURN count(n) AS n").records[0]["n"]
         if nodes:
@@ -135,19 +138,44 @@ def setup_a3(run: Path, config: dict[str, Any], *, reset: bool) -> None:
         done = subprocess.run([sys.executable, "-m", "e09", *args], env=env, capture_output=True, text=True)
         if done.returncode != 0:
             raise SystemExit(f"seeding {doc['doc']} failed:\n{done.stdout}\n{done.stderr}")
-    differences = _compare(config, arm, data)
-    if differences:
-        raise SystemExit(f"A3 checkpoint 0 differs from the replayed seed state: {differences[:5]}")
+    env = {**env, "E09_NO_EMBED": "1"} if not arm.get("embeddings", True) else env
+    ok, replies = seeding.check_in(env)
+    if not ok:
+        raise SystemExit(f"checking in the seed artifacts failed:\n{replies[-1][1]}")
 
 
 def setup_a0(run: Path, config: dict[str, Any]) -> None:
+    """A0 的检查点 0：由 A3 检查点 0 的快照渲染笔记库，加上种子 Leaderboard，以 ``seed`` 提交。"""
     store = run / "A0/store"
     if store.exists():
         return
-    material = REPO / config["corpus"]["material_root"]
+    snap = run / "checkpoints/0/A3"
+    if not (snap / "graph.jsonl").exists():
+        raise SystemExit(f"A0 checkpoint 0 is rendered from A3's snapshot, which is missing: {snap}")
     copy_papers(config, run / "A0/papers", versions.initial_papers(config))
-    write(render(replay(seed_docs(_config_path(config)), material)), store)
+    write(render(snapshot.load(snap), read_boards(SEEDS / "leaderboards")), store)
     commit_seed(store)
+
+
+def check_checkpoint0(run: Path, config: dict[str, Any]) -> list[str]:
+    """A3 检查点 0 的不变式：每份入库文档与每批种子产物各一个提交；种子产物在库中按原样保存。"""
+    snap = snapshot.load(run / "checkpoints/0/A3")
+    problems = []
+    expected = len(config["seed_docs"]) + len(seeding.BATCHES)
+    if len(snap.commits) != expected:
+        problems.append(f"{len(snap.commits)} commits, expected {expected}")
+    stored = {
+        snap.nodes[dst]["props"].get("title"): snap.nodes[src]["props"]["path"]
+        for src, rel, dst, _ in snap.edges
+        if rel == "MATERIAL_OF" and "Artifact" in snap.nodes.get(dst, {}).get("labels", [])
+    }
+    for pattern, _ in seeding.BATCHES:
+        for doc in seeding.documents(pattern):
+            text = (SEEDS / doc).read_text(encoding="utf-8")
+            matches = [path for path in stored.values() if snap.document(path) == text]
+            if len(matches) != 1:
+                problems.append(f"{doc}: stored {len(matches)} times verbatim")
+    return problems
 
 
 def papers_dir(run: Path, config: dict[str, Any], arm: str) -> Path:
@@ -164,25 +192,6 @@ def copy_papers(config: dict[str, Any], target: Path, arxivs: list[str]) -> None
             shutil.copytree(source / arxiv, target / arxiv)
 
 
-def _compare(config: dict[str, Any], arm: dict[str, Any], data: Path) -> list[str]:
-    from e09.store import open_graph
-
-    material = REPO / config["corpus"]["material_root"]
-    expected = replay(seed_docs(_config_path(config)), material)
-    driver = _driver(arm["neo4j"])
-    try:
-        actual = open_graph(driver, file_root=data).snapshot()
-    finally:
-        driver.close()
-    out = []
-    if set(actual.nodes) != set(expected.nodes):
-        out.append(f"node set: {sorted(set(actual.nodes) ^ set(expected.nodes))[:3]}")
-    out += [i for i in sorted(expected.nodes) if i in actual.nodes and actual.nodes[i] != expected.nodes[i]]
-    if actual.edges != expected.edges:
-        out.append("edges")
-    return out
-
-
 # ---------------------------------------------------------------- 检查点与版本
 
 
@@ -190,20 +199,23 @@ def version(run: Path, config: dict[str, Any], arm: str) -> str | None:
     if arm == "A0":
         done = subprocess.run(["git", "-C", str(run / "A0/store"), "rev-parse", "HEAD"], capture_output=True, text=True)
         return done.stdout.strip() or None
-    from e09.store import open_graph
-
-    driver = _driver(config["arms"]["A3"]["neo4j"])
-    try:
-        return open_graph(driver, file_root=run / "A3/data").head()
-    finally:
-        driver.close()
+    return snapshot.head(config["arms"]["A3"]["neo4j"])
 
 
 def checkpoint(run: Path, config: dict[str, Any], arm: str, k: int) -> str | None:
+    """记下检查点的库版本，并导出快照 ``checkpoints/<k>/<组>/``（已导出的不重导，续跑时保留原来的快照）。"""
     if arm == "A0":
         store = str(run / "A0/store")
         tag = ["git", "-C", store, "-c", "user.name=t1", "-c", "user.email=t1@t1.example", "tag", "-f", f"checkpoint-{k}"]
         subprocess.run(tag, check=True, capture_output=True)
+    out = run / "checkpoints" / str(k) / arm
+    if not (out / "meta.yml").exists():
+        if out.exists():
+            shutil.rmtree(out)  # 上次导出到一半
+        if arm == "A3":
+            snapshot.export_a3(config["arms"]["A3"]["neo4j"], run / "A3/data", out)
+        else:
+            snapshot.export_a0(run / "A0/store", f"checkpoint-{k}", out)
     head = version(run, config, arm)
     path = run / "checkpoints.yml"
     with _LOCK:
@@ -231,6 +243,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if "A3" in arms and "A3" not in _checkpoints(run):
         setup_a3(run, config, reset=args.reset_a3)
         checkpoint(run, config, "A3", 0)
+        if problems := check_checkpoint0(run, config):
+            raise SystemExit("A3 checkpoint 0 does not hold the seeds: " + "; ".join(problems))
     if "A0" in arms and "A0" not in _checkpoints(run):
         setup_a0(run, config)
         checkpoint(run, config, "A0", 0)
@@ -281,7 +295,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 def export_a3(run: Path, config: dict[str, Any]) -> Path:
     """A3 图库的全部节点与关系（含版本记录）写成 JSONL，供图库清空后复查。"""
     out = run / "A3/neo4j-export.jsonl"
-    driver = _driver(config["arms"]["A3"]["neo4j"])
+    driver = snapshot.driver(config["arms"]["A3"]["neo4j"])
     try:
         nodes = driver.execute_query("MATCH (n) RETURN elementId(n) AS id, labels(n) AS labels, properties(n) AS props")
         edges = driver.execute_query(
@@ -460,17 +474,6 @@ def _e09_env(arm: dict[str, Any], data: Path) -> dict[str, str]:
     return env | {"E09_NEO4J_URI": arm["neo4j"], "E09_DATA": str(data)}
 
 
-def _driver(uri: str):
-    from e09.config import NEO4J_AUTH
-    from neo4j import GraphDatabase
-
-    return GraphDatabase.driver(uri, auth=NEO4J_AUTH)
-
-
-def _config_path(config: dict[str, Any]) -> Path:
-    return Path(config["_path"])
-
-
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m t1.run", description=__doc__.split("\n\n")[0])
     parser.add_argument("name", help="运行名：运行目录为 <workdir_root>/<name>/")
@@ -487,4 +490,16 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["Slot", "checkpoint", "copy_papers", "run_config", "main", "papers_dir", "prompt", "schedule", "setup_a0", "setup_a3"]
+__all__ = [
+    "Slot",
+    "check_checkpoint0",
+    "checkpoint",
+    "copy_papers",
+    "main",
+    "papers_dir",
+    "prompt",
+    "run_config",
+    "schedule",
+    "setup_a0",
+    "setup_a3",
+]
