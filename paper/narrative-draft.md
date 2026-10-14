@@ -1,9 +1,10 @@
-# Collaboration without Coordination: Managing Scientific Memory for Agentic Research
+# Collaboration without Coordination: Managing Scientific Knowledge for Agentic Research
 
 （标题暂定。）本文是学术知识积累的领域系统论文：要解决的就是这个领域的问题，而不是拿它当通用问题的一个实例。标题因此点出领域（Agentic Research），系统名保留 PaperWeave。
 
 - 前半句用名词，陈述原则；后半句只留 Managing 一个动作，说明我们做什么。"Coordination" 作名词是数据库界的用法（coordination avoidance、coordination-free）。
-- "Scientific Memory" 把论文放进 agent memory 的谱系（GEM、Collaborative Memory、ShareMem），对应主投方向 AI & knowledge bases。代价是审稿人会直接拿它和这些 memory 系统比，所以摘要必须说清：这是不能靠整合者改写、只能靠来源锚定的 memory。
+- "Scientific Knowledge" 点明管理对象：论文派生的知识与产物。2026-10-14 由 "Scientific Memory" 改回：memory 一词会倒逼系统纳入 skill 提炼、整合、遗忘等工作负载并不要求的功能（[头脑风暴](../docs/discussions/2026-10-14-design-brainstorm.md) §1）。agent memory 的谱系（GEM、Collaborative Memory、ShareMem）改在摘要与相关工作中交代，仍对应主投方向 AI & knowledge bases；摘要必须说清：这些知识只能靠来源锚定，不能靠整合者改写。
+- 标题只写 Knowledge，审稿人可能拿它和 ORKG、PwC 一类科学知识库比；正文要说明差别在写者：许多互不协调的 agent 持续写入，而不是人工整理。
 - 不写 "Shared Memory"，以免让人联想到共享内存架构。
 - 查重（2026-10-13，网页搜索 + OpenAlex 标题短语检索）：没有以 "Collaboration without Coordination" 或 "Collaborating without Coordinating" 为题的论文。最接近的是 Stone et al. 的 *Ad Hoc Autonomous Agent Teams: Collaboration without Pre-Coordination*（AAAI 2010，ad hoc teamwork），领域和措辞都不同。
 

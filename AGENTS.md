@@ -88,8 +88,12 @@ without looking wrong.
 ### Paper
 
 - **Tentative title:** *Collaboration without Coordination: Managing Scientific
-  Memory for Agentic Research*. The abstract must say that this memory is
-  anchored to sources, not rewritten by a consolidator. Avoid "shared memory".
+  Knowledge for Agentic Research*. The managed objects are paper-derived
+  knowledge and artifacts; the word "memory" must not pull in features (skill
+  distillation, consolidation, forgetting) that the workload does not require.
+  The abstract and related work still position the paper in the agent memory
+  lineage, and must say that this knowledge is anchored to sources, not
+  rewritten by a consolidator. Avoid "shared memory".
 - **A data management systems paper**, not a middleware or agent paper: new
   abstractions and an effective combination of existing techniques, backed by a
   principled design, a working prototype, and end-to-end evaluation.

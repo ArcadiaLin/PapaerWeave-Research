@@ -12,6 +12,8 @@
 > - 分层对照表只用来核对有没有漏层，不作为论文的叙事主线（第 6 节）；
 > - A0 不给 skill（第 10 节）；
 > - 先快速出 arXiv 版，其余推迟到投会议；两者的分界见第 11 节。
+>
+> **2026-10-14 补记**（[头脑风暴](./2026-10-14-design-brainstorm.md)）：标题改回 *… Managing Scientific Knowledge for Agentic Research*。Skill 留在 v1 的理由是机制上的（用法从工具描述移入 skill，写入统一为按类型检入），不靠标题，因此仍为必做类型；Skill 类型自己的种子 skill（原 B3）砍掉，怎样写 skill 由 `CheckIn` 中 Skill 的契约（Agent Skills 格式）说明。
 
 ## 1. 重心：一个主张
 
@@ -40,7 +42,7 @@ $$
 \text{skill}_{t} + \texttt{CheckIn} \Rightarrow \text{artifact}_{t}, \qquad t \in \{\text{paper-form}, \text{Leaderboard}, \dots, \text{Skill}\}
 $$
 
-- 每个类型的 skill 说明怎样做出这类文档：先查什么，哪里要判断，何时回读原文。Skill 类型自己也有一份 skill，说明怎样写 skill。新增类型只在目录中加一条契约与一份 skill，不加机制。
+- 每个类型的 skill 说明怎样做出这类文档：先查什么，哪里要判断，何时回读原文。Skill 类型自己的 skill（说明怎样写 skill）v1 不写，推迟到投会议（2026-10-14）。新增类型只在目录中加一条契约与一份 skill，不加机制。
 - **不说“经验”。** 把所有内容都称为经验会抹掉有据层，也会回到已被取代的“单 agent 经验复用”叙事。论文中说“写者写下的做法与写下的结果按同一套规则管理”。
 - **最真实的例子是 paper-form 的 skill。** 写者最主要的工作是读一篇论文、写出 paper-form，这本身就是一份 skill，现在散落在[抽取原则](../designs/v2/extraction_principles.md)、表单模板与示例、Commit 的工具描述三处。paper-form 从 v1 演进到 v4，每次升级，按旧版写的做法就过时了。
 - **与打包格式的区别：** 把 skill 与 MCP 工具打成一个分发单元（如 Claude Code 的 plugin，以及 OpenAI 的同类协议，引用前须找到原始出处）解决的是分发；这里的 skill 是写者在工作中写、改、共同维护的数据，有版本、有署名。
@@ -204,7 +206,7 @@ skill 作为产物类型，闭合是自动的：五项核心机制本来就作�
 | 产物版本 | 版本链、`superseded`、编辑提示（“自你上次编辑以来别人改了哪些行”） | — |
 | 过时 | 现有 `_stale` 各项，加产物的 `superseded` | skill 随类型契约升级而过时，及其查准率与查全率 |
 | skill 的身份键 | 所服务的类型：每个类型一份，共同编辑 | （意图，任务模式） |
-| 种子 skill | paper-form（整理自抽取原则、表单模板与示例、Commit 的工具描述）、Leaderboard、Generate、Skill；运行前冻结，经用户确认 | 其余类型 |
+| 种子 skill | paper-form（整理自抽取原则、表单模板与示例、Commit 的工具描述）、Leaderboard、Generate；运行前冻结，经用户确认 | 其余类型，含 Skill 类型自己的 skill（2026-10-14 移出 v1） |
 | 工具描述 | 只写接口契约（参数、错误、返回）；类型特有的用法移入 skill | — |
 | 按键查找（G1） | `Search` 在 Artifact 上加 `key` 条件 | 放进 `Resolve`，与身份机制统一 |
 | Commit 返回相关的共同产物 | 做（采用率与 −写入时提示都依赖它） | 沿更多路径返回 |

@@ -7,7 +7,8 @@
 > - 写入保留 `Commit` 与 `CheckIn` 两个工具；
 > - A0 不给 skill；
 > - 不放开模型冻结：Skill 是 Artifact 的一个类型，不加实体类型与字段；
-> - 第一步是 A1–A3，先交实现方案。
+> - 第一步是 A1–A3，先交实现方案；
+> - 2026-10-14：标题改回 Knowledge；Skill 维持必做，砍掉 B3（[头脑风暴](../discussions/2026-10-14-design-brainstorm.md)）。
 >
 > **更正：** 评测草案 §10 把 `_stale` 的 `revised` 记为待实现，代码已有（`c3a4336`）。
 
@@ -42,7 +43,7 @@
 
 - [ ] **B1 paper-form 的 skill：** 把[抽取原则](../designs/v2/extraction_principles.md)、表单模板与示例、Commit 工具描述三处中的用法整理到一处，不新增规则。
 - [ ] **B2 Leaderboard、Generate 的 skill。**
-- [ ] **B3 Skill 的 skill：** 怎样写 skill、何时检入。
+- ~~**B3 Skill 的 skill**~~：2026-10-14 砍掉，推迟到投会议。Skill 仍是 v1 的必做类型；怎样写 skill 由 `CheckIn` 中 Skill 的契约说明（A4）。
 - [ ] **B4 种子 Leaderboard：** 种子论文（Informer、SCINet）在各主要数据集上的 Leaderboard，包含难写的行（如 look-back 写成说明文字）。种子不能与金标准重合。
 - [ ] **B5 A0 的种子：** 同样的 Leaderboard 写成文件，不附维护提示，不给 skill。
 
