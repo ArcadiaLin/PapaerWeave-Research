@@ -225,7 +225,8 @@ def _bwrap(paths: Paths, arm: Arm, writer: Writer, prompt: str) -> list[str]:
     return [*args, "--chdir", "/work"]
 
 
-def _mcp_command(paths: Paths, arm: Arm, writer: Writer) -> list[str]:
+def mcp_env(paths: Paths, arm: Arm, writer: Writer) -> dict[str, str]:
+    """写者的 MCP 服务在沙箱外的环境：库、材料根目录、登录身份、工作目录与开关。"""
     assert arm.neo4j is not None and arm.data is not None
     env = {
         "E09_NEO4J_URI": arm.neo4j,
@@ -246,6 +247,11 @@ def _mcp_command(paths: Paths, arm: Arm, writer: Writer) -> list[str]:
         env["E09_HIDE_TOOLS"] = ",".join(arm.hide_tools)
     if arm.evidence_scope:
         env["E09_EVIDENCE_SCOPE"] = arm.evidence_scope
+    return env
+
+
+def _mcp_command(paths: Paths, arm: Arm, writer: Writer) -> list[str]:
+    env = mcp_env(paths, arm, writer)
     return ["env", *(f"{k}={v}" for k, v in env.items()), str(REPO / ".venv/bin/python"), "-m", "e09.mcp"]
 
 

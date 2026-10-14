@@ -50,7 +50,7 @@ from urllib.parse import urlsplit
 
 import yaml
 
-from . import probe, seeding, snapshot, versions
+from . import probe, seeding, skills, snapshot, versions
 from .a0_seed import commit_seed, read_boards, render, write
 from .paths import REPO, SEEDS
 from .sandbox import Arm, Paths, Writer, prepare, run_session
@@ -331,6 +331,7 @@ def _session(run: Path, config: dict[str, Any], arm: str, slot: Slot, text: str,
     if arm == "A0":  # 上一次运行在会话中途被终止时留下的改动：同样存档后丢弃，不留给这个写者
         stale = Path(f"runs/{datetime.now(UTC):%Y%m%dT%H%M%S}.interrupted.leftover.patch")
         interrupted = discard_leftovers(run / "A0/store", paths.root / stale)
+    skills_placed = skills.place(paths, sandbox_arm, writer) if arm == "A3" else None
     before = version(run, config, arm)
     started = datetime.now(UTC).isoformat(timespec="seconds")
     result = run_session(
@@ -352,6 +353,8 @@ def _session(run: Path, config: dict[str, Any], arm: str, slot: Slot, text: str,
         "after": version(run, config, arm),
         "prompt": text,
     }
+    if skills_placed is not None:
+        record["skills"] = skills_placed
     if arm == "A0":
         patch = Path(result["events"]).with_suffix(".leftover.patch")
         record["leftover"] = discard_leftovers(run / "A0/store", paths.root / patch)
