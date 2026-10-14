@@ -37,7 +37,7 @@ SEED_DOCS = [  # (入库文档, 来源标签, 额外参数)；与先导配置的
 LONG_LIVED_PORTS = {7687, 7688, 7689}
 BATCHES = [  # (文档的 glob，update_abstract)；按顺序各检入一次
     ("leaderboards/*.md", "Seed leaderboards from the seed papers' main tables."),
-    ("skills/*/SKILL.md", "Seed skills for the Leaderboard and Generate types."),
+    ("skills/*/SKILL.md", "Seed skills for paper forms, Leaderboards and Generate documents."),
 ]
 
 
