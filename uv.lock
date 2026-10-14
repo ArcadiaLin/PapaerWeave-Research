@@ -272,14 +272,14 @@ version = "0.1.0"
 source = { editable = "experiments/t1" }
 dependencies = [
     { name = "cacheplan-e09" },
-    { name = "graph-vc" },
+    { name = "neo4j" },
     { name = "pyyaml" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "cacheplan-e09", editable = "experiments/e09" },
-    { name = "graph-vc", editable = "packages/graph-vc" },
+    { name = "neo4j", specifier = ">=5.28,<7" },
     { name = "pyyaml", specifier = ">=6,<7" },
 ]
 

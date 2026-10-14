@@ -5,16 +5,17 @@ description = "T1：多写者积累时间线（先导）的运行框架"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 
-# 只声明流水线自己 import 的包；评测框架建在 e09 的写入路径与读视图之上。
+# 评测与被测系统分离（evaluation_draft §10.1）：t1 不 import 系统代码，只经它的命令行与 MCP 入口（子进程）、
+# Cypher 读与文件交互。cacheplan-e09 列在这里，是因为运行框架在同一环境中启动这些子进程；health 尚未改写，仍
+# import 它（tests/test_imports.py 的 PENDING）。neo4j 是 Cypher 读（快照、分支头）用的驱动。
 dependencies = [
     "cacheplan-e09",
-    "graph-vc",
+    "neo4j>=5.28,<7",
     "pyyaml>=6,<7",
 ]
 
 [tool.uv.sources]
 cacheplan-e09 = { workspace = true }
-graph-vc = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
