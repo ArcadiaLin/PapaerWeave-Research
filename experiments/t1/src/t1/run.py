@@ -41,6 +41,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import urllib.request
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -285,6 +286,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         overrides["endpoints"] = dict(e.split("=", 1) for e in args.endpoints.split(","))
     _record_run(run, config_path, arms, {k: v for k, v in overrides.items() if v})
     config = run_config(run, config)
+    if url := config["runner"].get("embeddings_url"):
+        os.environ.setdefault("EMBED_URL", url)  # 系统的嵌入服务地址，子进程（命令行、MCP 服务）继承
+    if problems := preflight(config, arms):
+        raise SystemExit("services are not reachable:\n" + "\n".join(problems))
 
     if "A3" in arms and "A3" not in _checkpoints(run):
         setup_a3(run, config, reset=args.reset_a3)
@@ -515,6 +520,25 @@ def _done(run: Path) -> set[tuple[str, int]]:
     if not path.exists():
         return set()
     return {(r["arm"], r["index"]) for r in map(json.loads, path.read_text(encoding="utf-8").splitlines())}
+
+
+def preflight(config: dict[str, Any], arms: list[str]) -> list[str]:
+    """开跑前确认各组的模型服务与（A3 用嵌入时）嵌入服务都能连上：服务不在时种库或写者会话会中途失败，留下半截的
+    运行。只发只读请求（``/models``），代理按环境变量。"""
+    default = _llm_url(config["runner"]["model"])
+    urls = {f"{arm} model service": (config["runner"].get("endpoints") or {}).get(arm, default) for arm in arms}
+    embed = os.environ.get("EMBED_URL") or config["runner"].get("embeddings_url")
+    if "A3" in arms and config["arms"]["A3"].get("embeddings", True) and embed:
+        urls["embedding service"] = embed
+    problems = []
+    for name, url in urls.items():
+        models = url.rsplit("/", 1)[0] + "/models" if url.endswith("/embeddings") else url.rstrip("/") + "/models"
+        try:
+            with urllib.request.urlopen(models, timeout=15) as reply:
+                reply.read()
+        except (OSError, ValueError) as e:
+            problems.append(f"{name} {models}: {e}")
+    return problems
 
 
 def _llm_url(model: str) -> str:

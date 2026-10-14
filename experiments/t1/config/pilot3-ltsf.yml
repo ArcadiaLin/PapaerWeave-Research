@@ -158,3 +158,6 @@ runner:
   # 每组每个写者一个独立工作目录（~/t1-runs/<run>/<arm>/<writer>/），只含 MCP 登记、pi 会话设置与会话记录；
   # 工作目录之外的文件读取（包括直接读论文）不阻止，事后从轨迹审计。
   workdir_root: ~/t1-runs
+  # 系统的嵌入服务（A3 的 embeddings 为 true 时用）：运行框架设为子进程的 EMBED_URL（环境中已有时不覆盖），开跑前
+  # 与各组的模型服务一起检查能否连上（t1.run.preflight）。与 e09 的默认值相同。
+  embeddings_url: http://192.168.163.112:8002/v1/embeddings

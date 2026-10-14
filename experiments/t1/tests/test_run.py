@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import http.server
 import json
 import subprocess
+import threading
 from pathlib import Path
 
 import yaml
 
 from t1 import seeding
 from t1.paths import REPO, SEEDS
-from t1.run import assign, check_checkpoint0, discard_leftovers, prompt, request_errors, schedule
+from t1.run import assign, check_checkpoint0, discard_leftovers, preflight, prompt, request_errors, schedule
 
 CONFIG = yaml.safe_load((REPO / "experiments/t1/config/pilot-ltsf.yml").read_text(encoding="utf-8"))
 
@@ -125,3 +127,27 @@ def test_pseudo_user_prompt_is_background_plus_the_common_task() -> None:
     assert text.startswith(slot.writer["background"].rstrip())
     assert "Add this paper to the knowledge base your work uses." in text
     assert "leaderboard" not in text.lower() and "{" not in text
+
+
+def test_preflight_names_the_services_that_do_not_answer(monkeypatch) -> None:
+    class Models(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(200 if self.path.endswith("/v1/models") else 404)
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *args) -> None:
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Models)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    up, down = f"http://127.0.0.1:{server.server_port}/v1", "http://127.0.0.1:9/v1"
+    for key in ("EMBED_URL", "http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"):
+        monkeypatch.delenv(key, raising=False)
+    config = {**PILOT3, "runner": {**PILOT3["runner"], "endpoints": {"A3": up, "A0": down},
+                                   "embeddings_url": f"{up}/embeddings"}}
+    try:
+        problems = preflight(config, ["A3", "A0"])
+    finally:
+        server.shutdown()
+    assert [p.split(" http")[0] for p in problems] == ["A0 model service"]
