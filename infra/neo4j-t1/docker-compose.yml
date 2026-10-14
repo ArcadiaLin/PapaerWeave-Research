@@ -10,6 +10,12 @@ services:
 
     environment:
       NEO4J_AUTH: neo4j/password
+      # WSL 只有 8 GB：不设时 heap 默认取可见内存的 1/4，且容器无上限
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 1G
+      NEO4J_server_memory_pagecache_size: 512m
+
+    mem_limit: 2g
 
     volumes:
       - ./data:/data
