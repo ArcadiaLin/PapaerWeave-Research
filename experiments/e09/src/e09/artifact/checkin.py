@@ -17,7 +17,8 @@
 5. 去掉 ``id``、``base`` 两行后与最新版本相同时为 ``noop``；没有身份键的类型新建时，内容与同一编辑者写的同类
    产物的某个版本相同，视为重试（``existing``）；
 6. 与基础版本逐单位比对，得出改动与 ``others``（:mod:`e09.artifact.versions`）；
-7. 类型的轻度规则只作用于新增与修改的行：拒绝的是错误，其余是 ``warnings``（如数字不在所引的行中）。
+7. 类型的轻度规则只作用于新增与修改的行：拒绝的是错误，其余是 ``warnings``（如数字不在所引的行中）；规则与说明
+   都相同的警告合并为一条，列出各行（:meth:`Item.grouped_warnings`）。
 
 ``checked`` 的每份文档另给 ``stats``（类型的统计）与 ``warnings``；``committed`` 的每份另给读取时现算的 ``notes``
 （如 Leaderboard 每位编辑者写的行数、所引论文已有新版本的行、同一格的多个值）。
@@ -91,12 +92,45 @@ class Item:
     action: str = "create"
     changes: Changes | None = None
     history: list[tuple[str, int, Parsed]] = field(default_factory=list)  # (编辑者, 版本号, 文档)，从最早到最新
-    warnings: list[dict[str, str]] = field(default_factory=list)
+    warnings: list[tuple[str, int, str]] = field(default_factory=list)  # (规则, 要保存的文档中的行号, 说明)
 
     def at(self, line: int) -> str:
         """写者文件中的位置 ``<文件>:<行号>``；``line`` 是要保存的文档中的行号。"""
-        mapped = self.lines[line - 1] if 0 < line <= len(self.lines) else line
-        return f"{self.draft.path}:{mapped}"
+        return f"{self.draft.path}:{self.line(line)}"
+
+    def line(self, line: int) -> int:
+        """要保存的文档中的行号 → 写者文件中的行号。"""
+        return self.lines[line - 1] if 0 < line <= len(self.lines) else line
+
+    def grouped_warnings(self) -> list[dict[str, Any]]:
+        """警告按（规则、说明）合并，按首次出现排序：``at`` 列出写者文件中的各行，连续的行写成区间（如
+        ``a.md:15-44, 50``）；多于一行时另给 ``count``。逐行列出时几十行相同的警告会淹没其余的。"""
+        groups: dict[tuple[str, str], list[int]] = {}
+        for rule, line, msg in self.warnings:
+            groups.setdefault((rule, msg), []).append(self.line(line))
+        out: list[dict[str, Any]] = []
+        for (rule, msg), lines in groups.items():
+            entry: dict[str, Any] = {"rule": rule, "at": f"{self.draft.path}:{_spans(lines)}", "msg": msg}
+            if len(lines) > 1:
+                entry["count"] = len(lines)
+            out.append(entry)
+        return out
+
+
+
+def _spans(lines: list[int]) -> str:
+    """行号列表写成区间：``[15, 16, 17, 20]`` → ``15-17, 20``。"""
+    ordered = sorted(set(lines))
+    parts: list[str] = []
+    start = prev = ordered[0]
+    for n in [*ordered[1:], None]:
+        if n is not None and n == prev + 1:
+            prev = n
+            continue
+        parts.append(str(start) if start == prev else f"{start}-{prev}")
+        if n is not None:
+            start = prev = n
+    return ", ".join(parts)
 
 
 class Problems:
@@ -235,7 +269,7 @@ def _rules(store: Store, item: Item, problems: Problems) -> None:
     changed = {c["at"] for c in (*item.changes.added, *item.changes.modified)}
 
     def warn(rule: str, line: int, msg: str) -> None:
-        item.warnings.append({"rule": rule, "at": item.at(line), "msg": msg})
+        item.warnings.append((rule, line, msg))
 
     def report(rule: str, line: int, msg: str) -> None:
         problems.add(rule, item.at(line), msg)
@@ -442,7 +476,7 @@ def _checked(items: list[Item], others: list[tuple[Item, dict[str, Any]]]) -> di
             assert item.kind is not None and item.doc is not None
             if stats := item.kind.stats(item.doc):
                 entry["stats"] = stats
-            entry["warnings"] = item.warnings
+            entry["warnings"] = item.grouped_warnings()
         entries.append(entry)
     steps = "Nothing was written. To write, call CheckIn again with the same artifact_doc and update_abstract"
     steps += " and confirm: true"
@@ -512,7 +546,7 @@ def _write(
         if notes := _notes(store, item, formed_by, number):
             done[id(item)]["notes"] = notes
         if item.warnings:
-            done[id(item)]["warnings"] = item.warnings
+            done[id(item)]["warnings"] = item.grouped_warnings()
 
     meta: dict[str, Any] = {
         "artifacts": [

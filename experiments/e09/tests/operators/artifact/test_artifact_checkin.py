@@ -10,8 +10,10 @@ from typing import Any
 import pytest
 from conftest import LEADERBOARD, MATERIAL, Writer, commit_doc
 
+from e09.artifact.checkin import Item
 from e09.artifact.stale import stale
 from e09.artifact.versions import history
+from e09.draft import Draft
 from e09.operators.db.search import search
 from e09.store import ContractError, Store
 
@@ -317,3 +319,14 @@ def test_commit_lists_related_leaderboards(writers: dict[str, Writer]) -> None:
     note = f"graph-doc: v0.1\nby: alice\nnodes:\n  {done['ids']['$ili']}:\n    description: Weekly ILI ratios (US).\n"
     plain = alice.commit(note)
     assert plain["status"] == "committed" and "related_artifacts" not in plain  # 没有触及 Experiment
+
+
+def test_repeated_warnings_are_grouped() -> None:
+    item = Item(Draft("lb.md", ""), lines=[1, 2, 4, 5, 6, 7, 9])  # 去掉 id、base 两行后的行号 → 写者文件中的行号
+    same = "lookback 'searched in {24, 48}' is not a number; fine if the paper states it so"
+    item.warnings = [("format", 2, same), ("format", 3, same), ("number", 4, "0.5 not in the cited lines"),
+                     ("format", 4, same), ("format", 7, same)]
+    assert item.grouped_warnings() == [
+        {"rule": "format", "at": "lb.md:2, 4-5, 9", "msg": same, "count": 4},
+        {"rule": "number", "at": "lb.md:5", "msg": "0.5 not in the cited lines"},
+    ]
