@@ -157,6 +157,30 @@ tools:
       base: The commit (meta.snapshot) at which you read the nodes you are changing; recorded only.
       dedup: Check new Entities and Concepts against stored ones (default true); leave it on.
 
+  FetchArtifact:
+    title: Fetch artifact
+    description: |-
+      Check out shared artifacts (Leaderboard, Generate, Skill documents) into your working directory to read and edit them; check them back in with CheckIn. Leaderboards and Generate documents go to artifacts/<title>.md, skills to .agents/skills/<name>/SKILL.md. The header gets two lines, id and base (base is the commit of the version you got); do not edit them. A file already at that path is replaced (overwritten says so).
+
+      Each item gives path, version, base and hint: the version, the last edit (editor, commit, message, reason), all editors, and what others changed since your last edit (lines in the fetched file). missing lists ids that could not be fetched and why. With at, you get the version as of that commit, for reading only: CheckIn accepts only edits based on the latest version.
+    parameters:
+      artifact: List of artifact ids.
+      at: Optional commit id (or main). Fetch the versions as of that commit, for reading only.
+
+  CheckIn:
+    title: Check in artifact
+    description: |-
+      Check in shared artifact documents from your working directory: a document fetched with FetchArtifact (its header keeps id and base) updates that artifact; a document without them creates a new one. The header names the type (type: Leaderboard | Generate; a Skill keeps type under metadata). Documents are stored as written; each check-in makes a new version, and earlier versions stay readable.
+
+      Without confirm the call only checks: each item gives the action (create, update, noop when the document equals the latest version, existing when the same document was already checked in), the changes against the version you fetched, and others, the changed or deleted lines last written by someone else. Nothing is written. Call again with confirm: true to write; if others is not empty, also give reason. Several documents are checked in together or not at all.
+
+      status rejected means nothing was written: errors lists each problem with at (file:line) and msg; edit those lines and call again. rule identity means an artifact with the same identity already exists (its id is in msg): fetch that one and edit it. status conflict means someone checked in a newer version after you fetched it, or the id or base lines were edited: fetch again, redo your edits on the new version, and check in.
+    parameters:
+      artifact_doc: List of paths of the documents in your working directory.
+      update_abstract: What you changed and why, in one or two sentences; recorded as the commit message and shown to later editors.
+      confirm: true to write; leave it out to only check.
+      reason: Why you changed or deleted lines written by others; required when others is not empty.
+
   Extract:
     title: Extract
     description: |-

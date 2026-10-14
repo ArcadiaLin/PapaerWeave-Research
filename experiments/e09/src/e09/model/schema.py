@@ -25,6 +25,8 @@ CONTENT = frozenset(KINDS["Content"])
 ARTIFACT = "Artifact"  # 只有主 Label，不分 kind（§8）
 # 产出 Artifact 的 Agent 算子（operators.md §4），记在 Artifact 的 op 上
 AGENT_OPS = ("Extract", "Summarize", "Generate", "Check", "Verify", "Filter", "MatrixConstruct")
+# 经 CheckIn 检入的共同产物的类型（e09.artifact.types），同样记在 op 上；旧算子在 A8 下线后只剩这些
+ARTIFACT_TYPES = ("Leaderboard", "Generate", "Skill")
 SYSTEM_LABELS = frozenset({"NameKey", "Material", "IngestBatch"})
 
 # 有名称的 kind：name 与 aliases 注册为 NameKey（§2.2、§3.2、§5）。Issue、Proposition 是陈述型，没有名称。
@@ -180,14 +182,18 @@ CONSTRAINTS = [
     "CREATE CONSTRAINT content_id IF NOT EXISTS FOR (n:Content) REQUIRE n.id IS UNIQUE",
     "CREATE CONSTRAINT experiment_key IF NOT EXISTS FOR (n:Experiment) REQUIRE n.exp_key IS UNIQUE",
     "CREATE CONSTRAINT content_key IF NOT EXISTS FOR (n:Content) REQUIRE n.content_key IS UNIQUE",
-    "CREATE CONSTRAINT material_hash IF NOT EXISTS FOR (m:Material) REQUIRE m.content_hash IS UNIQUE",
-    # Artifact 只追加；相同 artifact_key 的写入是重试（operators.md §5.4）
+    # 论文材料的 id 由内容哈希给出，按 id 唯一即按内容唯一；共同产物每个版本一份 Material，内容可以与早先的版本
+    # 相同（改回去），所以不再要求内容哈希唯一
+    "CREATE CONSTRAINT material_id IF NOT EXISTS FOR (m:Material) REQUIRE m.id IS UNIQUE",
     "CREATE CONSTRAINT artifact_id IF NOT EXISTS FOR (n:Artifact) REQUIRE n.id IS UNIQUE",
+    # 旧版 Agent 算子：相同 artifact_key 的写入是重试（A8 下线）
     "CREATE CONSTRAINT artifact_key IF NOT EXISTS FOR (n:Artifact) REQUIRE n.artifact_key IS UNIQUE",
+    # 共同产物的身份键：一个键只有一份产物（operators.md §5.4）
+    "CREATE CONSTRAINT artifact_identity IF NOT EXISTS FOR (n:Artifact) REQUIRE n.key IS UNIQUE",
 ]
-# 已退役的约束：ensure_schema 删除。result_row_key 属于行级入库（f95631b），首版改为报告级后不用；
-# batch_id 属于旧写入路径的 IngestBatch，已由 graph-vc 的 Commit 取代
-RETIRED_CONSTRAINTS = ["result_row_key", "batch_id"]
+# 已退役的约束：建库时删除。result_row_key 属于行级入库（f95631b），首版改为报告级后不用；
+# batch_id 属于旧写入路径的 IngestBatch，已由 graph-vc 的 Commit 取代；material_hash 见上面 material_id
+RETIRED_CONSTRAINTS = ["result_row_key", "batch_id", "material_hash"]
 
 # 全文索引：名称 → (Label, 字段, 分词方式)。检索字段按类别声明（intents_decompose.md §6.2）
 # - namekey_raw：名称词面通道。名称与 alias 都在 NameKey 上，对象上没有 aliases 列表；默认分词，不做词形还原

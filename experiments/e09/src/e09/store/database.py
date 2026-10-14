@@ -12,7 +12,15 @@ from neo4j import Driver, RoutingControl
 
 from graph_vc import VersionedGraph
 
-from ..model.schema import CONSTRAINTS, DERIVED_FIELDS, DESCRIBED_RELS, FULLTEXT, NODE_LABELS, REL_TYPES
+from ..model.schema import (
+    CONSTRAINTS,
+    DERIVED_FIELDS,
+    DESCRIBED_RELS,
+    FULLTEXT,
+    NODE_LABELS,
+    REL_TYPES,
+    RETIRED_CONSTRAINTS,
+)
 from .embedding import EMBED_DIM, REL_VECTOR_INDEX, VECTOR_INDEXES
 
 
@@ -48,11 +56,13 @@ def check_versioned(driver: Driver, *, database: str | None = None) -> None:
 
 
 def setup_database(graph: VersionedGraph, driver: Driver, *, database: str | None = None) -> None:
-    """建立版本记录与 main 分支、模型的约束、全文索引与向量索引；可重复调用。
+    """建立版本记录与 main 分支、模型的约束、全文索引与向量索引，删除已退役的约束；可重复调用。
 
-    全部是 ``IF NOT EXISTS``：已有同名索引的配置与声明不一致时不会改动它。
+    全部是 ``IF NOT EXISTS`` / ``IF EXISTS``：已有同名索引的配置与声明不一致时不会改动它。
     """
     graph.setup()
+    for name in RETIRED_CONSTRAINTS:
+        driver.execute_query(f"DROP CONSTRAINT {name} IF EXISTS", database_=database)
     for statement in index_statements():
         driver.execute_query(statement, database_=database)
     driver.execute_query("CALL db.awaitIndexes(300)", database_=database)

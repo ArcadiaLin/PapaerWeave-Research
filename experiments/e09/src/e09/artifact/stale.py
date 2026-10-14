@@ -3,11 +3,12 @@
 过期在读取时计算，不存状态，只是提示，不修改、不删除。``_stale`` 逐项列出原因 ``{ref, reason}``：
 
 - ``document``：Artifact 的文档文件不在，或内容与登记的哈希不同；
-- ``removed``：文档头部 ``nodes_used`` 中的对象（或记录所属的 Artifact、来源引用的材料）已不在库中。删除节点时
-  graph-doc 一并删掉指向它的 ``USED`` 边，所以按不可变的文档头部核对，而不是看现存的边；
+- ``removed``：文档中引用的对象（或记录所属的 Artifact、来源引用的材料）已不在库中。删除节点时 graph-doc 一并
+  删掉指向它的 ``USED`` 边，所以按文档本身核对，而不是看现存的边。共同产物的引用由类型契约从当前版本的文档中
+  找出（:func:`references`），旧版 Agent 算子的产物按文档头部的 ``nodes_used``；
 - ``material``：所用材料的文件不在，或哈希与登记的不同；
 - ``superseded``：所用材料已被同一论文的新版本取代（材料上的 ``superseded_by``），另带 ``by`` 给出新材料；
-- ``revised``：所用的有据层或解释层记录在产物形成之后被修订过（改了内容、标签或出边），另带 ``commit`` 指出
+- ``revised``：所用的有据层或解释层记录在产物当前版本形成之后被修订过（改了内容、标签或出边），另带 ``commit`` 指出
   最早的那次提交，可以用 Show 查看改了什么。增删改出边时，agent 的正反关系不算；别人给解释层记录新增出边也不算。
   实体与概念的改动（如补别名、描述）不算，否则提示会被噪声淹没；
 - ``stale input``：所用的 Artifact 本身可能过期。
@@ -26,14 +27,16 @@ from ..model.refs import parse_ref
 from ..model.schema import ARTIFACT, STANCE_RELS, kind_of
 from ..query.materials import load_lines, materials
 from ..store.store import Store
-from .document import header_of
+from .document import header_of, parse, strip_checkout
+from .types import TYPES
 
 
 def documents(store: Store, ids: Iterable[str]) -> dict[str, dict[str, Any]]:
-    """库中的 Artifact → ``{op, material}``；``material`` 是 ``{id, path, content_hash}``，没有登记时为 ``None``。"""
+    """库中的 Artifact → ``{op, material}``；``material`` 是当前版本（没有被取代）的 ``{id, path, content_hash}``，
+    没有登记时为 ``None``。"""
     rows = store.query(
         """UNWIND $ids AS id MATCH (a:Artifact {id: id})
-           OPTIONAL MATCH (m:Material)-[:MATERIAL_OF]->(a)
+           OPTIONAL MATCH (m:Material)-[:MATERIAL_OF]->(a) WHERE m.superseded_by IS NULL
            RETURN a.id AS id, a.op AS op, m.id AS mid, m.path AS path, m.content_hash AS content_hash""",
         ids=sorted(set(ids)),
     )
@@ -71,7 +74,7 @@ def stale(store: Store, ids: Iterable[str]) -> dict[str, list[dict[str, str]]]:
         if text is None:
             memo[art_id] = [{"ref": material["id"] if material else art_id, "reason": "document"}]
             return memo[art_id]
-        refs = [r for r in (parse_ref(str(t)) for t in header_of(text).get("nodes_used") or []) if r is not None]
+        refs = [r for r in (parse_ref(t) for t in references(info["op"], text)) if r is not None]
         heads = {r.head for r in refs}
         kinds = store.kinds(heads)
         found = materials(store, {r.head for r in refs if r.kind == "source"})
@@ -94,15 +97,32 @@ def stale(store: Store, ids: Iterable[str]) -> dict[str, list[dict[str, str]]]:
             elif kinds[ref.head] == ARTIFACT and visit(ref.head):
                 reasons.append({"ref": ref.text, "reason": "stale input"})
         used = [r.head for r in refs if r.kind != "source" and kinds.get(r.head) not in (None, ARTIFACT)]
-        reasons += [{"ref": head, "reason": "revised", "commit": commit} for head, commit in revised(store, art_id, used)]
+        reasons += [
+            {"ref": head, "reason": "revised", "commit": commit} for head, commit in revised(store, art_id, used)
+        ]
         memo[art_id] = reasons
         return reasons
 
     return {art_id: visit(art_id) for art_id in dict.fromkeys(ids)}
 
 
+def references(op: str | None, text: str) -> list[str]:
+    """产物文档中的引用：共同产物由类型契约找出，旧版 Agent 算子的产物取头部的 ``nodes_used``。"""
+    kind = TYPES.get(op or "")
+    if kind is None:
+        return [str(t) for t in header_of(text).get("nodes_used") or []]
+    try:
+        doc = parse(strip_checkout(text))
+    except ValueError:
+        return []
+    return list(dict.fromkeys(m.text for m in kind.mentions(doc)))
+
+
 def revised(store: Store, art_id: str, ids: Iterable[str]) -> list[tuple[str, str]]:
-    """``ids`` 中在 ``art_id`` 形成之后被修订过的有据层与解释层记录 → 最早的那次提交，按 ``ids`` 的顺序。"""
+    """``ids`` 中在 ``art_id`` 当前版本形成之后被修订过的有据层与解释层记录 → 最早的那次提交，按 ``ids`` 的顺序。
+
+    当前版本形成的提交取产物节点与当前版本文档两者创建提交中较晚的一个：旧版产物只有一个版本，内容相同的文档
+    可能沿用更早写入的 Material。"""
     rows = store.query(
         """UNWIND $ids AS id MATCH (n {id: id})
            RETURN n.id AS id, labels(n) AS labels, n.stated_by AS stated_by""",
@@ -113,7 +133,10 @@ def revised(store: Store, art_id: str, ids: Iterable[str]) -> list[tuple[str, st
     if not layers:
         return []
     later = store.query(
-        """MATCH (f:Commit)-[:TOUCHED {op: 'create'}]->(:Artifact {id: $art})
+        """MATCH (a:Artifact {id: $art})<-[:TOUCHED {op: 'create'}]-(created:Commit)
+           OPTIONAL MATCH (a)<-[:MATERIAL_OF]-(m:Material) WHERE m.superseded_by IS NULL
+           OPTIONAL MATCH (m)<-[:TOUCHED {op: 'create'}]-(written:Commit)
+           WITH CASE WHEN written IS NOT NULL AND written.seq > created.seq THEN written ELSE created END AS f
            UNWIND $ids AS id MATCH (c:Commit {branch: f.branch})-[:TOUCHED]->({id: id}) WHERE c.seq > f.seq
            RETURN DISTINCT c.id AS id, c.seq AS seq ORDER BY seq""",
         art=art_id,
@@ -142,7 +165,10 @@ def _revised_in(changeset: Changeset, layers: dict[str, str]) -> set[str]:
         src = e.key.src
         if src not in layers or src in deleted or e.key.dst in deleted:
             continue
-        if e.key.type in STANCE_RELS and "agent" in ((e.before or {}).get("stated_by"), (e.after or {}).get("stated_by")):
+        if e.key.type in STANCE_RELS and "agent" in (
+            (e.before or {}).get("stated_by"),
+            (e.after or {}).get("stated_by"),
+        ):
             continue
         if e.before is None and layers[src] != "grounded":
             continue  # 别人给解释层记录新增出边，不是修订
@@ -163,4 +189,4 @@ def readonly(store: Store, ids: Iterable[str]) -> dict[str, dict[str, Any]]:
     return out
 
 
-__all__ = ["document_text", "documents", "readonly", "revised", "stale"]
+__all__ = ["document_text", "documents", "readonly", "references", "revised", "stale"]

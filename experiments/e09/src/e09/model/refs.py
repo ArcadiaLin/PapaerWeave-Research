@@ -2,7 +2,9 @@
 
 - 对象引用：节点 id，如 ``exp_0012``、``art_0003``；
 - 来源引用：``<材料 id 或带材料的节点 id>::<章节>::<start>:<end>``，与 graph-doc 的 ``source_refs`` 相同；
-- 记录引用：``<artifact id>#<key>``，指 Artifact 数据块中的一条记录。
+- 记录引用：``<artifact id>#<key>``，指 Artifact 中的一条记录：旧版 Agent 算子是数据块中的记录，共同产物是按行键
+  对齐的表格行，``key`` 为行键各字段以 ``+`` 相连（如 ``art_0003#method_0001++paper_0001+24+96``），字段可以含
+  ``/`` 与空格（operators.md §4.1）。
 
 正文中的引用写在方括号里，如 ``[exp_0012]``、``[art_0003#dlinear-etth1-96]``；一对方括号里可以用逗号或分号
 隔开多个引用。方括号里不全是引用时（如普通的方括号文字）不当作引用；Markdown 链接 ``[文字](地址)`` 也不算。
@@ -22,7 +24,7 @@ from .schema import LOCATOR
 RefKind = Literal["object", "source", "record"]
 
 NODE_ID = re.compile(r"[a-z]+_[0-9a-f]{4,}")  # 模型节点、Artifact 与 Material 的 id
-RECORD = re.compile(r"(?P<art>art_\d{4,})#(?P<key>[A-Za-z0-9_.~-]+)")
+RECORD = re.compile(r"(?P<art>art_\d{4,})#(?P<key>[^\s\[\]#](?:[^\[\]#\n]*[^\s\[\]#])?)")
 RECORD_KEY = re.compile(r"[A-Za-z0-9_.-]+")  # 记录键、项键与矩阵的行列键；~ 留给 Check 的成对键与矩阵的格子
 _BRACKET = re.compile(r"\[([^\[\]\n]+)\](?!\()")
 _SEPARATOR = re.compile(r"\s*[,;]\s+(?=[a-z]+_[0-9a-f]{4,})")

@@ -13,6 +13,7 @@ from typing import Any
 from ..model.schema import (
     AGENT_OPS,
     ARTIFACT,
+    ARTIFACT_TYPES,
     CONCEPT,
     CONTENT,
     ENTITY,
@@ -52,7 +53,7 @@ CONDITIONS = {
     "stub": Condition(ENTITY | CONCEPT, prop="stub", values=frozenset({True, False})),
     "stated_by": Condition(frozenset({"Contribution"}), prop="stated_by", values=STATED_BY),
     "formed_by": Condition(CONTENT | _ARTIFACT, prop="formed_by"),
-    "op": Condition(_ARTIFACT, prop="op", values=frozenset(AGENT_OPS)),
+    "op": Condition(_ARTIFACT, prop="op", values=frozenset(AGENT_OPS) | frozenset(ARTIFACT_TYPES)),
     "session": Condition(_ARTIFACT, prop="session"),
     "used": Condition(_ARTIFACT, rel="USED"),
 }
