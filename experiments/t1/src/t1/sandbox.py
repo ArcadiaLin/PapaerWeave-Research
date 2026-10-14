@@ -22,15 +22,15 @@ import contextlib
 import json
 import os
 import re
-import signal
 import shutil
+import signal
 import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from e09.config import REPO
+from .paths import REPO
 
 BRIDGE = Path(__file__).with_name("bridge.py")
 LLM_PORT = 30000  # 沙箱内大模型服务的回环端口

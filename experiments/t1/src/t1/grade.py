@@ -28,9 +28,9 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from e09.config import REPO
 
 from . import source_tables, versions
+from .paths import REPO
 from .probe import PROBES, condition_of, gold_at, load
 
 

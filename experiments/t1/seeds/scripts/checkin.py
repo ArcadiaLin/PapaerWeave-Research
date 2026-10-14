@@ -1,9 +1,9 @@
-"""在一次性 Neo4j 上种入锚点与两篇种子论文，再检入种子产物（只用标准库）：先是 ../leaderboards/ 的全部 Leaderboard
+"""在一次性 Neo4j 上种入锚点与两篇种子论文，再检入种子产物（只用标准库与 t1）：先是 ../leaderboards/ 的全部 Leaderboard
 （一个提交，id 按文件名顺序为 art_0001…），再是 ../skills/*/SKILL.md（另一个提交）。
 
 按 evaluation_draft §10.1，这里不 import e09：种库用 e09 的命令行（``python -m e09 <文档> --source ... --apply``），
-检入用 MCP 入口（``python -m e09.mcp``，子进程，stdio 上逐行 JSON-RPC），写者工作目录（``E09_WORKDIR``）是 ``seeds/``，
-登录身份 ``E09_USER=seed``。论文材料复制到临时目录，作为 ``E09_DATA``。
+检入用 MCP 入口（``python -m e09.mcp``，子进程，经 :mod:`t1.mcp_client`），写者工作目录（``E09_WORKDIR``）
+是 ``seeds/``，登录身份 ``E09_USER=seed``。论文材料复制到临时目录，作为 ``E09_DATA``。
 
     E09_NEO4J_URI=bolt://localhost:7692 .venv/bin/python experiments/t1/seeds/scripts/checkin.py [--check-only]
 
@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 import shutil
@@ -24,6 +23,8 @@ import sys
 import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
+
+from t1.mcp_client import Client, field, status
 
 REPO = Path(__file__).resolve().parents[4]
 CORPUS = REPO / "data/raw/t1-pilot-corpus"
@@ -59,8 +60,7 @@ def main() -> int:
             [sys.executable, "-m", "e09", str(CORPUS / "docs" / doc), "--source", source, "--apply", *extra],
             env=env, capture_output=True, text=True,
         )
-        status = re.search(r"^status: (\w+)", run.stdout, re.M)
-        print(f"seed {doc}: rc={run.returncode} status={status[1] if status else '?'}")
+        print(f"seed {doc}: rc={run.returncode} status={status(run.stdout) or '?'}")
         if run.returncode != 0:
             print(run.stdout[-2000:], run.stderr[-2000:], sep="\n")
             return 1
@@ -68,78 +68,25 @@ def main() -> int:
     mcp_env = {**env, "E09_WORKDIR": str(SEEDS), "E09_USER": "seed", "E09_AGENT": "seed-script"}
     replies = []
     ok = True
-    with Client([sys.executable, "-m", "e09.mcp"], mcp_env) as client:
+    with Client([sys.executable, "-m", "e09.mcp"], mcp_env, name="t1-seed-checkin") as client:
         for pattern, abstract in BATCHES:
             docs = sorted(p.relative_to(SEEDS).as_posix() for p in SEEDS.glob(pattern))
             request = {"artifact_doc": docs, "update_abstract": abstract}
             replies.append((f"check {pattern}", client.call("CheckIn", request)))
-            ok = _status(replies[-1][1]) == "checked"
+            ok = status(replies[-1][1]) == "checked"
             if ok and not args.check_only:
                 replies.append((f"confirm {pattern}", client.call("CheckIn", {**request, "confirm": True})))
-                ok = _status(replies[-1][1]) == "committed"
+                ok = status(replies[-1][1]) == "committed"
             if not ok:
                 break
     out = args.out or data / "checkin.txt"
     out.write_text("".join(f"## {phase}\n\n{text}\n\n" for phase, text in replies), encoding="utf-8")
     for phase, text in replies:
-        print(f"{phase}: status={_status(text)} {_commit(text)}")
+        print(f"{phase}: status={status(text)} {field(text, "commit") or ""}")
         for line in _summary(text):
             print("  " + line)
     print(f"full replies: {out}")
     return 0 if ok else 1
-
-
-class Client:
-    """最小的 MCP stdio 客户端：初始化后逐个调用工具，回复是工具结果的文本。"""
-
-    def __init__(self, cmd: list[str], env: dict[str, str]) -> None:
-        self.cmd, self.env, self.next_id = cmd, env, 0
-
-    def __enter__(self) -> Client:
-        self.proc = subprocess.Popen(
-            self.cmd, env=self.env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-        )
-        self._request("initialize", {
-            "protocolVersion": "2025-06-18", "capabilities": {},
-            "clientInfo": {"name": "t1-seed-checkin", "version": "1"},
-        })
-        self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        self.proc.stdin.close()
-        self.proc.wait(timeout=60)
-
-    def call(self, tool: str, arguments: dict) -> str:
-        result = self._request("tools/call", {"name": tool, "arguments": arguments})
-        return "\n".join(c.get("text", "") for c in result.get("content", []))
-
-    def _request(self, method: str, params: dict) -> dict:
-        self.next_id += 1
-        self._send({"jsonrpc": "2.0", "id": self.next_id, "method": method, "params": params})
-        while True:
-            line = self.proc.stdout.readline()
-            if not line:
-                raise RuntimeError(f"MCP server exited during {method}")
-            msg = json.loads(line)
-            if msg.get("id") == self.next_id:
-                if "error" in msg:
-                    raise RuntimeError(f"{method}: {msg['error']}")
-                return msg["result"]
-
-    def _send(self, msg: dict) -> None:
-        self.proc.stdin.write(json.dumps(msg) + "\n")
-        self.proc.stdin.flush()
-
-
-def _status(text: str) -> str | None:
-    m = re.search(r"^status: (\w+)", text, re.M)
-    return m[1] if m else None
-
-
-def _commit(text: str) -> str:
-    m = re.search(r"^commit: (\S+)", text, re.M)
-    return m[1] if m else ""
 
 
 def _summary(text: str) -> list[str]:

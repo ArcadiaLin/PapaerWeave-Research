@@ -26,16 +26,16 @@ import re
 import shutil
 import subprocess
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import yaml
-from e09.config import REPO
 
 from . import source_tables, versions
+from .paths import REPO
 from .sandbox import Arm, Paths, Writer, prepare, run_session
 
 PROBES = REPO / "experiments/t1/config/probes-ltsf.yml"
