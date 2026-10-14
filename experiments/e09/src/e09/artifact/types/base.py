@@ -9,7 +9,11 @@
 - **比对单位**（:meth:`ArtifactType.units`）：按行键对齐的表格行，以及其余的逐行文字；版本之间的改动与每一行的
   编辑者按它们计算（:mod:`e09.artifact.versions`）；
 - **记录**（:meth:`ArtifactType.records`）：可用 ``<artifact>#<key>`` 引用的行；
-- **取出的位置**（:meth:`ArtifactType.checkout_path`）：``FetchArtifact`` 写到写者工作目录的哪里。
+- **取出的位置**（:meth:`ArtifactType.checkout_path`）：``FetchArtifact`` 写到写者工作目录的哪里；
+- **轻度规则**（:meth:`ArtifactType.rules`）：只作用于这次新增与修改的单位，拒绝的记为错误，其余只警告（如数字
+  不在所引的行中）；需要所引来源的行时经 :data:`Lookup` 取得；
+- **统计与附注**（:meth:`ArtifactType.stats`、:meth:`ArtifactType.notes`）：检入时返回的统计，以及读取时现算、
+  不写进文档的附注（如 Leaderboard 每位编辑者写的行数、所引论文已有新版本的行、同一格的多个值）。
 
 类型的说明与规则改了，``version`` 随之改变，记在产物节点的 ``op_version`` 上。
 """
@@ -29,7 +33,25 @@ from ...model.refs import cited
 from ..document import Parsed, Table, cells_of, file_name, tables
 
 Report = Callable[[str, int, str], None]
-"""报告一个错误：``(rule, 行号, 说明)``。"""
+"""报告一个错误或警告：``(rule, 行号, 说明)``。"""
+
+
+@dataclass(frozen=True, slots=True)
+class Source:
+    """一个来源引用所指的材料：``owner`` 是材料所属的节点，``superseded_by`` 是取代它的新版本材料，``lines`` 是所引
+    的那几行（文件不在或哈希不符时为 ``None``）。"""
+
+    material: str
+    owner: str | None
+    superseded_by: str | None
+    lines: list[str] | None
+
+
+Lookup = Callable[[str], "Source | None"]
+"""来源引用的写法 → 所指的材料；不是来源引用或材料不在时为 ``None``。"""
+
+Authors = Mapping[int, tuple[str, int]]
+"""文档的行号 → 最近编辑它的 ``(编辑者, 版本号)``，由版本链推出（e09.artifact.versions.blame）。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,11 +160,42 @@ class ArtifactType:
         """可引用的行：规范化后不区分大小写的行键 → 行键。"""
         return {}
 
+    # ── 轻度规则、统计与附注 ──
+
+    def rules(self, doc: Parsed, changed: set[int], lookup: Lookup, report: Report, warn: Report) -> None:
+        """这次新增与修改的单位（``changed`` 是它们的行号）上的轻度规则：拒绝的经 ``report``，其余经 ``warn``。"""
+
+    def stats(self, doc: Parsed) -> dict[str, Any]:
+        """检入时返回的统计；只是报告项，不是校验。"""
+        return {}
+
+    def notes(self, doc: Parsed, authors: Authors, lookup: Lookup) -> dict[str, Any]:
+        """读取时现算的附注，不写进文档；行号是 ``doc`` 中的行号。"""
+        return {}
+
     # ── 取出 ──
 
     def checkout_path(self, header: Mapping[str, Any]) -> str:
         """取出时在写者工作目录中的相对路径。"""
         return f"artifacts/{file_name(self.title(header) or 'artifact')}"
+
+
+def cited_paragraphs(doc: Parsed) -> list[tuple[int, bool]]:
+    """正文的段落（以空行分隔，只有标题的段落不计）：``(起始行号, 是否至少有一处方括号引用)``。"""
+    out: list[tuple[int, bool]] = []
+    start: int | None = None
+    block: list[str] = []
+    lines = doc.lines
+    for n in range(doc.body_start, len(lines) + 2):
+        line = lines[n - 1] if n <= len(lines) else ""
+        if line.strip():
+            start = n if start is None else start
+            block.append(line)
+            continue
+        if start is not None and not all(b.lstrip().startswith("#") for b in block):
+            out.append((start, any(cited(b) for b in block)))
+        start, block = None, []
+    return out
 
 
 _TOP_KEY = re.compile(r"(?P<key>[A-Za-z_][\w-]*)\s*:")
@@ -157,4 +210,17 @@ def header_line(doc: Parsed, name: str) -> int:
     return 1
 
 
-__all__ = ["ArtifactType", "Mention", "Report", "Unit", "header_line", "identity", "leading_id", "normalize"]
+__all__ = [
+    "ArtifactType",
+    "Authors",
+    "Lookup",
+    "Mention",
+    "Report",
+    "Source",
+    "Unit",
+    "cited_paragraphs",
+    "header_line",
+    "identity",
+    "leading_id",
+    "normalize",
+]

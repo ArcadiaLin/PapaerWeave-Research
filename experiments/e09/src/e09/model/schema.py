@@ -26,7 +26,7 @@ ARTIFACT = "Artifact"  # 只有主 Label，不分 kind（§8）
 # 产出 Artifact 的 Agent 算子（operators.md §4），记在 Artifact 的 op 上
 AGENT_OPS = ("Extract", "Summarize", "Generate", "Check", "Verify", "Filter", "MatrixConstruct")
 # 经 CheckIn 检入的共同产物的类型（e09.artifact.types），同样记在 op 上；旧算子在 A8 下线后只剩这些
-ARTIFACT_TYPES = ("Leaderboard", "Generate", "Skill")
+ARTIFACT_TYPES = ("Leaderboard", "CompareSettings", "Verify", "Summarize", "Generate", "Skill")
 SYSTEM_LABELS = frozenset({"NameKey", "Material", "IngestBatch"})
 
 # 有名称的 kind：name 与 aliases 注册为 NameKey（§2.2、§3.2、§5）。Issue、Proposition 是陈述型，没有名称。

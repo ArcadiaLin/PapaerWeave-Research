@@ -198,3 +198,34 @@ def test_skill_round_trip(store: Store, writers: dict[str, Writer]) -> None:
     assert done["status"] == "committed" and done["items"][0]["version"] == 2
     node = store.query("MATCH (a:Artifact {id: $id}) RETURN a.title AS t, a.abs AS a", id=art)[0]
     assert node == {"t": "leaderboard", "a": "How to add results to a Leaderboard."}
+
+
+def test_light_rules_warnings_and_notes(store: Store, writers: dict[str, Writer]) -> None:
+    claude = writers["claude"]
+    item = claude.fetch("art_0001")["items"][0]
+    assert item["notes"]["rows_by_contributor"] == [{"editor": "claude", "rows": 2, "versions": [1, 3]}]
+    text = claude.read(PATH).replace(
+        "setting: {variate: multivariate}\n", "setting: {variate: multivariate}\nmetrics: {MSE: lower}\n"
+    )
+    text = text.replace("| 0.375 |", "| 0.5 |").replace("| 0.865 |", "| 12 |")  # 所引的行是 "line 10"…"line 12"
+    claude.write(PATH, text)
+    checked = claude.check_in(PATH, message="Declare metrics; fix two numbers.")
+    warnings = [(w["rule"], w["at"]) for w in checked["items"][0]["warnings"]]
+    assert ("number", f"{PATH}:16") in warnings and ("number", f"{PATH}:17") not in warnings
+    assert ("structure", f"{PATH}:14") in warnings  # 缺 origin 列
+
+    bad = text.replace("| 12 | paper_0001::5.2 Comparison::12 |", "| twelve | paper_0001::5.2 Comparison::12 |")
+    claude.write(PATH, bad)
+    assert rules(claude.check_in(PATH)) == [("schema", f"{PATH}:17")]
+
+    claude.write(PATH, text)
+    done = claude.check_in(PATH, message="Declare metrics; fix two numbers.", confirm=True)
+    entry = done["items"][0]
+    assert entry["version"] == 4 and entry["warnings"]
+    assert entry["notes"]["rows_by_contributor"] == [{"editor": "claude", "rows": 2, "versions": [4]}]
+
+
+def test_generate_stats(writers: dict[str, Writer]) -> None:
+    alice = writers["alice"]
+    alice.write("stats.md", "---\ntype: Generate\ntitle: Stats\nabs: Stats.\n---\nOne [exp_0001].\n\nTwo.\n")
+    assert alice.check_in("stats.md")["items"][0]["stats"] == {"paragraphs": 2, "cited_paragraphs": 1}

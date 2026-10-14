@@ -10,6 +10,8 @@
 - ``at``（提交 id 或分支名）给出时取该提交时的版本，只供阅读：检入时 ``base`` 不是最新版本会被拒绝。
 - ``hint`` 是编辑提示，由提交链与各版本的比对算出：版本号、最近的编辑者与修改说明、各编辑者，以及“自你上次
   编辑以来别人改了哪些行”（``me`` 是调用者）。行号是取出的文件中的行号。
+- ``notes`` 是类型给出的、读取时现算的附注（如 Leaderboard 每位编辑者写的行数、所引论文已有新版本的行、同一格
+  的多个值），不写进文档。
 - 旧版 Agent 算子的产物写入后不可修改，不能取出；用 ``ReadEvidence`` 阅读。
 """
 
@@ -23,7 +25,9 @@ from ..draft import Workdir
 from ..model.schema import ARTIFACT
 from ..query.versions import pin
 from ..store.store import ContractError, Store
+from .checkin import relocate
 from .document import Parsed, add_checkout, line_map
+from .sources import lookup, pins
 from .types import TYPES, ArtifactType
 from .versions import Version, blame, history, load, since
 
@@ -79,7 +83,7 @@ def fetch(
                 {"artifact": art_id, "msg": "a version's document is missing or changed; the store needs repair"}
             )
             continue
-        items.append(_one(kind, art_id, shown, docs, versions[-1], workdir, me, taken))  # type: ignore[arg-type]
+        items.append(_one(store, kind, art_id, shown, docs, versions[-1], workdir, me, taken))  # type: ignore[arg-type]
     steps = (
         "Edit the files with your own tools, then call CheckIn with artifact_doc (the paths) and update_abstract "
         "(what you changed and why). Do not edit the id and base lines."
@@ -88,6 +92,7 @@ def fetch(
 
 
 def _one(
+    store: Store,
     kind: ArtifactType,
     art_id: str,
     versions: list[Version],
@@ -121,7 +126,14 @@ def _one(
             f"this is v{target.number}; the latest is v{latest.number} ({latest.commit}). "
             "CheckIn accepts only edits based on the latest version"
         )
-    out["hint"] = _hint(kind, versions, docs, me, line_map(text, doc.text))
+    lines = line_map(text, doc.text)
+    out["hint"] = _hint(kind, versions, docs, me, lines)
+    history_docs = [(v.author, v.number, d) for v, d in zip(versions, docs, strict=True)]
+    authors = {b.unit.line: (b.author, b.version) for b in blame(kind, history_docs)}
+    pinned = pins(store, art_id) if target.number == latest.number else {}  # 旧版本按当时的库解析，不另求
+    notes = kind.notes(doc, authors, lookup(store, pinned))
+    if notes:
+        out["notes"] = relocate(notes, lambda n: lines[n - 1] if 0 < n <= len(lines) else n)
     return out
 
 

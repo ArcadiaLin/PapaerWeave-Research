@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from e09.artifact.document import add_checkout, header_field, line_map, parse, strip_checkout, tables
-from e09.artifact.types import TYPES
+from e09.artifact.types import TYPES, Source
 from e09.artifact.versions import blame, compare, since
 from e09.model.refs import parse_ref
 
@@ -140,3 +140,102 @@ def test_since_your_last_edit() -> None:
     versions = [("alice", 1, v1), ("bob", 2, v2)]
     changed = since(blame(kind, versions), blame(kind, versions[:1]), "alice", 1)
     assert [(c["what"], c["editor"]) for c in changed] == [("gamma", "bob")]
+
+
+# ── A4：轻度规则、统计与附注 ──────────────────────────────────────────
+
+METRICS = LEADERBOARD.replace(
+    "setting: {variate: multivariate}\n", "setting: {variate: multivariate}\nmetrics: {MSE: lower}\n"
+)
+
+
+def fake_lookup(owner: str, lines: list[str], superseded: str | None = None):
+    def get(text: str) -> Source | None:
+        ref = parse_ref(text)
+        if ref is None or ref.kind != "source":
+            return None
+        return Source("material_0aa1", owner if ref.head == "paper_0001" else "paper_0002", superseded, lines)
+
+    return get
+
+
+def run_rules(text: str, changed: set[int], lookup) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
+    errors: list[tuple[str, int]] = []
+    warnings: list[tuple[str, int]] = []
+    TYPES["Leaderboard"].rules(
+        parse(text), changed, lookup, lambda r, n, m: errors.append((r, n)), lambda r, n, m: warnings.append((r, n))
+    )
+    return errors, warnings
+
+
+def test_leaderboard_numbers_are_checked_against_the_cited_lines() -> None:
+    doc = parse(METRICS)
+    rows = {r.line for t in tables(doc) for r in t.rows if "method" in t.columns}
+    errors, warnings = run_rules(METRICS, rows, fake_lookup("paper_0001", ["| Informer | 0.577 | 0.549 |"]))
+    assert errors == []
+    assert ("number", 15) in warnings  # PatchTST 的 0.370 不在所引的行中
+    assert ("number", 14) not in warnings
+    assert ("format", 15) in warnings  # lookback 写成文字
+    assert ("structure", 12) in warnings  # 缺 role、origin 列
+
+    errors, _ = run_rules(METRICS, set(), fake_lookup("paper_0001", []))
+    assert errors == []  # 没有改动的行不检查
+
+
+def test_leaderboard_rows_need_a_source_in_their_paper() -> None:
+    text = METRICS.replace("| 0.577 | paper_0001::4.2::120 |", "| 0.577 |  |").replace("| 0.370 |", "| n/a |")
+    errors, _ = run_rules(text, {14, 15}, fake_lookup("paper_0001", ["0.37"]))
+    assert errors == [("schema", 14), ("schema", 15)]  # 缺 source；MSE 不是数字
+    wrong = METRICS.replace("| paper_0001 Informer | 96 |", "| paper_0002 | 96 |")
+    errors, _ = run_rules(wrong, {14}, fake_lookup("paper_0001", ["0.577"]))
+    assert errors == [("schema", 14)]  # source 不在该行论文的材料中
+
+
+def test_leaderboard_notes() -> None:
+    text = METRICS.replace(
+        "| method_0002 PatchTST | PatchTST/64 | paper_0002 | best of 24–720 | 96 |",
+        "| method_0001 Informer |  | paper_0002 | 96 | 24 |",
+    )
+    doc = parse(text)
+    notes = TYPES["Leaderboard"].notes(
+        doc, {14: ("seed", 1), 15: ("bob", 2)}, fake_lookup("paper_0001", [], "material_0bb2")
+    )
+    assert notes["rows_by_contributor"] == [
+        {"editor": "seed", "rows": 1, "versions": [1]},
+        {"editor": "bob", "rows": 1, "versions": [2]},
+    ]
+    assert [(s["at"], s["newer"]) for s in notes["superseded_sources"]] == [
+        (14, "material_0bb2"),
+        (15, "material_0bb2"),
+    ]
+    [cell] = notes["cells_with_several_values"]
+    assert cell["cell"] == "method_0001 · 24 · MSE" and cell["kind"] == "different papers"
+
+
+def test_contract_only_types() -> None:
+    def errors_of(name: str, text: str) -> list[tuple[str, int]]:
+        found: list[tuple[str, int]] = []
+        TYPES[name].check(parse(text), lambda r, n, m: found.append((r, n)))
+        return found
+
+    verify = "---\ntype: Verify\ntitle: V\nabs: A.\nclaim: claim_0042\nverdict: T\n---\nIt holds.\n"
+    assert errors_of("Verify", verify) == [("schema", 8)]  # T 须有引用
+    assert errors_of("Verify", verify.replace("It holds.", "It holds [exp_0001].")) == []
+    assert TYPES["Verify"].key(parse(verify).header) == "verify|claim_0042"
+
+    summary = "---\ntype: Summarize\ntitle: S\nabs: A.\n---\n## Points\n\nFirst [exp_0001].\n\nSecond.\n"
+    assert errors_of("Summarize", summary) == [("schema", 10)]
+
+    compare_doc = (
+        "---\ntype: CompareSettings\ntitle: C\nabs: A.\nitems: [exp_0002, exp_0001]\nverdict: U\n---\n"
+        "| dimension | left | right | same | basis |\n| --- | --- | --- | --- | --- |\n"
+        "| lookback | 512 | 720 | F | [paper_0001::4.1::10:11] |\n| split | 6:2:2 | 6:2:2 | T |  |\n"
+    )
+    assert errors_of("CompareSettings", compare_doc) == [("schema", 11)]
+    swapped = compare_doc.replace("[exp_0002, exp_0001]", "[exp_0001, exp_0002]")
+    assert TYPES["CompareSettings"].key(parse(compare_doc).header) == TYPES["CompareSettings"].key(
+        parse(swapped).header
+    )
+
+    generate = "---\ntype: Generate\ntitle: G\nabs: A.\n---\nOne [exp_0001].\n\nTwo.\n"
+    assert TYPES["Generate"].stats(parse(generate)) == {"paragraphs": 2, "cited_paragraphs": 1}

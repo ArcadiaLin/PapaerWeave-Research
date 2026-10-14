@@ -16,7 +16,11 @@
    一致、行号不越界（``reference``）。由引用得出 ``USED`` 边；
 5. 去掉 ``id``、``base`` 两行后与最新版本相同时为 ``noop``；没有身份键的类型新建时，内容与同一编辑者写的同类
    产物的某个版本相同，视为重试（``existing``）；
-6. 与基础版本逐单位比对，得出改动与 ``others``（:mod:`e09.artifact.versions`）。
+6. 与基础版本逐单位比对，得出改动与 ``others``（:mod:`e09.artifact.versions`）；
+7. 类型的轻度规则只作用于新增与修改的行：拒绝的是错误，其余是 ``warnings``（如数字不在所引的行中）。
+
+``checked`` 的每份文档另给 ``stats``（类型的统计）与 ``warnings``；``committed`` 的每份另给读取时现算的 ``notes``
+（如 Leaderboard 每位编辑者写的行数、所引论文已有新版本的行、同一格的多个值）。
 
 任一份有错误时整次不写入。``others`` 不为空时须给出 ``reason``。
 
@@ -61,6 +65,7 @@ from .document import (
     strip_checkout,
     version_file_name,
 )
+from .sources import lookup
 from .stale import document_text, documents
 from .types import COMMIT_TYPES, TYPES, ArtifactType, Mention
 from .versions import Changes, Version, blame, compare, history, load
@@ -85,6 +90,8 @@ class Item:
     used: dict[str, dict[str, Any]] = field(default_factory=dict)
     action: str = "create"
     changes: Changes | None = None
+    history: list[tuple[str, int, Parsed]] = field(default_factory=list)  # (编辑者, 版本号, 文档)，从最早到最新
+    warnings: list[dict[str, str]] = field(default_factory=list)
 
     def at(self, line: int) -> str:
         """写者文件中的位置 ``<文件>:<行号>``；``line`` 是要保存的文档中的行号。"""
@@ -211,13 +218,29 @@ def _prepare(store: Store, draft: Draft, me: str, problems: Problems) -> Item:
             return item
         item.action = "update"
         item.changes = _compare(store, item, me, problems)
-        return item
-    if item.key is None and (existing := _retry(store, kind.name, me, sha)) is not None:
+    elif item.key is None and (existing := _retry(store, kind.name, me, sha)) is not None:
         item.art_id, item.action = existing, "existing"
         item.changes = Changes()
         return item
-    item.changes = compare([], kind.units(item.doc), me)
+    else:
+        item.changes = compare([], kind.units(item.doc), me)
+    if item.changes is not None:
+        _rules(store, item, problems)
     return item
+
+
+def _rules(store: Store, item: Item, problems: Problems) -> None:
+    """类型的轻度规则，只作用于这次新增与修改的行：拒绝的记入 ``problems``，其余记为警告。"""
+    assert item.kind is not None and item.doc is not None and item.changes is not None
+    changed = {c["at"] for c in (*item.changes.added, *item.changes.modified)}
+
+    def warn(rule: str, line: int, msg: str) -> None:
+        item.warnings.append({"rule": rule, "at": item.at(line), "msg": msg})
+
+    def report(rule: str, line: int, msg: str) -> None:
+        problems.add(rule, item.at(line), msg)
+
+    item.kind.rules(item.doc, changed, lookup(store), report, warn)
 
 
 def _base(store: Store, item: Item, problems: Problems) -> None:
@@ -367,6 +390,7 @@ def _compare(store: Store, item: Item, me: str, problems: Problems) -> Changes |
             problems.add("document", f"{item.draft.path}:1", msg)
             return None
         history_docs.append((version.author, version.number, doc))
+    item.history = history_docs
     return compare(blame(item.kind, history_docs), item.kind.units(item.doc), me)
 
 
@@ -415,6 +439,10 @@ def _checked(items: list[Item], others: list[tuple[Item, dict[str, Any]]]) -> di
                 row["at"] = f"v{item.versions[-1].number}:{row['at']}" if item.versions else row["at"]
             entry["changes"] = summary
             entry["others"] = [{**o, "at": _position(item, o)} for o in item.changes.others]
+            assert item.kind is not None and item.doc is not None
+            if stats := item.kind.stats(item.doc):
+                entry["stats"] = stats
+            entry["warnings"] = item.warnings
         entries.append(entry)
     steps = "Nothing was written. To write, call CheckIn again with the same artifact_doc and update_abstract"
     steps += " and confirm: true"
@@ -481,6 +509,10 @@ def _write(
         edges += _used_changes(state, art_id, item.used)
         item.art_id = art_id
         done[id(item)] = {"version": number, "document": {"path": path, "material_ref": material}}
+        if notes := _notes(store, item, formed_by, number):
+            done[id(item)]["notes"] = notes
+        if item.warnings:
+            done[id(item)]["warnings"] = item.warnings
 
     meta: dict[str, Any] = {
         "artifacts": [
@@ -526,6 +558,24 @@ def _write(
     return {"status": "committed", "commit": record.id, "items": out_items, "warnings": warnings}
 
 
+def _notes(store: Store, item: Item, me: str, number: int) -> dict[str, Any]:
+    """新版本读取时现算的附注（如 Leaderboard 的每位编辑者写的行数、同一格的多个值），行号换算成写者文件中的。"""
+    assert item.kind is not None and item.doc is not None
+    blamed = blame(item.kind, [*item.history, (me, number, item.doc)])
+    authors = {b.unit.line: (b.author, b.version) for b in blamed}
+    pinned = {t: p["material_ref"] for t, p in item.used.items() if "material_ref" in p}
+    return relocate(item.kind.notes(item.doc, authors, lookup(store, pinned)), item.at)
+
+
+def relocate(value: Any, at: Callable[[int], Any]) -> Any:
+    """把附注中各处的 ``at``（文档中的行号）换算成调用者给的位置。"""
+    if isinstance(value, dict):
+        return {k: at(v) if k == "at" and isinstance(v, int) else relocate(v, at) for k, v in value.items()}
+    if isinstance(value, list):
+        return [relocate(v, at) for v in value]
+    return value
+
+
 def _used_changes(state: Any, art_id: str, used: dict[str, dict[str, Any]]) -> list[EdgeChange]:
     """按新版本重写 ``USED`` 边：删掉不再用的，改动属性变了的，新增新用到的。"""
     existing = {k.dst: props for k, props in state.edges.items() if k.src == art_id and k.type == "USED"}
@@ -566,4 +616,4 @@ def _store_file(store: Store, path: str, document: Document) -> None:
     partial.replace(file)
 
 
-__all__ = ["SOURCE", "check_in"]
+__all__ = ["SOURCE", "check_in", "relocate"]
