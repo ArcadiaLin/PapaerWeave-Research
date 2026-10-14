@@ -280,3 +280,40 @@ def test_search_by_identity(store: Store) -> None:
         with pytest.raises(ContractError) as exc:
             search(store, "Artifact", where={"key": wrong})
         assert where in exc.value.errors[0]["msg"] and exc.value.errors[0]["at"] == "where.key"
+
+
+NEW_EXPERIMENT = """graph-doc: v0.1
+by: alice
+nodes:
+  $ili:
+    kind: Dataset
+    name: ILI
+    description: Weekly influenza-like illness ratios.
+  $exp:
+    kind: Experiment
+    anchors: [S5.T3]
+    text: DLinear on ETTh1 and ILI with a longer look-back window.
+    FROM:
+      - {to: paper_0001, locators: ["5.2 Comparison::20:30"]}
+    EVALUATES:
+      - {to: method_0002, role: target}
+    USES:
+      - {to: dataset_0001, role: evaluation_data}
+      - {to: $ili, role: evaluation_data}
+    ON_TASK: [task_0001]
+"""
+
+
+def test_commit_lists_related_leaderboards(writers: dict[str, Writer]) -> None:
+    alice = writers["alice"]
+    done = alice.commit(NEW_EXPERIMENT)
+    assert done["status"] == "committed", done
+    shared = done["related_artifacts"]
+    assert shared["experiments"] == [done["ids"]["$exp"]]
+    [board] = shared["leaderboards"]
+    assert board["artifact"] == "art_0001" and board["version"] == 4 and board["last_edited_by"] == "claude"
+    assert shared["no_leaderboard_yet"] == [{"dataset": done["ids"]["$ili"], "name": "ILI"}]
+
+    note = f"graph-doc: v0.1\nby: alice\nnodes:\n  {done['ids']['$ili']}:\n    description: Weekly ILI ratios (US).\n"
+    plain = alice.commit(note)
+    assert plain["status"] == "committed" and "related_artifacts" not in plain  # 没有触及 Experiment

@@ -24,6 +24,7 @@ from neo4j import Driver
 from graph_vc import ConflictError, VersionedGraph
 
 from ... import draft
+from ...artifact.related import related
 from ...commit.reader import Neo4jReader
 from ...commit.report import conflict, plan, result
 from ...commit.review import ResolveDeduper
@@ -128,6 +129,8 @@ def execute(call: Context, request: Mapping[str, Any]) -> dict[str, Any]:
         embed=call.sync,
         meta={"draft": file.meta()} if file else None,
     )
+    if out.get("status") == "committed" and (shared := related(store, out["commit"])):
+        out["related_artifacts"] = shared
     return draft.locate_doc(out, file) if file else out
 
 

@@ -18,7 +18,7 @@ from e09.commit import Context as CommitContext
 from e09.commit import Neo4jReader
 from e09.draft import Workdir
 from e09.operators.base import Context
-from e09.operators.db import CHECK_IN, FETCH_ARTIFACT
+from e09.operators.db import CHECK_IN, COMMIT, FETCH_ARTIFACT
 from e09.operators.db.commit import run
 from e09.store import Store, open_graph, setup_database
 
@@ -155,6 +155,9 @@ class Writer:
         if at is not None:
             request["at"] = at
         return FETCH_ARTIFACT.call(self.ctx(), request).details
+
+    def commit(self, text: str) -> dict[str, Any]:
+        return COMMIT.call(self.ctx(), {"doc": text, "source": "test", "dedup": False}).details
 
     def check_in(self, *paths: str, message: str = "Edit.", **extra: Any) -> dict[str, Any]:
         request = {"artifact_doc": list(paths), "update_abstract": message, **extra}
