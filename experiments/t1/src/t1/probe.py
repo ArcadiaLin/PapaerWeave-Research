@@ -48,6 +48,17 @@ def load(path: Path = PROBES) -> dict[str, Any]:
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
+def for_run(config: dict[str, Any], repo: Path) -> dict[str, Any] | None:
+    """这次运行的探针：配置的 ``probes`` 文件去掉 ``probes_exclude`` 中的 id（例如不注入版本事件的运行去掉 G 类）。"""
+    if not config.get("probes"):
+        return None
+    probes = load(repo / config["probes"])
+    exclude = set(config.get("probes_exclude") or [])
+    if unknown := exclude - {p["id"] for p in probes["probes"]}:
+        raise ValueError(f"probes_exclude names unknown probes: {sorted(unknown)}")
+    return {**probes, "probes": [p for p in probes["probes"] if p["id"] not in exclude]}
+
+
 # ---------------------------------------------------------------- 有效范围与金标准
 
 

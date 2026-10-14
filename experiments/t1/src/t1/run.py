@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -69,7 +70,10 @@ class Slot:
 
 
 def schedule(config: dict[str, Any]) -> list[Slot]:
-    """每篇论文两个写者；``alternate`` 时奇数篇按写者列表顺序，偶数篇反过来。版本事件的槽位紧接在它的检查点之后。"""
+    """槽位序列。配置有 ``assignment`` 时按伪用户分配（:func:`assign`），否则按先导的写者轮流（``alternate``）。
+    版本事件的槽位紧接在它的检查点之后。"""
+    if "assignment" in config:
+        return _assigned(config)
     plan = config["schedule"]
     writers, papers = config["writers"], config["corpus"]["papers"]
     every = plan["checkpoint_every_papers"]
@@ -91,16 +95,52 @@ def schedule(config: dict[str, Any]) -> list[Slot]:
     return slots
 
 
+def assign(papers: list[Any], users: list[str], seed: int, overlap: float) -> list[list[str]]:
+    """每篇论文分给哪些伪用户（evaluation_draft §2.1、§4.2）。固定种子：先抽出 ``round(overlap × 篇数)`` 篇重叠的
+    论文，再逐篇随机选一个伪用户，重叠的论文再选一个不同的。总是在完整的伪用户列表上抽，各种写者构成因此共用同一份
+    分配与同样的随机数序列。"""
+    rng = random.Random(seed)
+    overlapped = set(rng.sample(range(len(papers)), round(overlap * len(papers))))
+    out = []
+    for i in range(len(papers)):
+        first = rng.choice(users)
+        out.append([first, rng.choice([u for u in users if u != first])] if i in overlapped else [first])
+    return out
+
+
+def _assigned(config: dict[str, Any]) -> list[Slot]:
+    """按伪用户分配的槽位。``composition`` 选写者构成：构成之外的伪用户的槽位交给构成中的第一位，会话数与论文顺序
+    在各构成之间不变，只差意图与身份。检查点在每 ``checkpoint_every_papers`` 篇的最后一个会话之后。"""
+    if versions.events(config):
+        raise ValueError("version events are not scheduled with pseudo-user assignment")
+    plan, papers = config["assignment"], config["corpus"]["papers"]
+    users = {w["id"]: w for w in config["writers"]}
+    members = config["compositions"][config["composition"]]
+    every = config["schedule"]["checkpoint_every_papers"]
+    slots: list[Slot] = []
+    plan_users = assign(papers, list(users), plan["seed"], plan["overlap"])
+    for n, (paper, chosen) in enumerate(zip(papers, plan_users, strict=True), 1):
+        for i, user in enumerate(chosen):
+            writer = users[user if user in members else members[0]]
+            last = i == len(chosen) - 1 and n % every == 0
+            slots.append(Slot(len(slots) + 1, paper, writer, n // every if last else None))
+    return slots
+
+
 def prompt(config: dict[str, Any], arm: str, slot: Slot, titles: dict[str, str]) -> str:
     paper = slot.paper
     given = paper["arxiv"] if slot.event else paper.get("first_version") or paper["arxiv"]
-    task = slot.writer["task"].format(
-        title=titles[paper["arxiv"].rsplit("v", 1)[0]],
-        arxiv=given,
-        material=f"papers/{given}/paper.md",
-        old_material=f"papers/{paper.get('first_version')}/paper.md",
-        method=paper["method"],
-    )
+    fields = {
+        "title": titles[paper["arxiv"].rsplit("v", 1)[0]],
+        "arxiv": given,
+        "material": f"papers/{given}/paper.md",
+        "old_material": f"papers/{paper.get('first_version')}/paper.md",
+        "method": paper.get("method", ""),
+    }
+    if "background" in slot.writer:  # 伪用户：长期背景 + 各伪用户相同的任务句
+        task = f"{slot.writer['background'].rstrip()}\n\n{config['writer_task'].format(**fields)}"
+    else:
+        task = slot.writer["task"].format(**fields)
     closing = config["writer_closing"].format(store=config["arms"][arm]["store"])
     return f"{task.rstrip()}\n\n{closing.rstrip()}\n"
 
@@ -236,7 +276,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     arms = args.arms.split(",")
     run = Path(config["runner"]["workdir_root"]).expanduser() / args.name
     run.mkdir(parents=True, exist_ok=True)
-    overrides = {"neo4j": args.neo4j, "endpoints": dict(e.split("=", 1) for e in args.endpoints.split(","))} if args.endpoints else {"neo4j": args.neo4j}
+    if args.composition and args.composition not in config.get("compositions", {}):
+        raise SystemExit(f"unknown writer composition {args.composition!r}: {sorted(config.get('compositions', {}))}")
+    if "assignment" in config and not args.composition and not (run / "run.yml").exists():
+        raise SystemExit(f"choose a writer composition with --composition: {sorted(config['compositions'])}")
+    overrides: dict[str, Any] = {"neo4j": args.neo4j, "composition": args.composition}
+    if args.endpoints:
+        overrides["endpoints"] = dict(e.split("=", 1) for e in args.endpoints.split(","))
     _record_run(run, config_path, arms, {k: v for k, v in overrides.items() if v})
     config = run_config(run, config)
 
@@ -249,7 +295,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         setup_a0(run, config)
         checkpoint(run, config, "A0", 0)
 
-    probes = probe.load(REPO / config["probes"]) if config.get("probes") else None
+    probes = probe.for_run(config, REPO)
     if probes is not None and (problems := probe.check_anchors(probes, REPO / config["corpus"]["material_root"])):
         raise SystemExit("probe gold does not match the papers:\n" + "\n".join(problems))
     titles = titles_of(config)
@@ -401,8 +447,9 @@ def discard_leftovers(store: Path, patch: Path) -> list[str]:
 
 
 def run_config(run: Path, config: dict[str, Any]) -> dict[str, Any]:
-    """配置加上这次运行的基础设施覆盖（``run.yml`` 的 ``overrides``：A3 图库、各组的模型服务）。覆盖不改协议，
-    只决定在哪个图库、哪个服务副本上跑；t1.health、t1.probe、t1.grade 读同一份。"""
+    """配置加上这次运行的覆盖（``run.yml`` 的 ``overrides``）：A3 图库、各组的模型服务决定在哪里跑，不改协议；
+    ``composition`` 选择这条时间线的写者构成（配置中 ``compositions`` 的一项）。t1.health、t1.probe、t1.grade
+    读同一份。"""
     path = run / "run.yml"
     overrides = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("overrides") or {} if path.exists() else {}
     config = {**config, "arms": {**config["arms"]}, "runner": {**config["runner"]}}
@@ -410,6 +457,10 @@ def run_config(run: Path, config: dict[str, Any]) -> dict[str, Any]:
         config["arms"]["A3"] = {**config["arms"]["A3"], "neo4j": overrides["neo4j"]}
     if overrides.get("endpoints"):
         config["runner"]["endpoints"] = overrides["endpoints"]
+    if overrides.get("composition"):
+        config["composition"] = overrides["composition"]
+    if "assignment" in config and config.get("composition") not in config.get("compositions", {}):
+        raise ValueError(f"{path} names no writer composition of {sorted(config.get('compositions', {}))}")
     return config
 
 
@@ -485,6 +536,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int, help="只跑前 N 个槽位（冒烟测试）")
     parser.add_argument("--reset-a3", action="store_true", help="A3 图库非空时清空它（只允许 T1 图库）")
     parser.add_argument("--neo4j", help="A3 用这个图库（另一条时间线并行时），记入 run.yml")
+    parser.add_argument("--composition", help="写者构成（配置中 compositions 的键，如 single、multi），记入 run.yml")
     parser.add_argument("--endpoints", help="各组的模型服务，如 A3=http://…/v1,A0=http://…/v1，记入 run.yml")
     return parser
 

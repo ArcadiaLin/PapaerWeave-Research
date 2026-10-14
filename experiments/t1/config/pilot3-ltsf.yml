@@ -1,0 +1,160 @@
+# T1 pilot-3：时序预测领域，A0 与 A3，伪用户（evaluation_draft §2.1、§4.2；arXiv v1 待办 C2）。
+# 状态：草稿，待用户冻结（2026-10-14，自主推进中起草，决策见 tmps/2026-10-14-c-plan.md C-D6 起）。
+# pilot-3 用来跑通“种子 → 伪用户 → 探针 → 审计”，实测写入重叠、采用率、skill 读取率与单篇成本；不进入结论。
+#
+# 与 pilot-1/2（pilot-ltsf.yml）的区别：
+# - 写者是 4 个伪用户（I3、I2、I5、I1），每篇论文按固定种子随机分给一个，25% 的论文分给两个；
+#   写者构成 single（只有 I3）与 multi（四个）各一条时间线，由 run 的 --composition 选择；
+# - 任务文本只有长期背景加一句“把这篇论文加入你的工作所用的知识库”，不说要整理什么、不提共同产物；
+# - 不注入版本事件（v1 的范围）：FiLM 直接给 v4，探针去掉版本事件的 G 类；
+# - A3 的起点另有种子 Leaderboard 与 skill（experiments/t1/seeds/），A0 有同样的 Leaderboard 文件，没有 skill。
+
+schema_version: 1
+name: t1-pilot3-ltsf
+
+corpus:
+  candidates: data/raw/t1-pilot-corpus/candidates.yml   # 抽样结果，见 docs/decisions/2026-10-10-t1-pilot-corpus.md
+  material_root: data/raw/t1-pilot-corpus               # 材料路径相对于它
+  # 种子论文：由 Claude 完整入库并对照原文核实，各组内容相同（A3 为 graph-doc，A0 为同内容的 Markdown）。
+  seeds:
+    - {arxiv: 2012.07436v3, short: Informer}
+    - {arxiv: 2106.09305v3, short: SCINet}
+  # 交给写者的论文，按 PwC 日期排序，即时间线的顺序。
+  papers:
+    - {arxiv: 2106.13008v5, short: Autoformer, method: Autoformer}
+    - {arxiv: 2107.08687v2, short: Query Selector, method: Query Selector}
+    - {arxiv: 2205.08897v4, short: FiLM, method: FiLM}  # 不注入版本事件，直接给 v4
+    - {arxiv: 2211.14730v2, short: PatchTST, method: PatchTST}
+    - {arxiv: 2304.08424v5, short: TiDE, method: TiDE}
+    - {arxiv: 2310.09751v3, short: UniTime, method: UniTime}
+    - {arxiv: 2403.01673v1, short: CATS, method: CATS}
+    - {arxiv: 2403.09898v2, short: TimeMachine, method: TimeMachine}
+
+# 检查点 0 的入库文档，按顺序提交（A3）；A0 的笔记由 A3 检查点 0 的快照渲染（t1.a0_seed）。source 是提交的来源标签。
+# 锚点之外，两篇种子论文由 Claude 按论文表单撰写并对照原文核实。
+seed_docs:
+  - {doc: data/raw/t1-pilot-corpus/docs/00-anchors.yml, source: seed:t1-anchors, dedup: false}
+  - {doc: data/raw/t1-pilot-corpus/docs/01-2020-Informer.yml, source: paper:2020-Informer, dedup: true}
+  - {doc: data/raw/t1-pilot-corpus/docs/02-2021-SCINet.yml, source: paper:2021-SCINet, dedup: true}
+
+# 身份锚点（引导起点的第一部分）：只给名称与外部标识，挂到确立它们的论文上；各组相同。
+# 只列任务与主数据集；度量不建节点。是否引导、清单是否合适，待定（evaluation_draft.md §13 第 6 项）。
+anchors:
+  task: Long-term time series forecasting
+  datasets: [ETTh1, ETTh2, ETTm1, ETTm2, Electricity, Traffic, Weather, Exchange, ILI]
+
+writers:
+  # 伪用户 = 固定身份 + 长期的工作背景（对应一个意图）。每次会话是全新的上下文，只有身份与背景跨会话保持；
+  # 写者之间没有共同计划，也不通信，唯一的联系是共享库。user 是登录身份（.example 保留域名，不指向真实的人或
+  # 机构）：A3 写入 E09_USER（formed_by、提交 author），A0 写入 git author。agent 记入 E09_AGENT。
+  - id: user-i3
+    user: results.curator@forecast-lab.example
+    agent: pi/sglang/qwen3.8-27b
+    intent: I3
+    background: |
+      You maintain your group's benchmark comparison of long-term time series forecasting methods: which
+      methods do best on which datasets and forecast horizons, and whether the numbers that different papers
+      report can really be compared.
+  - id: user-i2
+    user: mechanism.reader@ts-group.example
+    agent: pi/sglang/qwen3.8-27b
+    intent: I2
+    background: |
+      You are studying why long-term time series forecasting methods work: their core mechanisms, the earlier
+      methods they build on or argue against, and the settings their reported gains depend on.
+  - id: user-i5
+    user: claims.check@eval-lab.example
+    agent: pi/sglang/qwen3.8-27b
+    intent: I5
+    background: |
+      You check the claims that long-term time series forecasting papers make, such as that a component
+      improves accuracy or that one family of models beats another: what evidence supports each claim, under
+      which conditions it holds, and where other papers report something different.
+  - id: user-i1
+    user: method.scout@grid-analytics.example
+    agent: pi/sglang/qwen3.8-27b
+    intent: I1
+    background: |
+      You are choosing forecasting methods for a new project: long-horizon forecasts of hourly load for a
+      handful of related series, on modest hardware. You need to know which methods fit which requirements,
+      what each one needs (look-back length, compute, extra data or pretraining, released code) and what it
+      has been compared against.
+
+# 各伪用户相同的任务句，接在背景之后：不说要整理什么，不提共同产物（evaluation_draft §2.1）。
+writer_task: |
+  Paper: "{title}" (arXiv {arxiv}), material {material}.
+
+  Add this paper to the knowledge base your work uses.
+
+# 写者构成（evaluation_draft §4.2）：构成之外的伪用户分到的会话交给构成中的第一位，两种构成的论文、顺序、
+# 会话数与分配完全相同，只差意图与身份。
+compositions:
+  single: [user-i3]
+  multi: [user-i3, user-i2, user-i5, user-i1]
+
+# 论文分给伪用户（t1.run.assign）：固定种子，先抽出 round(overlap × 篇数) 篇分给两个伪用户，再逐篇随机选。
+assignment:
+  seed: 1
+  overlap: 0.25
+
+# 各写者都附上的结尾段，各组相同。
+writer_closing: |
+  Write what you find into the shared store so that someone who works on these papers later, for a
+  different purpose and without access to this conversation, can find it, check it against the paper
+  and build on it. {store}
+
+arms:
+  A3:
+    store: >-
+      The shared store is the PaperWeave knowledge base, available through the PaperWeave tools.
+      Papers are material files; refer to a paper by its material path.
+    neo4j: bolt://localhost:7689
+    enable_commit: true
+    embeddings: true          # 与 e09 默认一致；需要 vllm-qwen3-embed 在线，否则改为 false 并记录
+  A0:
+    store: >-
+      The shared store is the git repository in ./store, a directory of notes that anyone may read,
+      add to, reorganize or correct; commit your changes when you are done. Papers are under ./papers,
+      at their material path.
+    # 初始内容：只有 README 一句话说明这是共享笔记库，加上种子论文与锚点的同内容 Markdown；
+    # 不预设目录约定或模板（预设就等于替 A0 设计了一个 schema）。
+    template: store/README.md
+
+# 读者探针（t1.probe）：每个检查点上、下一个写者开始之前，各组的读者回答有效的探针。
+probes: experiments/t1/config/probes-ltsf.yml
+# 读者条件：store_only 为 T1 主测量（只有库），with_papers 为辅助（另能读论文，审计绕过）。
+probe_conditions: [store_only, with_papers]
+# 不注入版本事件，去掉版本事件的探针（G 类）。
+probes_exclude: [G1, G2]
+
+schedule:
+  # 写者轮流执行；同一篇论文分给两个伪用户时，按分配的先后连续两个会话。
+  checkpoint_every_papers: 2 # 共 4 个检查点：每个检查点导出两组的快照（t1.snapshot）
+  repeats: 1
+
+runner:
+  agent: pi                  # 默认配置：自带系统提示与内置工具，不换提示、不设工具白名单
+  model: sglang/qwen3.8-27b
+  # 两个权重与配置相同的服务副本（sglang 0.5.18，tp=2，EAGLE；只 mem_fraction_static 与 random_seed 不同）。
+  # 每组独占一个，会话记录中记下所用的服务；多条时间线时下一条两组交换。我们不比较墙钟时间（构建成本按 token
+  # 与调用次数计）；速度只可能经超时影响结果，每次运行后检查超时会话数。
+  endpoints:
+    A3: http://192.168.163.112:30000/v1
+    A0: http://192.168.163.112:30001/v1
+  # 思考级别（pi --thinking）：off 时模型不生成思考内容。2026-10-11 冒烟测试中 high 一次会话约 3.8 万输出 token、
+  # 20 分钟以上（单路约 44 token/秒），按用户决定改为 off；各组相同。
+  thinking: "off"
+  # pi 按模型的 contextWindow 管理上下文，接近时自动压缩历史（摘要替换原文）。宿主机 models.json 声明 128000，
+  # smoke-3 的 A3 会话在约 11.2 万、11.6 万 token 时各压缩一次；服务端上下文为 262144，沙箱内按此覆盖。
+  context_window: 262144
+  # pi 等模型输出时的空闲超时（默认 300000）。sglang 的 qwen3_coder 解析器把一个工具参数整段生成完才发出，
+  # 期间连接上没有字节；pilot-1 中 A0 写整篇笔记的调用超过 300 秒即被断开（terminated）。各组相同。
+  http_idle_timeout_ms: 1800000
+  mode: print                # pi -p：非交互，一次会话跑完一个任务
+  session_timeout_min: 60    # 超时记为失败并保留轨迹，不重试
+  probe_timeout_min: 20      # 读者回答一个探针的时限
+  probe_workers: 2           # 一个检查点上同时回答的读者数（只读、互不相干；只缩短时间）。本机 7.8 GiB 内存：
+                             # 2026-10-12 两条时间线各 4 个并发读者时，宿主因内存不足终止了运行进程
+  # 每组每个写者一个独立工作目录（~/t1-runs/<run>/<arm>/<writer>/），只含 MCP 登记、pi 会话设置与会话记录；
+  # 工作目录之外的文件读取（包括直接读论文）不阻止，事后从轨迹审计。
+  workdir_root: ~/t1-runs

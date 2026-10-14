@@ -10,7 +10,7 @@ import yaml
 
 from t1 import seeding
 from t1.paths import REPO, SEEDS
-from t1.run import check_checkpoint0, discard_leftovers, prompt, request_errors, schedule
+from t1.run import assign, check_checkpoint0, discard_leftovers, prompt, request_errors, schedule
 
 CONFIG = yaml.safe_load((REPO / "experiments/t1/config/pilot-ltsf.yml").read_text(encoding="utf-8"))
 
@@ -93,3 +93,35 @@ def test_checkpoint0_holds_every_seed_verbatim(tmp_path: Path) -> None:
     changed = snap / "documents/artifacts/1.v1.md"
     changed.write_text(changed.read_text(encoding="utf-8") + "edited\n", encoding="utf-8")
     assert check_checkpoint0(tmp_path, CONFIG) == [f"{docs[0]}: stored 0 times verbatim"]
+
+
+PILOT3 = yaml.safe_load((REPO / "experiments/t1/config/pilot3-ltsf.yml").read_text(encoding="utf-8"))
+
+
+def test_assignment_is_fixed_by_the_seed_and_overlaps_a_quarter() -> None:
+    papers, users = list(range(8)), ["a", "b", "c", "d"]
+    plan = assign(papers, users, seed=1, overlap=0.25)
+    assert plan == assign(papers, users, seed=1, overlap=0.25)
+    assert plan != assign(papers, users, seed=2, overlap=0.25)
+    assert sum(len(p) == 2 for p in plan) == 2 and all(len(set(p)) == len(p) for p in plan)
+    assert all(len(p) == 1 for p in assign(papers, users, seed=1, overlap=0))
+
+
+def test_compositions_share_papers_order_and_sessions() -> None:
+    single = schedule(PILOT3 | {"composition": "single"})
+    multi = schedule(PILOT3 | {"composition": "multi"})
+    assert [(s.paper["arxiv"], s.checkpoint) for s in single] == [(s.paper["arxiv"], s.checkpoint) for s in multi]
+    assert {s.writer["id"] for s in single} == {"user-i3"}
+    assert {s.writer["id"] for s in multi} <= set(PILOT3["compositions"]["multi"])
+    assert len(single) == len(PILOT3["corpus"]["papers"]) + 2  # 25% 的 8 篇分给两个伪用户
+    assert [s.checkpoint for s in single if s.checkpoint] == [1, 2, 3, 4] and single[-1].checkpoint == 4
+    overlapped = [s for s in multi if sum(t.paper is s.paper for t in multi) == 2]
+    assert overlapped and all(a.writer is not b.writer for a, b in zip(overlapped[::2], overlapped[1::2], strict=True))
+
+
+def test_pseudo_user_prompt_is_background_plus_the_common_task() -> None:
+    slot = schedule(PILOT3 | {"composition": "multi"})[0]
+    text = prompt(PILOT3, "A0", slot, {"2106.13008": "Autoformer"})
+    assert text.startswith(slot.writer["background"].rstrip())
+    assert "Add this paper to the knowledge base your work uses." in text
+    assert "leaderboard" not in text.lower() and "{" not in text
