@@ -318,10 +318,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     if slot.checkpoint not in (_checkpoints(run).get(arm) or {}):
                         checkpoint(run, config, arm, slot.checkpoint)
                     if probes is not None:
+                        _require_services(config, arm)
                         probe.run_probes(run, config, probes, arm, slot.checkpoint, llm)
                 continue
             if slot.event:  # 新版本此刻才出现在论文副本中
                 copy_papers(config, papers_dir(run, config, arm), [slot.event["paper"]])
+            _require_services(config, arm)
             record = _session(run, config, arm, slot, prompt(config, arm, slot, titles), llm)
             with _LOCK, open(run / "sessions.jsonl", "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -333,6 +335,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if slot.checkpoint is not None:
                 checkpoint(run, config, arm, slot.checkpoint)
                 if probes is not None:  # 下一个写者开始之前：读者读到的就是检查点的库
+                    _require_services(config, arm)
                     probe.run_probes(run, config, probes, arm, slot.checkpoint, llm)
 
     with ThreadPoolExecutor(max_workers=len(arms)) as pool:
@@ -539,6 +542,13 @@ def preflight(config: dict[str, Any], arms: list[str]) -> list[str]:
         except (OSError, ValueError) as e:
             problems.append(f"{name} {models}: {e}")
     return problems
+
+
+def _require_services(config: dict[str, Any], arm: str) -> None:
+    """每个写者会话与每轮读者之前再查一次服务：中途掉线时停下这一组，续跑时从这里接上（不让会话挂到超时）。"""
+    if problems := preflight(config, [arm]):
+        lines = "\n".join(problems)
+        raise SystemExit(f"{arm}: services are not reachable, stopping; resume when they are back:\n{lines}")
 
 
 def _llm_url(model: str) -> str:
