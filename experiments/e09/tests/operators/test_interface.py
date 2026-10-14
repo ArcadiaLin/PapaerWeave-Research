@@ -41,7 +41,7 @@ def rejected(request: dict[str, Any], ctx: Context | None = None) -> list[tuple[
     return [(e["rule"], e["at"]) for e in out.details["errors"]]
 
 
-SUMMARIZE = {"abs": "a", "inputs": ["paper_0001"], "params": {}, "payload": {"text": "x"}}
+CHECKIN = {"artifact_doc": ["artifacts/a.md"], "update_abstract": "x"}
 
 
 @pytest.mark.parametrize(
@@ -52,10 +52,10 @@ SUMMARIZE = {"abs": "a", "inputs": ["paper_0001"], "params": {}, "payload": {"te
         ({"op": "Traverse"}, None, [("format", "start")]),
         ({"op": "Commit", "doc": "graph-doc: v0.1"}, None, [("format", "source")]),
         # 会话与形成者由调用环境给出：缺了拒绝，写在请求中也拒绝
-        ({"op": "Summarize", **SUMMARIZE}, None, [("format", "session"), ("format", "formed_by")]),
-        ({"op": "Summarize", **SUMMARIZE}, Context(NO_STORE, AT, session="s"), [("format", "formed_by")]),
+        ({"op": "CheckIn", **CHECKIN}, None, [("format", "session"), ("format", "formed_by")]),
+        ({"op": "CheckIn", **CHECKIN}, Context(NO_STORE, AT, session="s"), [("format", "formed_by")]),
         (
-            {"op": "Summarize", **SUMMARIZE, "session": "s", "formed_by": "m"},
+            {"op": "CheckIn", **CHECKIN, "session": "s", "formed_by": "m"},
             None,
             [("format", "formed_by"), ("format", "session")],
         ),

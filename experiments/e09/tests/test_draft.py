@@ -1,4 +1,4 @@
-"""草稿文件的读取与定位：路径规则、CSV 的表头与行号、graph-doc 位置到行号的换算（不连库）。"""
+"""草稿文件的读取与定位：路径规则、graph-doc 位置到行号的换算（不连库）。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from e09.draft import MAX_BYTES, Draft, Workdir, locate_rows, read, read_csv, yaml_locator, yaml_syntax
+from e09.draft import MAX_BYTES, Draft, Workdir, read, yaml_locator, yaml_syntax
 from e09.store import ContractError
 
 
@@ -15,24 +15,24 @@ def dirs(tmp_path: Path) -> tuple[Workdir, Path]:
     work, materials = tmp_path / "work", tmp_path / "data"
     (work / "tables").mkdir(parents=True)
     (materials / "papers").mkdir(parents=True)
-    (work / "tables/a.csv").write_text("x\n1\n", encoding="utf-8")
+    (work / "tables/a.yml").write_text("x\n1\n", encoding="utf-8")
     return Workdir(work, "/work"), materials
 
 
 def problem(workdir: Workdir, materials: Path, given: str) -> str:
     with pytest.raises(ContractError) as exc:
-        read(workdir, given, "payload_file", materials)
+        read(workdir, given, "doc_file", materials)
     [error] = exc.value.errors
-    assert error["rule"] == "format" and error["at"] == "payload_file"
+    assert error["rule"] == "format" and error["at"] == "doc_file"
     return error["msg"]
 
 
 def test_relative_absolute_and_alias_paths_read_the_same_file(dirs: tuple[Workdir, Path]) -> None:
     workdir, materials = dirs
-    for given in ("tables/a.csv", "/work/tables/a.csv", str(workdir.root / "tables/a.csv"), "./tables/../tables/a.csv"):
-        draft = read(workdir, given, "payload_file", materials)
+    for given in ("tables/a.yml", "/work/tables/a.yml", str(workdir.root / "tables/a.yml"), "./tables/../tables/a.yml"):
+        draft = read(workdir, given, "doc_file", materials)
         assert draft.text == "x\n1\n" and draft.path == given
-    assert read(workdir, "tables/a.csv", "f", materials).meta()["sha256"] == Draft("p", "x\n1\n").sha256
+    assert read(workdir, "tables/a.yml", "f", materials).meta()["sha256"] == Draft("p", "x\n1\n").sha256
 
 
 def test_paths_outside_the_working_directory_are_refused(dirs: tuple[Workdir, Path], tmp_path: Path) -> None:
@@ -52,44 +52,10 @@ def test_source_materials_and_large_files_are_refused(tmp_path: Path) -> None:
     (work / "papers/p.md").write_text("line\n", encoding="utf-8")
     workdir = Workdir(work)
     assert "source material" in problem(workdir, work / "papers", "papers/p.md")  # 材料目录在工作目录内时
-    (work / "big.csv").write_bytes(b"x" * (MAX_BYTES + 1))
-    assert "larger than" in problem(workdir, tmp_path / "data", "big.csv")
+    (work / "big.yml").write_bytes(b"x" * (MAX_BYTES + 1))
+    assert "larger than" in problem(workdir, tmp_path / "data", "big.yml")
     with pytest.raises(ContractError, match="not available here"):
-        read(None, "big.csv", "payload_file", tmp_path)
-
-
-def test_csv_records_carry_their_starting_line() -> None:
-    text = 'a,b,source\n1,"two\nlines",s1\n\n3,"x, y",s2\n'
-    table = read_csv(Draft("t.csv", text), ["a", "b", "source"], {"a", "source"})
-    assert table.header == ["a", "b", "source"]
-    assert table.records == [(2, {"a": "1", "b": "two\nlines", "source": "s1"}), (5, {"a": "3", "b": "x, y", "source": "s2"})]
-
-
-def test_csv_header_and_cell_count_problems_are_listed_together() -> None:
-    text = "a,zzz\n1,2\n1,2,3\n"
-    with pytest.raises(ContractError) as exc:
-        read_csv(Draft("t.csv", text), ["a", "b", "source"], {"a", "source"})
-    assert [(e["at"], e["msg"].split(":")[0]) for e in exc.value.errors] == [
-        ("t.csv:1", "columns not declared"),
-        ("t.csv:1", "missing columns ['source']; the header is a,b,source"),
-        ("t.csv:3", "3 cells, the header has 2; quote values that contain commas"),
-    ]
-
-
-def test_row_positions_become_file_lines() -> None:
-    draft = Draft("tables/t.csv", "")
-    errors = [
-        {"rule": "schema", "at": "payload.rows[1].mse", "msg": "not a number: 'x'"},
-        {"rule": "schema", "at": "payload.rows[2]", "msg": "key 'a' repeats payload.rows[0]"},
-        {"rule": "schema", "at": "payload.rows", "msg": "a list"},
-        {"rule": "format", "at": "inputs", "msg": "unchanged"},
-    ]
-    assert [(e["at"], e["msg"]) for e in locate_rows(errors, draft, "rows", [2, 4, 7])] == [
-        ("tables/t.csv:4 (mse)", "not a number: 'x'"),
-        ("tables/t.csv:7", "key 'a' repeats line 2"),
-        ("tables/t.csv", "a list"),
-        ("inputs", "unchanged"),
-    ]
+        read(None, "big.yml", "doc_file", tmp_path)
 
 
 DOC = """graph-doc: v0.1

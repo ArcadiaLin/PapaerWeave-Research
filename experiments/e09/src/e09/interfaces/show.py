@@ -3,7 +3,8 @@
     Show(commit, part=summary | input | changes, node?, field?, offset?, continuation?)
 
 - ``summary``：头信息、计数、触及与删除的节点、同一性判断 ``confirm``、临时引用到 id 的映射 ``ids``、``input`` 的大小；
-- ``input``：交上来的原文（Commit 的 graph-doc，或 Agent 算子的调用参数），按行分页，单行放不下时在行内断开；
+- ``input``：交上来的原文（Commit 的 graph-doc，CheckIn 的修改说明与交上来的文档；旧提交中还有已下线的 Agent
+  算子的调用参数），按行分页，单行放不下时在行内断开；
 - ``changes``：变更视图（:mod:`e09.query.changes`），按节点分页。它就是父提交与本提交之间的净差异，与
   ``Diff(parent, commit)`` 相同。``node`` 只看这些节点；``field``（与一个 ``node``）分块读取被截短的值。
 """

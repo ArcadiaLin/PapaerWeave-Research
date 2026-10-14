@@ -42,12 +42,14 @@ neo4j-e09 的全部内容由 `data/raw/e09-paper-knowledge/docs/` 中的 graph-d
 
 - 由中间件执行的算子（`operators/db/`）：Search、Resolve、Traverse、ReadEvidence 读取，不写库；Commit 提交 graph-doc，
   也可写成 `{op: Commit, doc, source, apply, message, base, dedup}`。
-- Agent 算子（`operators/agent/`）：Extract、Summarize、Generate、Check、Verify、Filter、MatrixConstruct，每次调用写一个
-  Artifact，产生一个提交。文档按标题命名写到 `data/raw/e09-paper-knowledge/artifacts/`（重名时加 ` (1)`，不进 git），登记为 Material，
-  可用 ReadEvidence 读取。MatrixConstruct 由 Agent 填写矩阵，中间件只校验表格结构；Rank 已取消。
+- 共同产物（`operators/db/fetch_artifact`、`operators/db/check_in`，契约在 `artifact/types/`）：Leaderboard、CompareSettings、
+  Verify、Summarize、Generate、Skill 是有版本的 Markdown 文档。FetchArtifact 取到写者的工作目录，写者编辑后 CheckIn，
+  每次检入写一个新版本、产生一个提交；各版本的文档写到 `data/raw/e09-paper-knowledge/artifacts/<标题>.v<版本>.md`
+  （不进 git），登记为 Material，也可用 ReadEvidence 读取。旧版 Agent 算子（Extract、Check、Filter、MatrixConstruct 等）
+  已下线；库中已有的旧版产物只读。
 - 给通用 Agent 用的入口是 MCP 服务 PaperWeave（`python -m e09.mcp`，stdio）：每个算子一个工具，工具名即算子名，参数与
   结果与命令行相同，错误结果标为 `isError`。给模型看的全部文字（`instructions`、工具的标题与说明、参数说明）在
-  `src/e09/mcp/server.yml`，启动时按它装配，对不上算子时服务不启动；算子的代码只给结构。Agent 算子的 `session` 由服务进程启动时生成，`formed_by` 取环境变量 `E09_FORMED_BY`；
+  `src/e09/mcp/server.yml`，启动时按它装配，对不上算子时服务不启动；算子的代码只给结构。CheckIn 记下的 `session` 由服务进程启动时生成，编辑者取环境变量 `E09_USER`；
   `E09_ENABLE_COMMIT=1` 时才列出 Commit。`make workspace DIR=...`（`python -m e09.workspace`）在仓库外生成实验目录，
   其中只有登记该服务的 `.pi/mcp.json`（`formed_by` 默认取 pi 的默认模型）、把会话存到 `.pi/sessions/` 的
   `.pi/settings.json` 与启动脚本 `pi.sh`（`./pi.sh` 进入交互界面，`./pi.sh -r` 选择会话继续）。第一次启动时确认信任该
@@ -57,11 +59,11 @@ neo4j-e09 的全部内容由 `data/raw/e09-paper-knowledge/docs/` 中的 graph-d
   （graph-vc 的 `state_at`）；结果不超过 16 KB，单个对象放不下时截短，并标出 `_cut`，原值用 `field` 与 `offset` 分块读取。
 - 读视图是一份 graph-doc：`nodes` 原样交回 Commit 为 `noop`，`meta` 是 AccessResult。
 - 连接、查重与向量补算都用 `E09_NEO4J_URI` 所指的库。有数据却没有版本记录的库（如旧写入路径建出的库）一律拒绝。
-  首次提交时建立版本记录、约束、全文索引与向量索引；Agent 算子通过校验、确实写入前同样建立。提交后补算向量，向量服务不可用时只给
+  首次提交时建立版本记录、约束、全文索引与向量索引。提交后补算向量，向量服务不可用时只给
   提示，之后用 `make embed` 再补。
 - `--no-embed` 关闭查询向量，写入后也不补算；`--no-dedup` 关闭 Commit 的查重，用于种子这类可信的批量入库。
 - 算子的参数（`Operator.parameters`）只含算子自己的参数：不含 `op`（作为工具时工具名就是算子名），也不含 `session`、
-  `formed_by`（调用环境的信息，命令行用 `--session`、`--formed-by` 给出，Agent 算子写入时必需）。
+  `formed_by`（调用环境的信息，命令行用 `--session`、`--formed-by` 给出，CheckIn 时必需）。
 - 没有完成时一律返回 `{status, errors}`：`status` 为 `rejected`、`blocked` 或 `conflict`，`errors` 每项为 `{rule, at, msg}`。
 - 退出码：0 有结果（可以为空，或写入、重试命中、ready / noop / committed）；1 错误结果（rejected / blocked / conflict）；
   2 库不能使用。
@@ -83,16 +85,16 @@ neo4j-e09 的全部内容由 `data/raw/e09-paper-knowledge/docs/` 中的 graph-d
 
     notebooks/            探索面（目前没有 notebook）；notebooks/_scratch/ 放导出的中间结果，不进版本管理
     src/e09/              已确定的部分，脚本与 notebook 共用
-    src/e09/operators/    算子：base.py 定义 Operator；db/ 由中间件执行，agent/ 由 Agent 给内容；每个算子一个文件
+    src/e09/operators/    算子：base.py 定义 Operator；db/ 由中间件执行，每个算子一个文件
     src/e09/interfaces/   版本记录的读取接口：Log、Show、Diff、AsOf，每个接口一个文件
     src/e09/model/        数据模型与写法：schema、引用、名称精确键
     src/e09/store/        连接与库：Store、版本记录与约束索引、向量
     src/e09/query/        读取共用：结构条件、RRF 融合、读视图与只读字段、固定材料、Resolve 的三级解析、
                           容量控制、固定提交与续取、旧视图与变更视图
     src/e09/commit/       graph-doc 的写入管线
-    src/e09/artifact/     Artifact 的文档、共同写入路径与可能过期
+    src/e09/artifact/     共同产物：文档格式、类型契约、取出与检入、版本与归属、可能过期
     tests/commit/         写入管线的检验：内存状态上的场景；设置 GRAPH_VC_TEST_NEO4J_URI 时另在测试实例上往返
-    tests/operators/      db/ 与 agent/ 算子的检验，只在空的测试实例（GRAPH_VC_TEST_NEO4J_URI）上运行
+    tests/operators/      算子与共同产物的检验，只在空的测试实例（GRAPH_VC_TEST_NEO4J_URI）上运行
     tests/interfaces/     读取接口的检验：内存中的版本历史，不连库
     i3/                   首个 I3 实例：questions.yml（三组共同看到的问题与答案格式）、reference.yml（参考答案）；
                           只用论文 citekey 与表格锚点，不依赖库中的 id。检验代码随旧读取算子删除，待新库建好后重写
@@ -104,7 +106,7 @@ neo4j-e09 的全部内容由 `data/raw/e09-paper-knowledge/docs/` 中的 graph-d
 | `mcp/server`、`mcp/spec`、`mcp/server.yml` | MCP 服务 PaperWeave（`python -m e09.mcp`）；按 `server.yml` 装配工具并核对；给模型看的全部文字 |
 | `workspace` | 实验目录的生成 |
 | `config`、`env_check` | 路径与连接参数；环境自检（`make check`） |
-| `operators/base` | `Operator`（name、family、parameters、execute；只有结构，文字在 `mcp/server.yml`）、`Context`、`Result`；`db_operator`、`agent_operator` 两种构造，以及读取接口用的 `interface` |
+| `operators/base` | `Operator`（name、family、parameters、execute；只有结构，文字在 `mcp/server.yml`）、`Context`、`Result`；只读算子的构造 `db_operator`，以及读取接口用的 `interface` |
 | `operators/db/search` | Search：精确命中优先，名称词面、全文与向量按 RRF 融合；`type=Artifact` 时只查 Artifact；结果只给摘录，按 16 KB 容量分配（`query/excerpts`） |
 | `operators/db/resolve` | Resolve：id → alias → 语义三级解析，Entity 与 Concept；返回带名称与说明开头的解析视图，匹配过程写入日志 |
 | `operators/db/traverse` | Traverse：按端点表校验每一跳，传递性关系的 `depth`，路径绑定；含 `USED`；超出 16 KB 时末尾的路径移到下一页 |
@@ -112,7 +114,7 @@ neo4j-e09 的全部内容由 `data/raw/e09-paper-knowledge/docs/` 中的 graph-d
 | `operators/db/commit` | Commit：dry_run 输出 graph-plan，`apply` 提交后补算向量并输出 graph-result |
 | `interfaces/log`、`interfaces/show` | Log：从新到旧列出提交，可按对象、写入者、来源前缀、时间或提交范围过滤；Show：一个提交的摘要、交上来的原文（按行分页）与变更视图 |
 | `interfaces/diff`、`interfaces/as_of` | Diff：两个提交之间的净差异，先摘要后逐对象；AsOf：对象在某个提交时的读视图（不带 `_stale`），不存在的列入 `missing` |
-| `operators/agent/<算子>` | 各 Agent 算子的 `validate`（参数与内容校验、默认标题、正文与数据块）与算子定义；`_common` 为字段类型、逐项判断与表格 |
+| `operators/db/fetch_artifact`、`operators/db/check_in` | FetchArtifact：取出共同产物到工作目录，附编辑提示与附注；CheckIn：检查或写入一组文档（`confirm`），返回改动、他人的行与警告 |
 | `model/schema` | graph_model_v2 的机器可读部分：kind、各 kind 的字段与必需项、关系端点与属性、命名空间唯一性、id 前缀、约束、全文索引、来源引用的定位格式 |
 | `model/refs`、`model/namekey` | 引用写法与正文中的引用识别；规范化配置 `name-key-v1` 与精确键 |
 | `store/store`、`store/database` | 算子共用的环境 `Store` 与契约错误；拒绝没有版本记录的旧库，建立版本记录、约束、全文索引与向量索引 |
@@ -125,7 +127,9 @@ neo4j-e09 的全部内容由 `data/raw/e09-paper-knowledge/docs/` 中的 graph-d
 | `commit/translate`、`commit/checks` | graph-doc → 物理目标状态（kind → Label，name / aliases → NameKey，material → Material 等）；写入后状态的模型检查 |
 | `commit/submit`、`commit/reader` | `prepare`（dry_run，只读）与 `apply`（分配 id 后经 graph-vc 单事务提交）；内存与 Neo4j 两种读取 |
 | `commit/review`、`commit/report` | 查重与删除影响；返回给 Agent 的 graph-plan 与 graph-result |
-| `artifact/document`、`artifact/write`、`artifact/stale` | Artifact 文档的头部、数据块与记录键；共同写入路径（引用核对、幂等、文档、`USED` 边与一次提交）；读取时计算的可能过期 |
+| `artifact/document`、`artifact/types/` | 文档的头部、表格与取出时的两行；各类型的契约（身份键、强制项、轻度规则、统计与附注）。旧版产物的头部、数据块与记录键只读 |
+| `artifact/checkin`、`artifact/checkout`、`artifact/versions` | 检入（引用核对、身份、乐观锁、比对与 `others`、`USED` 边与一次提交）；取出与编辑提示；版本链、归属与比对 |
+| `artifact/stale`、`artifact/sources`、`artifact/related` | 读取时计算的可能过期；按写入时版本解析来源；Commit 返回的相关 Leaderboard |
 | `yamlfmt` | YAML 输出格式 |
 
 ## 现在还不是什么

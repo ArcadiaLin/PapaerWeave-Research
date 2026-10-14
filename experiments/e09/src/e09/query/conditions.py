@@ -12,7 +12,6 @@ from typing import Any
 
 from ..artifact.types import identity_key
 from ..model.schema import (
-    AGENT_OPS,
     ARTIFACT,
     ARTIFACT_TYPES,
     CONCEPT,
@@ -54,7 +53,7 @@ CONDITIONS = {
     "stub": Condition(ENTITY | CONCEPT, prop="stub", values=frozenset({True, False})),
     "stated_by": Condition(frozenset({"Contribution"}), prop="stated_by", values=STATED_BY),
     "formed_by": Condition(CONTENT | _ARTIFACT, prop="formed_by"),
-    "op": Condition(_ARTIFACT, prop="op", values=frozenset(AGENT_OPS) | frozenset(ARTIFACT_TYPES)),
+    "op": Condition(_ARTIFACT, prop="op", values=frozenset(ARTIFACT_TYPES)),
     "session": Condition(_ARTIFACT, prop="session"),
     # 共同产物的身份：给 {type, <身份字段>...}，换成检入时存在 key 上的规范化身份键后精确匹配
     "key": Condition(_ARTIFACT, prop="key"),

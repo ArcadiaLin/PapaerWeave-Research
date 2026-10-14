@@ -8,10 +8,18 @@ import pytest
 
 from e09.model.refs import normalize_ref, parse_ref
 from e09.operators import OPERATORS
-from e09.operators.base import Operator, Result
+from e09.operators.base import STRING, Operator, Result, one_or_many, schema
 from e09.operators.repair import repair
 
-CHECK = OPERATORS["Check"].parameters
+# 嵌套的三值判断：取自已下线的旧版 Check 的参数形状，用来检验修复沿 schema 深入对象与数组
+JUDGMENT = schema({"value": {"enum": ["T", "F", "U"]}, "basis": one_or_many(STRING), "reason": STRING})
+CHECK = schema(
+    {
+        "abs": STRING,
+        "params": schema({"items": {"type": "object"}}),
+        "payload": schema({"judgments": {"type": "array", "items": JUDGMENT}}),
+    }
+)
 SEARCH = OPERATORS["Search"].parameters
 
 

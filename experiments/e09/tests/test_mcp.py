@@ -41,23 +41,24 @@ async def test_each_operator_is_a_tool_and_commit_is_listed_only_when_enabled(mo
     tools = await _tools(monkeypatch, commit=False)
     assert list(tools) == [n for n in OPERATORS if n != "Commit"]
     assert all(_bare(tools[n].inputSchema) == _admitted(OPERATORS[n].parameters) for n in tools)  # 结构来自算子
-    assert tools["Check"].inputSchema["properties"]["payload"]["type"] == ["object", "string"]
+    assert tools["CheckIn"].inputSchema["properties"]["artifact_doc"]["type"] == ["array", "string"]
     assert all(
         tools[n].description and all("description" in p for p in tools[n].inputSchema["properties"].values())
         for n in tools
     )
     assert tools["Search"].annotations.readOnlyHint is True
-    assert tools["Extract"].annotations.readOnlyHint is False and tools["Extract"].annotations.idempotentHint is True
+    checkin = tools["CheckIn"].annotations  # 只追加版本，相同内容重交不再写入
+    assert checkin.readOnlyHint is False and checkin.idempotentHint is True and checkin.destructiveHint is False
     commit = (await _tools(monkeypatch, commit=True))["Commit"].annotations
     assert commit.destructiveHint is True and commit.idempotentHint is False
 
 
 @pytest.mark.anyio
 async def test_read_only_lists_only_tools_that_do_not_write(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("E09_READ_ONLY", "1")  # 读者：Commit 即使开启也不列出，Agent 算子也不列出
+    monkeypatch.setenv("E09_READ_ONLY", "1")  # 读者：Commit 即使开启也不列出，CheckIn 也不列出
     tools = await _tools(monkeypatch, commit=True)
     assert list(tools) == [n for n, op in OPERATORS.items() if not op.writes]
-    assert {"Search", "Traverse", "ReadEvidence", "Log"} <= set(tools) and "Extract" not in tools
+    assert {"Search", "Traverse", "ReadEvidence", "Log"} <= set(tools) and "CheckIn" not in tools
     monkeypatch.setenv("E09_HIDE_TOOLS", "ReadEvidence")  # 只读库的读者：不按行号读原文
     assert "ReadEvidence" not in await _tools(monkeypatch, commit=False)
 
@@ -68,8 +69,8 @@ async def test_read_only_lists_only_tools_that_do_not_write(monkeypatch: pytest.
     [
         ("Search", {"type": "Entity", "nope": 1}, "nope"),  # 未知参数
         (
-            "Summarize",
-            {"abs": "a", "inputs": [], "params": {"focus": "f"}, "payload": {"text": "t"}, "session": "x"},
+            "CheckIn",
+            {"artifact_doc": ["artifacts/a.md"], "update_abstract": "x", "session": "x"},
             "session",
         ),  # 调用环境不是参数
         ("Commit", {"doc": "graph-doc: v0.1", "source": "t"}, "tool"),  # 没有启用
@@ -107,11 +108,7 @@ def _bare(schema: Any) -> Any:
 def test_server_yml_describes_every_operator() -> None:
     spec = load()
     assert spec.name == "PaperWeave" and list(spec.tools) == list(OPERATORS)
-    check = spec.tools["Check"].inputSchema["properties"]
-    assert check["payload"]["properties"]["judgments"]["items"]["properties"]["basis"]["description"]
-    assert check["params"]["properties"]["pairs"]["anyOf"][1]["items"]["items"] == {
-        "type": "string"
-    }  # 不串到共用的字典
+    assert spec.tools["CheckIn"].inputSchema["properties"]["artifact_doc"]["description"]
 
 
 @pytest.mark.parametrize(

@@ -5,11 +5,12 @@
     python -m e09 <文档.yml> --source <来源标签> [--apply] [--message 说明] [--base 提交 id] [--no-dedup]
 
 请求的 ``op`` 是任一算子或读取接口（见 :mod:`e09.tools`），其余键是它的参数。直接给一份 graph-doc
-（以 ``graph-doc:`` 开头）时视为 ``Commit``，``--source`` 等选项给出它的参数。Agent 算子写入时须给出
-``--session`` 与 ``--formed-by``（调用环境的信息，不写在请求中）。作为 MCP 工具提供给 Agent 的入口见
+（以 ``graph-doc:`` 开头）时视为 ``Commit``，``--source`` 等选项给出它的参数。写入时可给出
+``--session`` 与 ``--formed-by``（调用环境的信息，不写在请求中）；FetchArtifact 与 CheckIn 读写写者的工作目录，只经
+MCP 入口。作为 MCP 工具提供给 Agent 的入口见
 :mod:`e09.mcp`。连接、文档目录与向量服务用 ``E09_NEO4J_URI`` 所指的库、
-``e09.config.DATA`` 与 ``EMBED_URL``；``--no-embed`` 关闭查询向量，写入后也不补算向量。Agent 算子通过校验、
-确实写入前建立 Artifact 的约束与索引。没有版本记录的旧库一律拒绝。
+``e09.config.DATA`` 与 ``EMBED_URL``；``--no-embed`` 关闭查询向量，写入后也不补算向量。写入前建立约束与
+索引。没有版本记录的旧库一律拒绝。
 
 退出码：0 表示有结果（可以是空结果，或写入、重试命中、dry_run 通过）；1 表示错误结果（``status`` 为 ``rejected``、
 ``blocked`` 或 ``conflict``，``errors`` 列出原因）；2 表示库不能使用。
@@ -93,9 +94,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("request", nargs="?", help="请求文件路径；- 表示从标准输入读取")
     parser.add_argument("-e", "--expr", help="直接给出请求（YAML 文本）")
     parser.add_argument("--no-embed", action="store_true", help="关闭查询向量，写入后也不补算向量")
-    agent = parser.add_argument_group("Agent 算子写入时")
-    agent.add_argument("--session", help="调用所在的会话，记入 Artifact 的 session")
-    agent.add_argument("--formed-by", help="形成者（模型或人），记入 Artifact 的 formed_by")
+    agent = parser.add_argument_group("写入时（调用环境）")
+    agent.add_argument("--session", help="调用所在的会话；Commit 不给 --source 时记为来源")
+    agent.add_argument("--formed-by", help="登录身份（模型或人），记为提交的作者")
     commit = parser.add_argument_group("直接给出 graph-doc 时（Commit）")
     commit.add_argument("--source", help="来源标签，记入提交的 source 与 NameKey.registered_from")
     commit.add_argument("--apply", action="store_true", help="提交；不加时只做 dry_run")

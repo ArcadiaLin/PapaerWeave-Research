@@ -23,9 +23,8 @@ ENTITY = frozenset(KINDS["Entity"])
 CONCEPT = frozenset(KINDS["Concept"])
 CONTENT = frozenset(KINDS["Content"])
 ARTIFACT = "Artifact"  # 只有主 Label，不分 kind（§8）
-# 产出 Artifact 的 Agent 算子（operators.md §4），记在 Artifact 的 op 上
-AGENT_OPS = ("Extract", "Summarize", "Generate", "Check", "Verify", "Filter", "MatrixConstruct")
-# 经 CheckIn 检入的共同产物的类型（e09.artifact.types），同样记在 op 上；旧算子在 A8 下线后只剩这些
+# 经 CheckIn 检入的共同产物的类型（e09.artifact.types），记在 Artifact 的 op 上。库中可能还有已下线的旧版 Agent
+# 算子写的 Artifact（op 为 Extract、Check、Filter、MatrixConstruct 等），只读
 ARTIFACT_TYPES = ("Leaderboard", "CompareSettings", "Verify", "Summarize", "Generate", "Skill")
 SYSTEM_LABELS = frozenset({"NameKey", "Material", "IngestBatch"})
 
@@ -150,7 +149,7 @@ RELATIONSHIPS = {
     "OVERLAPS_WITH": Relationship(ends=((CONCEPT, CONCEPT),), symmetric=True),
 }
 STANCE_RELS = frozenset({"SUPPORTS", "OPPOSES"})
-# Artifact 的使用关系（§8）：只由 Agent 算子写入，graph-doc 不能写，但可以沿它读取。role 是记录键或参数中的角色，
+# Artifact 的使用关系（§8）：只由 CheckIn 写入，graph-doc 不能写，但可以沿它读取。role 是记录键或参数中的角色，
 # 同一终点有多个时为列表；引用材料的行范围时带 material_ref 与 locators
 USED = Relationship(ends=((_A, ENTITY | CONCEPT | CONTENT | _A),), props=_k("role", "locators"))
 TRAVERSABLE = {**RELATIONSHIPS, "USED": USED}  # 读取时可以走的关系
@@ -186,7 +185,7 @@ CONSTRAINTS = [
     # 相同（改回去），所以不再要求内容哈希唯一
     "CREATE CONSTRAINT material_id IF NOT EXISTS FOR (m:Material) REQUIRE m.id IS UNIQUE",
     "CREATE CONSTRAINT artifact_id IF NOT EXISTS FOR (n:Artifact) REQUIRE n.id IS UNIQUE",
-    # 旧版 Agent 算子：相同 artifact_key 的写入是重试（A8 下线）
+    # 旧版 Agent 算子（已下线）写的 Artifact：相同 artifact_key 的写入曾是重试；库中还有这样的产物，约束保留
     "CREATE CONSTRAINT artifact_key IF NOT EXISTS FOR (n:Artifact) REQUIRE n.artifact_key IS UNIQUE",
     # 共同产物的身份键：一个键只有一份产物（operators.md §5.4）
     "CREATE CONSTRAINT artifact_identity IF NOT EXISTS FOR (n:Artifact) REQUIRE n.key IS UNIQUE",

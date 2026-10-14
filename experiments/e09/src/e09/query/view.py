@@ -11,9 +11,9 @@
 
 入边不出现在节点上；需要时经 Traverse 沿入边走到对方节点，对方节点的出边里就有这条边。
 
-Artifact 只由 Agent 算子写入，视图中的字段全部只读（以 ``_`` 开头）：``_op``、``_title``、``_abs``、``_params``、
-形成信息、``_material`` 与 ``_document``（文档）、``_stale``（可能过期的原因，见 :mod:`e09.artifact.stale`）、
-``_USED``（用到的对象）。原样交回 Commit 时被忽略。
+Artifact 只经 ``CheckIn`` 写入（库中可能还有已下线的旧版 Agent 算子写的，带 ``_params``），视图中的字段全部
+只读（以 ``_`` 开头）：``_op``、``_title``、``_abs``、形成信息、``_material`` 与 ``_document``（文档）、``_stale``
+（可能过期的原因，见 :mod:`e09.artifact.stale`）、``_USED``（用到的对象）。原样交回 Commit 时被忽略。
 """
 
 from __future__ import annotations

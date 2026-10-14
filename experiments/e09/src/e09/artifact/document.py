@@ -6,8 +6,8 @@
 下。每个版本的文档存为 ``artifacts/<标题>.v<版本>.md``（:func:`version_file_name`）。表格按 :func:`tables` 解析，
 供类型契约按行键对齐。
 
-**旧版 Agent 算子**（e09.artifact.write，A8 删除）：写入后不可修改的文档，头部与正文，需要被其他算子读取的产物在
-正文末尾附数据块：
+**旧版 Agent 算子**（已下线；库中已有的文档只读，``_stale``、引用核对与 T1 的检查仍要读它们）：写入后不可修改的
+文档，头部与正文，需要被其他算子读取的产物在正文末尾附数据块：
 
     ---
     title: …
@@ -20,9 +20,10 @@
     <数据块>
     ```
 
-旧版文档存放在材料根目录下的 ``artifacts/<标题>.md``（:func:`file_name`），标题重复时依次加 `` (1)``、`` (2)``；
-写入后不再改动。Material 的 id 由内容哈希给出（``material_<sha256 前 12 位>``），与文件名无关；头部不含 Artifact 的
-id，所以内容相同的文档只存一份。共同产物的 Material id 另由产物与版本一起算出（e09.artifact.checkin）。
+旧版文档存放在材料根目录下的 ``artifacts/<标题>.md``，标题重复时依次加 `` (1)``、`` (2)``
+（:func:`file_name`，共同产物的文件名也由它生成）；写入后不再改动。Material 的 id 由内容哈希给出
+（``material_<sha256 前 12 位>``），与文件名无关；头部不含 Artifact 的 id，所以内容相同的文档只存一份。
+共同产物的 Material id 另由产物与版本一起算出（e09.artifact.checkin）。
 """
 
 from __future__ import annotations
@@ -34,8 +35,6 @@ from dataclasses import dataclass
 from typing import Any
 
 import yaml
-
-from ..yamlfmt import dump
 
 DIRECTORY = "artifacts"
 _HEADER = re.compile(r"\A---\n(?P<header>.*?)\n---\n", re.DOTALL)
@@ -66,14 +65,6 @@ def file_name(title: str, n: int = 0) -> str:
     stem = " ".join(_UNSAFE.sub(" ", title).split()).strip(" .")  # 不以点开头：不成为隐藏文件
     stem = stem.encode("utf-8")[:NAME_BYTES].decode("utf-8", "ignore").rstrip(" .") or "artifact"
     return f"{stem} ({n}).md" if n else f"{stem}.md"
-
-
-def compose(title: str, nodes_used: list[str], abs_: str, body: str, data: Any = None) -> Document:
-    header = dump({"title": title, "nodes_used": nodes_used, "abs": abs_})
-    text = f"---\n{header}---\n\n{body.strip()}\n"
-    if data is not None:
-        text += f"\n```yaml\n{dump(data)}```\n"
-    return Document(text)
 
 
 def header_of(text: str) -> dict[str, Any]:
@@ -297,7 +288,6 @@ __all__ = [
     "Table",
     "add_checkout",
     "cells_of",
-    "compose",
     "data_of",
     "file_name",
     "header_field",

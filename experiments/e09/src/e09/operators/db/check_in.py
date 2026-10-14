@@ -57,6 +57,8 @@ def execute(ctx: Context, request: Mapping[str, Any]) -> dict[str, Any]:
     )
 
 
-CHECK_IN = Operator(name="CheckIn", family="db", parameters=PARAMETERS, execute=execute, writes=True)
+CHECK_IN = Operator(
+    name="CheckIn", family="db", parameters=PARAMETERS, execute=execute, writes=True, destructive=False
+)
 
 __all__ = ["CHECK_IN", "PARAMETERS", "execute"]

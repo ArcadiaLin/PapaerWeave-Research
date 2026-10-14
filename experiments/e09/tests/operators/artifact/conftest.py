@@ -1,4 +1,4 @@
-"""共同产物（CheckIn、FetchArtifact）测试的共用部件：在测试实例上写入一小份图，产物文档写到临时的材料根目录，
+"""共同产物（CheckIn、FetchArtifact、``_stale``）测试的共用部件：在测试实例上写入一小份图，产物文档写到临时的材料根目录，
 写者的工作目录也是临时目录。
 
 只在设置了 ``GRAPH_VC_TEST_NEO4J_URI`` 时运行，要求开始时库为空，结束后清空库、约束与索引。不会连 neo4j-e09。
@@ -125,10 +125,10 @@ def store(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Store]:
         driver.close()
 
 
-def commit_doc(store: Store, text: str) -> dict[str, Any]:
-    """经 Commit 写入路径提交一份 graph-doc。"""
-    ctx = CommitContext(Neo4jReader(store.graph, store.driver), "test", AT, store.material_root)
-    return run(text, graph=store.graph, driver=store.driver, ctx=ctx, commit=True)
+def commit_doc(store: Store, text: str, *, source: str = "test", commit: bool = True) -> dict[str, Any]:
+    """经 Commit 写入路径提交（或 dry_run）一份 graph-doc。"""
+    ctx = CommitContext(Neo4jReader(store.graph, store.driver), source, AT, store.material_root)
+    return run(text, graph=store.graph, driver=store.driver, ctx=ctx, commit=commit)
 
 
 class Writer:

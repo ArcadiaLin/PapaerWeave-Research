@@ -98,13 +98,12 @@ def load(path: Path = SPEC, operators: Mapping[str, Operator] = TOOLS) -> Spec:
 
 
 def annotations(op: Operator, title: str) -> types.ToolAnnotations:
-    """MCP 的行为提示：读取算子与读取接口只读；Agent 算子只追加，相同调用重试返回已有的 Artifact；
-    Commit 可修改与删除。"""
+    """MCP 的行为提示：读取算子与读取接口只读；CheckIn 只追加版本，相同内容重交不再写入；Commit 可修改与删除。"""
     if not op.writes:
         return types.ToolAnnotations(title=title, readOnlyHint=True, openWorldHint=False)
-    agent = op.family == "agent"
+    appends = not op.destructive
     return types.ToolAnnotations(
-        title=title, readOnlyHint=False, destructiveHint=not agent, idempotentHint=agent, openWorldHint=False
+        title=title, readOnlyHint=False, destructiveHint=not appends, idempotentHint=appends, openWorldHint=False
     )
 
 

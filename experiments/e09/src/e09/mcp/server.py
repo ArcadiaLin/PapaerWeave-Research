@@ -7,18 +7,18 @@
 调用经 ``Operator.call``，与命令行入口（:mod:`e09.cli`）的结果相同。结果以 YAML 文本返回；``status`` 为
 ``rejected``、``blocked`` 或 ``conflict`` 时标为 ``isError``，内容照样交给模型。
 
-**调用环境。** MCP 调用不带客户端的会话与模型，所以 Agent 算子的 ``session`` 由服务进程启动时生成（一个客户端
-会话对应一个服务进程）。写入者的身份由连接配置给出，相当于登录：``E09_USER`` 是形成者，记为 Artifact 的
-``formed_by``；Commit 的 ``by`` 可以省略（取登录身份），写了就必须相同。``E09_AGENT`` 是所用的 Agent 与模型，记入
+**调用环境。** MCP 调用不带客户端的会话与模型，所以 CheckIn 记下的 ``session`` 由服务进程启动时生成（一个客户端
+会话对应一个服务进程）。写入者的身份由连接配置给出，相当于登录：``E09_USER`` 是编辑者，记为提交的作者与 Artifact
+的 ``formed_by``；Commit 的 ``by`` 可以省略（取登录身份），写了就必须相同。``E09_AGENT`` 是所用的 Agent 与模型，记入
 提交的 ``meta.agent``。写入者无法自己声明身份。
 
-环境变量：``E09_NEO4J_URI`` 等连接参数（:mod:`e09.config`）；``E09_USER`` 登录身份，Agent 算子写入时必需；
+环境变量：``E09_NEO4J_URI`` 等连接参数（:mod:`e09.config`）；``E09_USER`` 登录身份，写入时记为编辑者；
 ``E09_AGENT`` 所用的 Agent 与模型；
 ``E09_ENABLE_COMMIT=1`` 时才列出 ``Commit``（它改动知识本身）；``E09_READ_ONLY=1`` 时只列出不写入的工具，``E09_HIDE_TOOLS`` 中的工具不列出；
 ``E09_EVIDENCE_SCOPE=artifacts`` 时 ReadEvidence 只读 Artifact 的文档，不读论文原文（:func:`scoped`）；``E09_NO_EMBED=1`` 时关闭查询向量，写入后也不补算；
-``E09_MCP_LOG`` 给出日志文件（追加写）；``E09_WORKDIR`` 是写者的工作目录，草稿文件（``payload_file``、
-``doc_file``）只从这里读，不设时取服务进程的当前目录；``E09_WORKDIR_ALIAS`` 是写者看到的同一目录（如沙箱中的
-``/work``，见 :mod:`e09.draft`）。库没有版本记录时服务不启动。
+``E09_MCP_LOG`` 给出日志文件（追加写）；``E09_WORKDIR`` 是写者的工作目录，草稿文件（``doc_file``、
+``artifact_doc``）只从这里读，FetchArtifact 也取到这里，不设时取服务进程的当前目录；``E09_WORKDIR_ALIAS`` 是写者
+看到的同一目录（如沙箱中的 ``/work``，见 :mod:`e09.draft`）。库没有版本记录时服务不启动。
 
 **日志。** 每次调用记一行：会话、工具、结果状态，以及执行前对参数的兜底修复（:mod:`e09.operators.repair`）。
 修复不告诉模型，只记在这里；日志写到 stderr，给了 ``E09_MCP_LOG`` 时也写入该文件。
