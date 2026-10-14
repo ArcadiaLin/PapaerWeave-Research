@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..artifact.types import identity_key
 from ..model.schema import (
     AGENT_OPS,
     ARTIFACT,
@@ -55,6 +56,8 @@ CONDITIONS = {
     "formed_by": Condition(CONTENT | _ARTIFACT, prop="formed_by"),
     "op": Condition(_ARTIFACT, prop="op", values=frozenset(AGENT_OPS) | frozenset(ARTIFACT_TYPES)),
     "session": Condition(_ARTIFACT, prop="session"),
+    # 共同产物的身份：给 {type, <身份字段>...}，换成检入时存在 key 上的规范化身份键后精确匹配
+    "key": Condition(_ARTIFACT, prop="key"),
     "used": Condition(_ARTIFACT, rel="USED"),
 }
 ROLE = "role"  # 只随 evaluates 出现：EVALUATES 边的 role
@@ -110,6 +113,14 @@ def compile_where(
             problems.append({"at": cond_at, "msg": "an empty list matches nothing"})
             continue
         param = f"{prefix}{i}"
+        if name == "key":
+            try:
+                values = [
+                    identity_key(v, at=cond_at if len(values) == 1 else f"{cond_at}[{j}]") for j, v in enumerate(values)
+                ]
+            except ContractError as exc:
+                problems += exc.errors
+                continue
         if cond.prop is not None:
             clause = _prop_clause(cond, values, param, cond_at, problems)
             if clause is not None:

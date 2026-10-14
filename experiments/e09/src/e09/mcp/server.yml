@@ -57,8 +57,10 @@ tools:
         {evaluates: <method id>, role: target, uses: <dataset id>}. Entity: part_of, for_task (Dataset, Benchmark), stub. Concept: broader, stub.
         Content: about, from (paper id), formed_by; Contribution: stated_by (paper | agent); Claim: supported_by;
         Experiment: evaluates (with role: target | baseline), uses (evaluation data), on_task, evaluated_on.
-        Artifact: op (Extract, Summarize, Generate, Check, Verify, Filter, MatrixConstruct), used (an object id),
-        formed_by, session.
+        Artifact: op (Extract, Summarize, Generate, Check, Verify, Filter, MatrixConstruct, Leaderboard,
+        CompareSettings, Skill), used (an object id), formed_by, session, key (find the one shared artifact with an identity:
+        {type: Leaderboard, task: <id>, dataset: <id>, setting: {variate: ...}}, {type: Skill, name: <name>},
+        {type: Verify, claim: <id>}, {type: CompareSettings, items: [<ref>, <ref>]}).
       expand: "Widen id conditions in where: {narrower: depth} also accepts narrower Concepts, {parts: depth} also accepts parts of an Entity; depth 1-3."
       scope: List of paper ids; only Content from these papers. Omit to search the whole store.
       budget: Number of results in this page, 1-100 (default 10).

@@ -7,11 +7,13 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from conftest import LEADERBOARD, MATERIAL, Writer, commit_doc
 
 from e09.artifact.stale import stale
 from e09.artifact.versions import history
-from e09.store import Store
+from e09.operators.db.search import search
+from e09.store import ContractError, Store
 
 PATH = "artifacts/ETTh1 multivariate long-term forecasting.md"
 ROW = "| method_0001 Transformer |  | paper_0001 DLinear | baseline | 96 | 96 | 0.865 |"
@@ -250,3 +252,31 @@ def test_paper_new_version_supersedes_rows(store: Store, writers: dict[str, Writ
     assert {r["ref"] for r in reasons} >= {"paper_0001::5.2 Comparison::10:12", "paper_0001::5.2 Comparison::12:12"}
     item = writers["bob"].fetch("art_0001")["items"][0]
     assert [s["at"] for s in item["notes"]["superseded_sources"]] == [16, 17]
+
+
+def test_search_by_identity(store: Store) -> None:
+    def ids(key: Any) -> list[str]:
+        return [r["id"] for r in search(store, "Artifact", where={"key": key})["results"]]
+
+    board = {
+        "type": "Leaderboard",
+        "task": "task_0001",
+        "dataset": "dataset_0001",
+        "setting": {"variate": "multivariate"},
+    }
+    assert ids(board) == ["art_0001"]
+    assert ids({**board, "task": "task_0001  Long-term forecasting", "setting": {"variate": "Multivariate"}}) == [
+        "art_0001"
+    ]
+    assert ids([board, {**board, "dataset": "dataset_0009"}]) == ["art_0001"]
+    assert ids({**board, "setting": {"variate": "univariate"}}) == []
+
+    for wrong, where in [
+        ({"type": "Generate"}, "has no identity"),
+        ({"type": "Leaderboard", "task": "task_0001"}, "also needs"),
+        ({**board, "metric": "MSE"}, "not ['metric']"),
+        ("art_0001", "a mapping"),
+    ]:
+        with pytest.raises(ContractError) as exc:
+            search(store, "Artifact", where={"key": wrong})
+        assert where in exc.value.errors[0]["msg"] and exc.value.errors[0]["at"] == "where.key"

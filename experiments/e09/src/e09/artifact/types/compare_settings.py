@@ -33,6 +33,7 @@ def _table(table: Table) -> bool:
 
 class CompareSettings(ArtifactType):
     name = "CompareSettings"
+    identity_fields = ("items",)
 
     def key(self, header: Mapping[str, Any]) -> str | None:
         return identity(self.name, *sorted(i.casefold() for i in _items(header)))

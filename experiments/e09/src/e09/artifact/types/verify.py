@@ -20,6 +20,7 @@ VERDICTS = ("T", "F", "U")
 
 class Verify(ArtifactType):
     name = "Verify"
+    identity_fields = ("claim",)
 
     def key(self, header: Mapping[str, Any]) -> str | None:
         return identity(self.name, leading_id(str(header.get("claim") or "")))

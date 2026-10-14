@@ -96,6 +96,7 @@ class ArtifactType:
 
     name: str = ""
     nested: bool = False  # type、id、base 写在 metadata 下（Skill）
+    identity_fields: tuple[str, ...] = ()  # 算身份键的头部字段；没有身份键的类型为空
 
     @cached_property
     def version(self) -> str:

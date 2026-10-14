@@ -24,6 +24,7 @@ DESCRIPTION_MAX = 1024
 class Skill(ArtifactType):
     name = "Skill"
     nested = True
+    identity_fields = ("name",)
 
     def title(self, header: Mapping[str, Any]) -> str:
         return normalize(header.get("name"))

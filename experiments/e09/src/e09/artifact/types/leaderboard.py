@@ -72,6 +72,7 @@ def _papers(table: Table) -> bool:
 
 class Leaderboard(ArtifactType):
     name = "Leaderboard"
+    identity_fields = ("task", "dataset", "setting")
 
     def key(self, header: Mapping[str, Any]) -> str | None:
         task, dataset = (leading_id(str(header.get(f) or "")) for f in ("task", "dataset"))
