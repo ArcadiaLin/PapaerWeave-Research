@@ -27,7 +27,8 @@ from ..query.versions import pin
 from ..store.store import ContractError, Store
 from .checkin import relocate
 from .document import Parsed, add_checkout, line_map
-from .sources import lookup, pins
+from .sources import lookup
+from .stale import pinned as pins
 from .types import TYPES, ArtifactType
 from .versions import Version, blame, history, load, since
 

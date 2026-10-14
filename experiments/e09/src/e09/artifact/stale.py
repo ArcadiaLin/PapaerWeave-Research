@@ -7,7 +7,10 @@
   删掉指向它的 ``USED`` 边，所以按文档本身核对，而不是看现存的边。共同产物的引用由类型契约从当前版本的文档中
   找出（:func:`references`），旧版 Agent 算子的产物按文档头部的 ``nodes_used``；
 - ``material``：所用材料的文件不在，或哈希与登记的不同；
-- ``superseded``：所用材料已被同一论文的新版本取代（材料上的 ``superseded_by``），另带 ``by`` 给出新材料；
+- ``superseded``：所用材料已被新版本取代（材料上的 ``superseded_by``），另带 ``by`` 给出新材料：论文有了新版本，
+  或所引的产物有了新版本。共同产物按原样保存，引用常以节点 id 开头（如 ``paper_0001::5.2::10:12``、
+  ``art_0003#<行键>``），它们按 ``USED`` 边上记下的 ``material_ref``（写入时所读的版本，:func:`pinned`）判断；
+  旧版产物的文档已写成材料 id，直接判断；
 - ``revised``：所用的有据层或解释层记录在产物当前版本形成之后被修订过（改了内容、标签或出边），另带 ``commit`` 指出
   最早的那次提交，可以用 Show 查看改了什么。增删改出边时，agent 的正反关系不算；别人给解释层记录新增出边也不算。
   实体与概念的改动（如补别名、描述）不算，否则提示会被噪声淹没；
@@ -77,7 +80,11 @@ def stale(store: Store, ids: Iterable[str]) -> dict[str, list[dict[str, str]]]:
         refs = [r for r in (parse_ref(t) for t in references(info["op"], text)) if r is not None]
         heads = {r.head for r in refs}
         kinds = store.kinds(heads)
-        found = materials(store, {r.head for r in refs if r.kind == "source"})
+        pins = pinned(store, art_id)
+        sources = {r.head: pins.get(r.head, r.head) for r in refs if r.kind == "source"}
+        resolved = materials(store, set(sources.values()))
+        found = {head: resolved[at] for head, at in sources.items() if at in resolved}
+        versions = materials(store, {pins[h] for h in heads if kinds.get(h) == ARTIFACT and h in pins})
         lines: dict[str, bool] = {}
         reasons: list[dict[str, str]] = []
         for ref in refs:
@@ -94,8 +101,12 @@ def stale(store: Store, ids: Iterable[str]) -> dict[str, list[dict[str, str]]]:
                     reasons.append({"ref": ref.text, "reason": "superseded", "by": head["superseded_by"]})
             elif ref.head not in kinds:
                 reasons.append({"ref": ref.text, "reason": "removed"})
-            elif kinds[ref.head] == ARTIFACT and visit(ref.head):
-                reasons.append({"ref": ref.text, "reason": "stale input"})
+            elif kinds[ref.head] == ARTIFACT:
+                version = versions.get(pins.get(ref.head, ""))
+                if version is not None and version.get("superseded_by"):
+                    reasons.append({"ref": ref.text, "reason": "superseded", "by": version["superseded_by"]})
+                if visit(ref.head):
+                    reasons.append({"ref": ref.text, "reason": "stale input"})
         used = [r.head for r in refs if r.kind != "source" and kinds.get(r.head) not in (None, ARTIFACT)]
         reasons += [
             {"ref": head, "reason": "revised", "commit": commit} for head, commit in revised(store, art_id, used)
@@ -104,6 +115,16 @@ def stale(store: Store, ids: Iterable[str]) -> dict[str, list[dict[str, str]]]:
         return reasons
 
     return {art_id: visit(art_id) for art_id in dict.fromkeys(ids)}
+
+
+def pinned(store: Store, art_id: str) -> dict[str, str]:
+    """产物 ``USED`` 边上记下的材料：终点 → 写入时所读的材料 id（论文的某个版本、所引产物的某个版本）。"""
+    rows = store.query(
+        """MATCH (:Artifact {id: $id})-[u:USED]->(x) WHERE u.material_ref IS NOT NULL
+           RETURN x.id AS id, u.material_ref AS material""",
+        id=art_id,
+    )
+    return {r["id"]: r["material"] for r in rows}
 
 
 def references(op: str | None, text: str) -> list[str]:
@@ -189,4 +210,4 @@ def readonly(store: Store, ids: Iterable[str]) -> dict[str, dict[str, Any]]:
     return out
 
 
-__all__ = ["document_text", "documents", "readonly", "references", "revised", "stale"]
+__all__ = ["document_text", "documents", "pinned", "readonly", "references", "revised", "stale"]

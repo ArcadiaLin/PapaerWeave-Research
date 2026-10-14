@@ -125,6 +125,12 @@ def store(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Store]:
         driver.close()
 
 
+def commit_doc(store: Store, text: str) -> dict[str, Any]:
+    """经 Commit 写入路径提交一份 graph-doc。"""
+    ctx = CommitContext(Neo4jReader(store.graph, store.driver), "test", AT, store.material_root)
+    return run(text, graph=store.graph, driver=store.driver, ctx=ctx, commit=True)
+
+
 class Writer:
     """一个写者：自己的工作目录与登录身份。"""
 

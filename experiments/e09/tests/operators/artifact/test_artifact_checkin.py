@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from conftest import LEADERBOARD, Writer
+from conftest import LEADERBOARD, MATERIAL, Writer, commit_doc
 
 from e09.artifact.stale import stale
 from e09.artifact.versions import history
@@ -229,3 +229,24 @@ def test_generate_stats(writers: dict[str, Writer]) -> None:
     alice = writers["alice"]
     alice.write("stats.md", "---\ntype: Generate\ntitle: Stats\nabs: Stats.\n---\nOne [exp_0001].\n\nTwo.\n")
     assert alice.check_in("stats.md")["items"][0]["stats"] == {"paragraphs": 2, "cited_paragraphs": 1}
+
+
+def test_cited_artifact_has_a_newer_version(store: Store) -> None:
+    latest = history(store, "art_0001")[-1].material["id"]  # art_0002 引的是 v3，之后有了 v4
+    reasons = stale(store, ["art_0002"])["art_0002"]
+    assert reasons == [{"ref": "art_0001#method_0002++paper_0001+96+336", "reason": "superseded", "by": latest}]
+
+
+def test_paper_new_version_supersedes_rows(store: Store, writers: dict[str, Writer]) -> None:
+    v2 = MATERIAL.replace("paper.md", "v2/paper.md")
+    file = store.material_root / v2
+    file.parent.mkdir(parents=True, exist_ok=True)
+    file.write_text("".join(f"line {i} (v2)\n" for i in range(1, 61)), encoding="utf-8")
+    new = commit_doc(store, f"graph-doc: v0.1\nby: maintainer\nnodes:\n  paper_0001:\n    material: {v2}\n")
+    assert new["status"] == "committed", new
+
+    reasons = stale(store, ["art_0001"])["art_0001"]
+    assert {r["reason"] for r in reasons} == {"superseded"}
+    assert {r["ref"] for r in reasons} >= {"paper_0001::5.2 Comparison::10:12", "paper_0001::5.2 Comparison::12:12"}
+    item = writers["bob"].fetch("art_0001")["items"][0]
+    assert [s["at"] for s in item["notes"]["superseded_sources"]] == [16, 17]
