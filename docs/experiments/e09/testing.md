@@ -1,6 +1,6 @@
 # E09 测试的运行方法
 
-> **记录日期：** 2026-10-08。本文面向执行测试的 Agent，也供人工参考。它说明怎样运行 `packages/graph-vc`、`packages/graph-doc` 与 `experiments/e09` 的测试，以及怎样让默认配置的 pi 经 MCP 实际使用 E09 的工具。命令都从仓库根目录执行，除非另行说明。
+> **记录日期：** 2026-10-08。本文面向执行测试的 Agent，也供人工参考。它说明怎样运行 `packages/graph-vc`、`packages/graph-doc` 与 `system` 的测试，以及怎样让默认配置的 pi 经 MCP 实际使用 E09 的工具。命令都从仓库根目录执行，除非另行说明。
 
 ## 0. 先读这一节
 
@@ -28,7 +28,7 @@
 | --- | --- | --- |
 | `packages/graph-vc` | 45 个：变更集、内存状态 | 15 个：`tests/test_store.py`（提交、回滚、重放、可逆、`state_at` 等） |
 | `packages/graph-doc` | 54 个 | 2 个：`tests/test_roundtrip.py` |
-| `experiments/e09` | 105 个：写入管线的内存场景、MCP 装配、工具接口、参数修复、读取接口（`tests/interfaces/`，用内存中的版本历史） | 101 个：`tests/commit/` 的往返与命令行、`tests/operators/db/`、`tests/operators/agent/` |
+| `system` | 105 个：写入管线的内存场景、MCP 装配、工具接口、参数修复、读取接口（`tests/interfaces/`，用内存中的版本历史） | 101 个：`tests/commit/` 的往返与命令行、`tests/operators/db/`、`tests/operators/agent/` |
 
 数量是 2026-10-08 不设置测试实例时的结果（通过与跳过）。
 
@@ -37,8 +37,8 @@
 以下连库测试是 2026-10-07 至 10-08 新增的，**还没有在 Neo4j 上运行过**。第一次运行就是对它们的检验：
 
 - graph-vc `test_state_at_is_the_state_after_each_commit`：逆向重放求出的每个提交时的状态，等于从空状态正向重放的结果；
-- e09 `test_db_evidence.py::test_at_resolves_references_in_a_past_state`：ReadEvidence 的 `at`；
-- e09 `test_db_traverse.py::test_snapshot_is_the_head_the_view_was_read_at` 与 `test_db_search.py::test_snapshot_is_the_head_the_results_were_read_at`：读取前后核对头提交。
+- system `test_db_evidence.py::test_at_resolves_references_in_a_past_state`：ReadEvidence 的 `at`；
+- system `test_db_traverse.py::test_snapshot_is_the_head_the_view_was_read_at` 与 `test_db_search.py::test_snapshot_is_the_head_the_results_were_read_at`：读取前后核对头提交。
 
 ## 2. 安全约定
 
@@ -53,12 +53,12 @@
 
 ```bash
 .venv/bin/python -m pytest packages/graph-vc packages/graph-doc -q
-(cd experiments/e09 && ../../.venv/bin/python -m pytest tests -q)
-(cd experiments/e09 && uvx ruff check src tests && uvx ruff format --check src tests)
+(cd system && ../.venv/bin/python -m pytest tests -q)
+(cd system && uvx ruff check src tests && uvx ruff format --check src tests)
 uvx ruff check packages/graph-vc && uvx ruff format --check packages/graph-vc
 ```
 
-期望结果：graph-vc 与 graph-doc 共 99 个通过、17 个跳过；e09 105 个通过、101 个跳过；ruff 无报告。`.venv` 不存在时在仓库根目录运行 `make setup`；不要在成员目录里运行 `uv sync`（见 AGENTS.md）。
+期望结果：graph-vc 与 graph-doc 共 99 个通过、17 个跳过；system 105 个通过、101 个跳过；ruff 无报告。`.venv` 不存在时在仓库根目录运行 `make setup`；不要在成员目录里运行 `uv sync`（见 AGENTS.md）。
 
 ## 4. 层 B：在一次性实例上运行连库测试
 
@@ -76,15 +76,15 @@ until docker logs neo4j-test-run 2>&1 | grep -q "Started."; do sleep 2; done
 export GRAPH_VC_TEST_NEO4J_URI=bolt://localhost:7689
 .venv/bin/python -m pytest packages/graph-vc -q -rs
 .venv/bin/python -m pytest packages/graph-doc -q -rs
-(cd experiments/e09 && ../../.venv/bin/python -m pytest tests -q -rs)
+(cd system && ../.venv/bin/python -m pytest tests -q -rs)
 
 # 4. 停止，容器与数据一并删除
 docker stop neo4j-test-run
 ```
 
-当前用户不在 docker 组时，把 `docker` 换成 `sudo docker`。e09 的第 3 步也可以写成 `make -C experiments/e09 test`，它执行 `uv run pytest tests -q`，不加 `-rs`。
+当前用户不在 docker 组时，把 `docker` 换成 `sudo docker`。system 的第 3 步也可以写成 `make -C system test`，它执行 `uv run pytest tests -q`，不加 `-rs`。
 
-**期望结果：** 三个测试集都没有跳过，全部通过：graph-vc 60 个，graph-doc 56 个，e09 206 个。
+**期望结果：** 三个测试集都没有跳过，全部通过：graph-vc 60 个，graph-doc 56 个，system 206 个。
 
 **各测试集依次运行，不要并行。** 每个模块都要求开始时库为空，并行运行会互相看到对方的数据。一个模块中途失败、没有清空时，之后的模块会因库不空而跳过。这时停止容器，重新执行第 1 步，再从失败的测试集重跑。
 
@@ -121,21 +121,21 @@ docker stop neo4j-test-run
 
 ```bash
 # 只读与 Agent 算子（Extract、Generate 等仍会写入 Artifact）
-make -C experiments/e09 workspace DIR=~/e09-runs/2026-10-08-history-read \
+make -C system workspace DIR=~/e09-runs/2026-10-08-history-read \
   ARGS="--neo4j-uri bolt://localhost:7688"
 
 # 写入知识：列出 Commit；先征得用户同意
-make -C experiments/e09 workspace DIR=~/e09-runs/2026-10-08-history-commit \
+make -C system workspace DIR=~/e09-runs/2026-10-08-history-commit \
   ARGS="--neo4j-uri bolt://localhost:7688 --enable-commit"
 ```
 
 目录里只有三样东西：
 
-- `.pi/mcp.json`：登记 `PaperWeave` 服务（`python -m e09.mcp`），并写明 `E09_NEO4J_URI`、`E09_FORMED_BY` 与日志路径；
+- `.pi/mcp.json`：登记 `PaperWeave` 服务（`python -m paperweave.mcp`），并写明 `PAPERWEAVE_NEO4J_URI`、`PAPERWEAVE_FORMED_BY` 与日志路径；
 - `.pi/settings.json`：把会话存到 `.pi/sessions/`；
 - `pi.sh`：在目录中启动 pi。
 
-生成后先确认 `.pi/mcp.json` 中 `E09_NEO4J_URI` 是 `bolt://localhost:7688`。目录已存在且不空时，生成会拒绝。
+生成后先确认 `.pi/mcp.json` 中 `PAPERWEAVE_NEO4J_URI` 是 `bolt://localhost:7688`。目录已存在且不空时，生成会拒绝。
 
 **运行时的笔记与输出放在实验目录之外**，例如 `~/e09-runs/2026-10-08-history-read.notes/`。pi 能读写自己的工作目录；以往的试跑中，它用 `ls` 查看过工作目录。放在目录里的东西可能被它读到。
 
@@ -144,8 +144,8 @@ make -C experiments/e09 workspace DIR=~/e09-runs/2026-10-08-history-commit \
 pi 的每次运行都可能写入。Agent 算子把 Artifact 写成提交，来源记为 `operator:<算子名>`；Commit 写入的来源是 Agent 给出的说明。运行前记下头提交，运行后用读取接口查看这一轮写了什么：
 
 ```bash
-cd experiments/e09
-E09_NEO4J_URI=bolt://localhost:7688 ../../.venv/bin/python -m e09 -e '{op: Log, budget: 1}' --no-embed
+cd system
+PAPERWEAVE_NEO4J_URI=bolt://localhost:7688 ../.venv/bin/python -m paperweave -e '{op: Log, budget: 1}' --no-embed
 ```
 
 记下输出中的 `meta.at`，即运行前的头提交。这条命令只读。
@@ -233,12 +233,12 @@ EOF
 - **写入。** 运行后用第 6.3 节的命令，加上 `since: <运行前的头提交>`，列出这一轮的提交：
 
   ```bash
-  cd experiments/e09
-  E09_NEO4J_URI=bolt://localhost:7688 ../../.venv/bin/python -m e09 \
+  cd system
+  PAPERWEAVE_NEO4J_URI=bolt://localhost:7688 ../.venv/bin/python -m paperweave \
     -e '{op: Log, since: commit_000032}' --no-embed
   ```
 
-  `by` 是写入者：Agent 算子的提交为 `E09_FORMED_BY`（如 `sglang/qwen3.8-27b`），Commit 的提交为 Agent 自己填写的名字。需要细看时用 `{op: Show, commit: <id>, part: changes}`。T1 至 T4 不应出现 `source` 不是 `operator:…` 的提交，否则说明没有 Commit 的目录也写入了知识。
+  `by` 是写入者：Agent 算子的提交为 `PAPERWEAVE_FORMED_BY`（如 `sglang/qwen3.8-27b`），Commit 的提交为 Agent 自己填写的名字。需要细看时用 `{op: Show, commit: <id>, part: changes}`。T1 至 T4 不应出现 `source` 不是 `operator:…` 的提交，否则说明没有 Commit 的目录也写入了知识。
 - **回答内容。** 回答中的数值与结论要对照它引用的原文核实，可以用 `{op: ReadEvidence, source_refs: [...]}` 读出。回答流畅、引用格式正确，都不说明内容正确。
 
 ### 6.7 报告

@@ -1,6 +1,6 @@
 # 草稿文件：大块内容经文件交给算子
 
-状态：已同意（2026-10-11），已实现（`experiments/e09/src/e09/draft.py`，Git `a8ec86f`）。2026-10-12 随算子契约修订：
+状态：已同意（2026-10-11），已实现（`system/src/paperweave/draft.py`，Git `a8ec86f`）。2026-10-12 随算子契约修订：
 
 - Extract 与 MatrixConstruct 已从算子集合中去掉（[算子契约](./operators.md) §8），它们的 CSV 草稿随之作废，代码随旧算子一起移除；
 - 本文的原则推广到新的产物算子：产物文档就是写者工作目录里的一份文件，经 `FetchArtifact` 取出、编辑后按路径检入（[算子契约](./operators.md) §3.6、§4.1）；
@@ -84,8 +84,8 @@ errors:
 - 只接受写者工作目录内的路径：相对路径相对于工作目录；绝对路径必须落在工作目录之内。规范化后（解析 `..` 与符号链接）仍须在工作目录内，否则拒绝（`format`）。
 - 不接受材料根目录下的路径。写者交的是自己工作目录里的文件，不是已登记的材料。
 - **工作目录由服务端决定**，写者无法自行声明：
-  - 设置了 `E09_WORKDIR` 时用它（T1：写者工作目录在宿主机上的路径）。`E09_WORKDIR_ALIAS` 给出写者看到的同一目录（T1 沙箱中为 `/work`），以这个前缀开头的绝对路径按它换算。
-  - 未设置时，用 MCP 服务进程的当前目录。pi 是否在工作区中启动 MCP 服务，实现时核实；不是的话，`make workspace` 生成的 MCP 登记里要写入 `E09_WORKDIR`。
+  - 设置了 `PAPERWEAVE_WORKDIR` 时用它（T1：写者工作目录在宿主机上的路径）。`PAPERWEAVE_WORKDIR_ALIAS` 给出写者看到的同一目录（T1 沙箱中为 `/work`），以这个前缀开头的绝对路径按它换算。
+  - 未设置时，用 MCP 服务进程的当前目录。pi 是否在工作区中启动 MCP 服务，实现时核实；不是的话，`make workspace` 生成的 MCP 登记里要写入 `PAPERWEAVE_WORKDIR`。
 - 单个文件不超过 2 MB，超过时拒绝。
 - `FetchArtifact` 也写到这个工作目录（`./artifacts/`），路径规则相同。
 
@@ -95,14 +95,14 @@ errors:
 
 - MCP 中 Commit 的 `apply` 默认值改为 `true`。工具描述写明：直接交；被拦下（`blocked`）就按报错修改草稿后再交；只想预览时传 `apply: false`。
 - 查重候选、修订要求等阻塞项照常在写入之前退回写者，写入时的裁决仍由写者做出。
-- 命令行（`python -m e09`）的默认值不变，仍需显式 `--apply`。
+- 命令行（`python -m paperweave`）的默认值不变，仍需显式 `--apply`。
 
 产物算子与此不同：不带 `confirm` 时只校验（[算子契约](./operators.md) §4.1）。原因是产物的校验有警告（如数字不在所引的行中），警告应在写入前给出，否则为了改一个笔误要多出一个版本；Commit 只有阻塞项，没有阻塞时直接提交没有损失。
 
 ## 8. T1 运行框架的配套修复（不属于系统设计，一并记录）
 
 - 沙箱内 pi 的设置加入 `httpIdleTimeoutMs: 1800000`，写入实验配置留档。
-- MCP 服务的启动环境加入 `E09_WORKDIR`（写者工作目录在宿主机上的路径）与 `E09_WORKDIR_ALIAS=/work`。
+- MCP 服务的启动环境加入 `PAPERWEAVE_WORKDIR`（写者工作目录在宿主机上的路径）与 `PAPERWEAVE_WORKDIR_ALIAS=/work`。
 - A0 会话结束后，记录笔记库中未提交的改动清单（写入 `sessions.jsonl`），然后丢弃这些改动，使两组对称：A3 中未经 Commit 的内容不进库；A0 中未经 git commit 的内容也不留给下一个写者。
 - `sessions.jsonl` 增加每个会话的请求出错次数（`stopReason: error`）。会话前后的库版本已有记录，库没有变化的会话因此能直接看出来。
 

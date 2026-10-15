@@ -103,7 +103,7 @@ AccessResult = {query, items, bindings, source_refs, missing, coverage, continua
 - **契约错误**（未知参数、类型不符的引用、该类别不支持的条件、图模型中不存在的端点组合）直接报错，不返回部分结果。所有算子没有完成时的返回同形：`{status, errors}`，`status` 为 `rejected`（请求没有被执行，什么也没有写入）、`blocked`（`Commit` 的阻塞项）或 `conflict`（提交时与并发写入冲突），`errors` 的每一项为 `{rule, at, msg}`，`at` 指向出错的参数或节点，`Commit` 的阻塞项另带 `candidates` 与 `fix`。请求的顶层形状不对（未知参数、缺少必填参数）记为 `format`，参数的取值不对记为 `schema`。
 - **数据缺失**（引用不在库中、关系无记录）返回空集合与覆盖信息，不当作错误。
 - **执行失败**（向量服务不可用、索引缺失）记入通道状态（`Search` 为 `meta.failed`）；因失败而没有结果时不当作空结果。
-- **会话**：产物算子的会话标识 `session` 与形成者 `formed_by` 记在产物版本的提交上，用于按会话追溯产物。二者是调用环境的信息，由调用方给出（MCP 服务：进程启动时生成的会话与环境变量 `E09_FORMED_BY`；命令行：`--session`、`--formed-by`），不是算子参数；算子作为工具时，参数中也没有 `op`，工具名就是算子名。
+- **会话**：产物算子的会话标识 `session` 与形成者 `formed_by` 记在产物版本的提交上，用于按会话追溯产物。二者是调用环境的信息，由调用方给出（MCP 服务：进程启动时生成的会话与环境变量 `PAPERWEAVE_FORMED_BY`；命令行：`--session`、`--formed-by`），不是算子参数；算子作为工具时，参数中也没有 `op`，工具名就是算子名。
 
 ## 3. 中间件算子
 
@@ -173,7 +173,7 @@ Search(type, query?, kinds?, where={}, expand={}, scope="global", budget, contin
 
 **容量。** MCP 客户端会截断过长的工具结果（pi 为 20 KB，截掉中间部分，且不能配置），所以整份结果按 YAML 字节数控制在 16 KB 以内：先放下各结果的识别字段与 `meta`，放不下时从末尾去掉结果、续取位置随之前移；余下的容量平均分给各结果的摘录，摘录本来就短的结果省下的部分再平均分给其余结果；一个结果内先给 `text` 再给 `note`。超出份额的字段在 UTF-8 字符边界截断，末尾写 `…`，其后的 `<字段>_bytes` 给出原文长度。
 
-`meta` 为 `returned`、`matched`、`continuation`、`snapshot`、`size`（`{limit, used, cut}`，`cut` 是被截断的字段数），以及非空时的 `missing`、`diagnostics`、`expanded`（`expand` 实际放宽到的引用）与 `failed`（失败的通道及原因）。取得依据与覆盖信息（通道状态、候选池、向量超取）写入日志 `e09.search`（MCP 服务写在 stderr 与 `E09_MCP_LOG`）。
+`meta` 为 `returned`、`matched`、`continuation`、`snapshot`、`size`（`{limit, used, cut}`，`cut` 是被截断的字段数），以及非空时的 `missing`、`diagnostics`、`expanded`（`expand` 实际放宽到的引用）与 `failed`（失败的通道及原因）。取得依据与覆盖信息（通道状态、候选池、向量超取）写入日志 `paperweave.search`（MCP 服务写在 stderr 与 `PAPERWEAVE_MCP_LOG`）。
 
 **不做的事：** 不接受自然语言的 `where`；不按语义判断"是否适用"；Benchmark 引用不当作数据集条件。
 
@@ -187,7 +187,7 @@ Resolve(query={identifier?, mention?, text?}, kind, scope="global", mode=read | 
 ref = {id, kind, name, aliases?, about?}
 ```
 
-**输出：** 解析视图。`refs` 的每一项带名称、别名与说明的开头（`about`，description 或 definition 的前 200 字节），供 Agent 判断候选是不是它要找的对象，完整字段用 `Traverse` 读取；`similar` 是精确命中以外的语义近邻（write 模式的查重、read 模式 ambiguous 时）；`issues` 是标识与名称冲突等数据问题；`failed` 是执行失败的通道。匹配过程（各阶段的键与命中、各通道的名次与融合分、`states`、`coverage`）写入日志 `e09.resolve`；`Commit` 的查重直接使用这份完整结果。
+**输出：** 解析视图。`refs` 的每一项带名称、别名与说明的开头（`about`，description 或 definition 的前 200 字节），供 Agent 判断候选是不是它要找的对象，完整字段用 `Traverse` 读取；`similar` 是精确命中以外的语义近邻（write 模式的查重、read 模式 ambiguous 时）；`issues` 是标识与名称冲突等数据问题；`failed` 是执行失败的通道。匹配过程（各阶段的键与命中、各通道的名次与融合分、`states`、`coverage`）写入日志 `paperweave.resolve`；`Commit` 的查重直接使用这份完整结果。
 
 - **只解析 Entity 与 Concept。** Content 与 Artifact 没有称呼，用 `Search` 定位。
 - **三级解析：** 已注册标识（唯一命名空间单个命中即 resolved，非唯一命名空间只缩小候选）→ NameKey 精确键（active 键唯一命中即 resolved）→ 名称词面、文本、向量三通道按 RRF 融合的语义候选。标识与名称同时给出时取交集；名称命中了对象而交集为空时记 `resolution=conflicting`。
@@ -257,7 +257,7 @@ ReadEvidence(source_refs, at?) -> {items, missing, coverage}
 
 读的是产物文档时，结果另带一行编辑提示（第 5.6 节），待实现。
 
-**只读产物文档的读者条件。** 服务启动时设 `E09_EVIDENCE_SCOPE=artifacts`，ReadEvidence 只读产物文档：引用落到论文材料时返回 `missing`，原因写明“这里只能读产物文档，不能读论文”。T1 的 `store_only` 读者用这一设置（[冻结记录](../../decisions/2026-10-11-t1-pilot-2-freeze.md) §6）。
+**只读产物文档的读者条件。** 服务启动时设 `PAPERWEAVE_EVIDENCE_SCOPE=artifacts`，ReadEvidence 只读产物文档：引用落到论文材料时返回 `missing`，原因写明“这里只能读产物文档，不能读论文”。T1 的 `store_only` 读者用这一设置（[冻结记录](../../decisions/2026-10-11-t1-pilot-2-freeze.md) §6）。
 
 `at`（提交 id 或 `main`）给出时，按该提交时的状态解析引用，`coverage.at` 给出固定下来的提交。它用于读取 `AsOf` 旧视图中的材料：即使材料节点或它的归属关系后来被删除，也能读到；文件仍按登记的哈希核对（[读取接口](./versioning_interfaces.md) 第 6.2 节）。
 
@@ -597,13 +597,13 @@ Artifact 是解释层的工作产物；Observation 是由提交者明确写入�
 
 ## 9. E09 实现对照
 
-模块都在 `experiments/e09/src/e09/` 下。每个算子一个文件，定义一个 `Operator`（`operators/base.py`：名称、参数的 JSON Schema 与执行），按名称登记在 `operators.OPERATORS` 中。
-通用 Agent 经 MCP 服务 PaperWeave（`python -m e09.mcp`）使用算子：每个算子一个工具，给模型看的文字（`instructions`、
-工具的标题与说明、参数说明）都在 `mcp/server.yml`，启动时与算子的结构装配成工具；`Commit` 只在 `E09_ENABLE_COMMIT=1`
+模块都在 `system/src/paperweave/` 下。每个算子一个文件，定义一个 `Operator`（`operators/base.py`：名称、参数的 JSON Schema 与执行），按名称登记在 `operators.OPERATORS` 中。
+通用 Agent 经 MCP 服务 PaperWeave（`python -m paperweave.mcp`）使用算子：每个算子一个工具，给模型看的文字（`instructions`、
+工具的标题与说明、参数说明）都在 `mcp/server.yml`，启动时与算子的结构装配成工具；`Commit` 只在 `PAPERWEAVE_ENABLE_COMMIT=1`
 时列出。工具的每个顶层参数都声明一种确定的 JSON 类型（列表参数是数组，`query` 是对象，`Commit.doc` 是 YAML 文本），
 不用 `anyOf`：按 `type` 转换参数的工具调用解析器（如 sglang 解析 qwen 的工具调用）会把只有 `anyOf` 的参数当作字符串。
 算子本身仍接受单个字符串、`scope="global"` 等写法。
-顶层的对象与数组参数在暴露的 schema 中也接受字符串：`Operator.call` 执行前按算子的 schema 兜底修复参数（`operators/repair.py`：JSON 文本解析并补齐末尾缺少的括号、字面量转换、枚举的大小写与 `true`/`false` 判断），来源引用的写法偏差由 `model/refs.py` 的 `normalize_ref` 兜底；修复不告诉 Agent，只记在服务日志中（stderr 与 `E09_MCP_LOG`）。命令行入口 `python -m e09`
+顶层的对象与数组参数在暴露的 schema 中也接受字符串：`Operator.call` 执行前按算子的 schema 兜底修复参数（`operators/repair.py`：JSON 文本解析并补齐末尾缺少的括号、字面量转换、枚举的大小写与 `true`/`false` 判断），来源引用的写法偏差由 `model/refs.py` 的 `normalize_ref` 兜底；修复不告诉 Agent，只记在服务日志中（stderr 与 `PAPERWEAVE_MCP_LOG`）。命令行入口 `python -m paperweave`
 的请求以 `op` 为算子名；直接给 graph-doc 时视为 `Commit`。两个入口经同一个 `Operator.call`，结果相同。共用的支持放在与
 `operators/` 同级的包中，依赖方向为 `operators → commit、artifact、query → store、model`。
 
@@ -612,7 +612,7 @@ Artifact 是解释层的工作产物；Observation 是由提交者明确写入�
 | `Search` | `operators/db/search.py` | 已实现，含 `type=Artifact` 与有据层记录的 `_revised`；产物的编辑提示待实现 |
 | `Resolve` | `operators/db/resolve.py`，三级解析在 `query/resolve.py` | 已实现；`Commit` 的查重也用它 |
 | `Traverse` | `operators/db/traverse.py` | 已实现，含 `USED` 与 `_revised` |
-| `ReadEvidence` | `operators/db/read_evidence.py` | 已实现，可读 Artifact 文档，含 `E09_EVIDENCE_SCOPE`；编辑提示待实现 |
+| `ReadEvidence` | `operators/db/read_evidence.py` | 已实现，可读 Artifact 文档，含 `PAPERWEAVE_EVIDENCE_SCOPE`；编辑提示待实现 |
 | `Commit` | `operators/db/commit.py`，写入管线在 `commit/` | 已实现：graph-doc → graph-plan / graph-result，经 graph-vc 提交；`doc_file`、论文新版本已实现；返回相关的共同产物待实现 |
 | `FetchArtifact` | — | 待实现 |
 | `Leaderboard`、`CompareSettings`、`Verify`、`Summarize`、`Generate` | — | 待实现。现有的 `operators/agent/` 是旧版的 7 个 Agent 算子（Extract、Summarize、Generate、Check、Verify、Filter、MatrixConstruct，写入后不可修改），新算子实现后替换；`Summarize`、`Generate`、`Verify` 的引用校验可沿用 |
@@ -625,6 +625,6 @@ Artifact 是解释层的工作产物；Observation 是由提交者明确写入�
 | 数据模型、引用写法、名称精确键 | `model/schema.py`、`model/refs.py`、`model/namekey.py` |
 | 算子环境、库的版本记录与约束索引、连接、向量 | `store/store.py`、`store/database.py`、`store/graph.py`、`store/embedding.py` |
 
-测试在 `experiments/e09/tests/operators/db/` 与 `tests/operators/agent/`，只在空的测试实例（`GRAPH_VC_TEST_NEO4J_URI`）上运行；写入管线的测试在 `tests/commit/`。
+测试在 `system/tests/operators/db/` 与 `tests/operators/agent/`，只在空的测试实例（`GRAPH_VC_TEST_NEO4J_URI`）上运行；写入管线的测试在 `tests/commit/`。
 
 **参考：** [S] Hai Lan et al. *AgenticScholar: Agentic Data Management with Pipeline Orchestration for Scholarly Corpora.* PACMMOD 4(2), Article 131, 2026（本地精读见 `references/papers/2026-AgenticScholar-reread/`）。旧版的 Agent 算子名称沿用自 [S]（Table 2 与 Appendix D）。

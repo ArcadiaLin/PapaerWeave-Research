@@ -1,6 +1,6 @@
 # 版本记录的读取接口：Log、Show、Diff、AsOf
 
-> **记录日期：** 2026-10-07。**状态：** 四个接口已在 E09 实现（`experiments/e09/src/e09/interfaces/`，作为 MCP 工具提供）；ReadEvidence 的 `at` 参数（第 6.2 节）与 Search、Traverse 的头提交核对（第 2.1 节）已实现（2026-10-08）。运行测试的方法见 `docs/experiments/e09/testing.md`。2026-10-12：产物改为有版本的文档（[算子契约](./operators.md) §5），产物的每次检入也是一个提交，四个接口照常适用，见第 1.1 节。实现中定下的写法已补入第 2.1、2.2、2.3、3、4 节与第 9 节。同日按评审修订：`AsOf` 以完整状态的逆向重放为准（第 6 节）；历史读取的材料访问与只读字段（第 6.2 节）；分支名与分页固定到具体提交（第 2.1 节）；容量与不截断的冲突规则（第 2.2 节）；Fork 与 Merge 的定位（第 1 节）。
+> **记录日期：** 2026-10-07。**状态：** 四个接口已在 E09 实现（`system/src/paperweave/interfaces/`，作为 MCP 工具提供）；ReadEvidence 的 `at` 参数（第 6.2 节）与 Search、Traverse 的头提交核对（第 2.1 节）已实现（2026-10-08）。运行测试的方法见 `docs/experiments/e09/testing.md`。2026-10-12：产物改为有版本的文档（[算子契约](./operators.md) §5），产物的每次检入也是一个提交，四个接口照常适用，见第 1.1 节。实现中定下的写法已补入第 2.1、2.2、2.3、3、4 节与第 9 节。同日按评审修订：`AsOf` 以完整状态的逆向重放为准（第 6 节）；历史读取的材料访问与只读字段（第 6.2 节）；分支名与分页固定到具体提交（第 2.1 节）；容量与不截断的冲突规则（第 2.2 节）；Fork 与 Merge 的定位（第 1 节）。
 >
 > 依据：[版本化知识管理备忘](../../discussions/2026-10-05-versioned-knowledge-management.md) 的第 3、4 节，[Commit 工具设计](../../experiments/e09/operators/commit.md) 的第 8 节，以及 `packages/graph-vc` 的现状。
 
@@ -196,7 +196,7 @@ AsOf(at, ids, field?, offset?, continuation?)
 已定（2026-10-07）：
 
 - **四个接口都作为 MCP 工具交给 Agent**，因为"按版本读取状态"是要评测的 workload。工具说明要写清它们读的是历史，不是当前知识。
-- **代码位置：** 与 `operators/` 平行，新建 `src/e09/interfaces/`，一个接口一个文件；MCP 服务一并注册。求旧状态的参照实现（第 6.1 节）放在 graph-vc（`VersionedGraph.state_at`）。
+- **代码位置：** 与 `operators/` 平行，新建 `src/paperweave/interfaces/`，一个接口一个文件；MCP 服务一并注册。求旧状态的参照实现（第 6.1 节）放在 graph-vc（`VersionedGraph.state_at`）。
 
 实现时定下（2026-10-07）：
 
