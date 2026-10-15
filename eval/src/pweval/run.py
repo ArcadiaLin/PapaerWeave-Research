@@ -1,6 +1,6 @@
 """T1 先导的一次运行：按配置建立各组的起点（检查点 0），按顺序调度写者会话，在检查点存档。
 
-    python -m t1.run <运行名> [--config …] [--arms A3,A0] [--limit N] [--reset-a3]
+    python -m pweval.run <运行名> [--config …] [--arms A3,A0] [--limit N] [--reset-a3]
 
 运行目录 ``<workdir_root>/<运行名>/``：
 
@@ -11,18 +11,18 @@
   模型请求出错的次数与原因；A0 另记会话结束时笔记库中没有提交的改动）；
 - ``checkpoints.yml``：各组每个检查点的库版本（A3 为分支头的提交 id，A0 为 git 标签 ``checkpoint-<k>`` 的提交）；
 - ``checkpoints/<k>/<组>/``：检查点的快照；
-- ``probes.jsonl``：配置给出 ``probes`` 时，每个检查点上读者对有效探针的回答（:mod:`t1.probe`），在下一个写者开始
+- ``probes.jsonl``：配置给出 ``probes`` 时，每个检查点上读者对有效探针的回答（:mod:`pweval.probe`），在下一个写者开始
   之前跑完，所以读到的就是检查点的库；
 - ``A3/data/``：A3 的材料根目录（论文副本与产物文档，``E09_DATA``）；``A0/store/``：A0 的笔记库（git 仓库），
   ``A0/papers/``：A0 的论文副本。两组的论文副本起初只有写者最初拿到的版本，版本事件开始前才放入新版本
-  （:mod:`t1.versions`）；
-- ``<组>/<写者>/``：写者的沙箱目录（见 :mod:`t1.sandbox`）。
+  （:mod:`pweval.versions`）；
+- ``<组>/<写者>/``：写者的沙箱目录（见 :mod:`pweval.sandbox`）。
 
 A3 的起点：清空图库（``--reset-a3``，只允许配置中的 T1 图库），用系统的命令行按 ``seed_docs`` 的顺序（作者取文档的
-``by``）提交，再经 MCP 检入种子 Leaderboard 与 skill（:mod:`t1.seeding`）。A0 的起点由 A3 检查点 0 的快照渲染，加上
-同样的种子 Leaderboard（:mod:`t1.a0_seed`），两组内容因此相同。
+``by``）提交，再经 MCP 检入种子 Leaderboard 与 skill（:mod:`pweval.seeding`）。A0 的起点由 A3 检查点 0 的快照渲染，加上
+同样的种子 Leaderboard（:mod:`pweval.a0_seed`），两组内容因此相同。
 
-每个检查点导出冻结的快照 ``checkpoints/<k>/<组>/``（:mod:`t1.snapshot`），之后的测量只读快照。评测代码不导入被测
+每个检查点导出冻结的快照 ``checkpoints/<k>/<组>/``（:mod:`pweval.snapshot`），之后的测量只读快照。评测代码不导入被测
 系统（evaluation_draft §10.1）：A3 的库只经命令行、MCP 与 Cypher 读取接触。
 
 会话按“槽位”调度：每个槽位是一篇论文的一个写者，或一个版本事件（``events``：某个检查点之后，维护者把论文的新版本
@@ -456,7 +456,7 @@ def discard_leftovers(store: Path, patch: Path) -> list[str]:
 
 def run_config(run: Path, config: dict[str, Any]) -> dict[str, Any]:
     """配置加上这次运行的覆盖（``run.yml`` 的 ``overrides``）：A3 图库、各组的模型服务决定在哪里跑，不改协议；
-    ``composition`` 选择这条时间线的写者构成（配置中 ``compositions`` 的一项）。t1.health、t1.probe、t1.grade
+    ``composition`` 选择这条时间线的写者构成（配置中 ``compositions`` 的一项）。pweval.health、pweval.probe、pweval.grade
     读同一份。"""
     path = run / "run.yml"
     overrides = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("overrides") or {} if path.exists() else {}
@@ -477,7 +477,7 @@ def _record_run(run: Path, config_path: Path, arms: list[str], overrides: dict[s
     续跑时给出不同的覆盖即停止。"""
     path = run / "run.yml"
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
-    sources = ["experiments/t1", "system/src", "packages"]
+    sources = ["eval", "system/src", "packages"]
     if path.exists():
         recorded = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("overrides") or {}
         if overrides and overrides != recorded:
@@ -490,7 +490,7 @@ def _record_run(run: Path, config_path: Path, arms: list[str], overrides: dict[s
         return
     sha = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
     dirty = subprocess.run(
-        ["git", "-C", str(REPO), "status", "--porcelain", "--", "experiments", "system", "packages"],
+        ["git", "-C", str(REPO), "status", "--porcelain", "--", "eval", "system", "packages"],
         capture_output=True,
         text=True,
     ).stdout.strip()
@@ -570,9 +570,9 @@ def _system_env(arm: dict[str, Any], data: Path) -> dict[str, str]:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="python -m t1.run", description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(prog="python -m pweval.run", description=__doc__.split("\n\n")[0])
     parser.add_argument("name", help="运行名：运行目录为 <workdir_root>/<name>/")
-    parser.add_argument("--config", default=str(REPO / "experiments/t1/config/pilot-ltsf.yml"))
+    parser.add_argument("--config", default=str(REPO / "eval/config/pilot-ltsf.yml"))
     parser.add_argument("--arms", default="A3,A0", help="逗号分隔，按此顺序在每个槽位运行")
     parser.add_argument("--limit", type=int, help="只跑前 N 个槽位（冒烟测试）")
     parser.add_argument("--reset-a3", action="store_true", help="A3 图库非空时清空它（只允许 T1 图库）")

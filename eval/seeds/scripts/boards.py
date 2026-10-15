@@ -2,14 +2,14 @@
 
 数字取自所引的原文行，并断言表头与预测长度；输出写到 ../leaderboards/，同一份原文重复运行结果逐字节相同。
 
-    python3 experiments/t1/seeds/scripts/boards.py
+    python3 eval/seeds/scripts/boards.py
 """
 
 # ruff: noqa: E501 -- the note strings keep the line breaks of the generated documents
 
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[4]
+REPO = Path(__file__).resolve().parents[3]
 ROOT = REPO / "data/raw/t1-pilot-corpus/papers"
 OUT = Path(__file__).resolve().parents[1] / "leaderboards"
 INF = (ROOT / "2012.07436v3/paper.md").read_text().split("\n")

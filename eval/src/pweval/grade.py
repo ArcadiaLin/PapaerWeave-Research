@@ -1,17 +1,17 @@
 """探针判分：数值按规则自动判，要点（rubric）留给判分者填写。
 
-    python -m t1.grade <运行名> [--config …]     # 写出 <运行目录>/grades.yml
+    python -m pweval.grade <运行名> [--config …]     # 写出 <运行目录>/grades.yml
 
 - **数值清单**：读者在回答末尾按固定格式列出报告的每个数值（``claims`` 块：论文 | 方法 | 数据集 | 预测长度 | 指标 |
   数值）。判分只认这个清单，不从正文中找数。
-- **召回**：金标准中带方法与指标的数值（检查点时已写入的论文，:func:`t1.probe.gold_at`）成对判：清单中有一条的出处
+- **召回**：金标准中带方法与指标的数值（检查点时已写入的论文，:func:`pweval.probe.gold_at`）成对判：清单中有一条的出处
   论文、方法、数据集、预测长度、指标与数值都对上才算命中。数值按相等比较（0.37 与 0.370 相同）。不带方法的金标准
   数值（消融变体、标准误）只看数值是否出现在回答中。
-- **精确率**：清单中每一条对照原文结果表（:mod:`t1.source_tables`）核对，分为 ``supported``（所称论文的表中，该方法、
+- **精确率**：清单中每一条对照原文结果表（:mod:`pweval.source_tables`）核对，分为 ``supported``（所称论文的表中，该方法、
   数据集、预测长度与指标的格子就是这个数）、``misattributed``（所称论文同一数据集与预测长度的行中有这个数，但不在
   所称的方法或指标下）、``unsupported``（所称论文的这些行中没有这个数）、``unknown_paper``（论文认不出）。精确率是
   ``supported`` 的比例，``unchecked``（所称论文的索引中没有这个数据集，例如转置的表）不计入。论文有多个版本时
-  （:mod:`t1.versions`），只写简称或不带版本号的 id 按检查点时的当前版本核对；所称版本中没有、同一论文的另一版本
+  （:mod:`pweval.versions`），只写简称或不带版本号的 id 按检查点时的当前版本核对；所称版本中没有、同一论文的另一版本
   中有这个格子，记为 ``outdated``（计入精确率的分母，不算对）。开放的问题（C1 等）里，读者列出金标准以外、但原文确实报告的数值，不算错。
 - **要点**：``pass`` 留空，由判分者填 ``true`` / ``false``；已填的在重新生成时保留。E2 这类动态金标准的探针没有
   预设要点，判分者按检查点时库中的内容填写 ``dynamic``。
@@ -95,7 +95,7 @@ def _key(name: str) -> str:
 def verify(
     claim: dict[str, Any], material_root: Path, aliases: dict[str, str], others: dict[str, list[str]] | None = None
 ) -> str:
-    """``others``：版本 → 同一论文的其他版本（:func:`t1.versions.siblings`），用于认出 ``outdated``。"""
+    """``others``：版本 → 同一论文的其他版本（:func:`pweval.versions.siblings`），用于认出 ``outdated``。"""
     arxiv = paper_of(claim["paper"], aliases)
     if arxiv is None:
         return "unknown_paper"
@@ -176,9 +176,9 @@ def grade(record: dict[str, Any], probe: dict[str, Any], config: dict[str, Any])
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m t1.grade", description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(prog="python -m pweval.grade", description=__doc__.split("\n\n")[0])
     parser.add_argument("name")
-    parser.add_argument("--config", default=str(REPO / "experiments/t1/config/pilot-ltsf.yml"))
+    parser.add_argument("--config", default=str(REPO / "eval/config/pilot-ltsf.yml"))
     parser.add_argument("--probes-file", default=str(PROBES))
     args = parser.parse_args(argv)
     config = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))

@@ -121,8 +121,11 @@ without looking wrong.
   Commit, operators, `_stale`, MCP server; `packages/graph-doc` and
   `packages/graph-vc` underneath. Its outside interface is the `paperweave`
   CLI and the `paperweave-mcp` server.
-- `experiments/t1/`: the evaluation harness. It is evaluation engineering and
-  does not change the system.
+- `eval/` (package `pweval`, formerly `experiments/t1`): the evaluation
+  harness. It is evaluation engineering and does not change the system.
+  `system/` and `eval/` never import each other; the evaluation reaches the
+  system only through its CLI and MCP server (subprocesses), Cypher reads, and
+  files.
 - **Writers are general-purpose agents.** Runs use the default pi
   configuration: its own system prompt and built-in tools, with the operators
   connected as an MCP server. The experiment controls only the working

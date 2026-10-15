@@ -1,0 +1,33 @@
+[project]
+name = "paperweave-eval"
+version = "0.1.0"
+description = "PaperWeave 的评测：T1 多写者积累时间线的运行框架、检查点快照与测量"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+
+# 评测与被测系统分离（evaluation_draft §10.1）：这里不 import 系统代码（paperweave、graph-doc、graph-vc），只经它的
+# 命令行与 MCP 入口（子进程）、Cypher 读与文件交互（tests/test_imports.py）。系统因此不是这里的依赖：运行框架在
+# 同一个 .venv 中以子进程启动它，由根目录的 `make setup`（uv sync --all-packages）装好。
+# neo4j 是 Cypher 读（快照、分支头）用的驱动。
+dependencies = [
+    "neo4j>=5.28,<7",
+    "pyyaml>=6,<7",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pweval"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "N", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["pweval"]

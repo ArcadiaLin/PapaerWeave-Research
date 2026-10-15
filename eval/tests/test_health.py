@@ -8,12 +8,12 @@ from types import SimpleNamespace as NS
 
 import yaml
 
-from t1.grade import paper_aliases
-from t1.health import Fact, _cited_lines, _note_facts, a3_overwrites, candidates, fidelity
-from t1.paths import REPO
-from t1.source_tables import lookup, same_method
+from pweval.grade import paper_aliases
+from pweval.health import Fact, _cited_lines, _note_facts, a3_overwrites, candidates, fidelity
+from pweval.paths import REPO
+from pweval.source_tables import lookup, same_method
 
-CONFIG = yaml.safe_load((REPO / "experiments/t1/config/pilot-ltsf.yml").read_text(encoding="utf-8"))
+CONFIG = yaml.safe_load((REPO / "eval/config/pilot-ltsf.yml").read_text(encoding="utf-8"))
 MATERIAL = REPO / CONFIG["corpus"]["material_root"]
 ALIASES = paper_aliases(CONFIG)
 

@@ -8,10 +8,10 @@ members = [
     "arxiv2md",
     "cacheplan",
     "cacheplan-e08",
-    "cacheplan-t1",
     "graph-doc",
     "graph-vc",
     "paperweave",
+    "paperweave-eval",
 ]
 
 [[package]]
@@ -240,23 +240,6 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "mineru-vl-utils", specifier = ">=2.0.5,<3" },
     { name = "neo4j", specifier = ">=5.28,<7" },
-    { name = "pyyaml", specifier = ">=6,<7" },
-]
-
-[[package]]
-name = "cacheplan-t1"
-version = "0.1.0"
-source = { editable = "experiments/t1" }
-dependencies = [
-    { name = "neo4j" },
-    { name = "paperweave" },
-    { name = "pyyaml" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "neo4j", specifier = ">=5.28,<7" },
-    { name = "paperweave", editable = "system" },
     { name = "pyyaml", specifier = ">=6,<7" },
 ]
 
@@ -1254,6 +1237,21 @@ requires-dist = [
     { name = "graph-vc", editable = "packages/graph-vc" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "mcp", specifier = ">=1.20,<2" },
+    { name = "neo4j", specifier = ">=5.28,<7" },
+    { name = "pyyaml", specifier = ">=6,<7" },
+]
+
+[[package]]
+name = "paperweave-eval"
+version = "0.1.0"
+source = { editable = "eval" }
+dependencies = [
+    { name = "neo4j" },
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
     { name = "neo4j", specifier = ">=5.28,<7" },
     { name = "pyyaml", specifier = ">=6,<7" },
 ]

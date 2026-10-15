@@ -1,4 +1,4 @@
-"""评测代码与被测系统分离（evaluation_draft §10.1）：t1 不导入 paperweave、graph-doc、graph-vc；测量层只用标准库与 pyyaml。
+"""评测代码与被测系统分离（evaluation_draft §10.1）：评测不导入 paperweave、graph-doc、graph-vc；测量层只用标准库与 pyyaml。
 
 尚未按 §10.1 改写的模块列在 ``PENDING`` 中，改完一个移出一个；``PENDING`` 为空即达标。
 """
@@ -11,22 +11,22 @@ from pathlib import Path
 
 import pytest
 
-T1 = Path(__file__).resolve().parents[1]
-SOURCES = sorted([*(T1 / "src/t1").glob("*.py"), *(T1 / "seeds/scripts").glob("*.py")])
+EVAL = Path(__file__).resolve().parents[1]
+SOURCES = sorted([*(EVAL / "src/pweval").glob("*.py"), *(EVAL / "seeds/scripts").glob("*.py")])
 SYSTEM = {"paperweave", "graph_doc", "graph_vc"}
 MEASURE = {"health", "grade", "source_tables"}  # 测量层：只读快照，不连库
-MEASURE_OK = {"yaml", "t1"}
+MEASURE_OK = {"yaml", "pweval"}
 PENDING: set[str] = set()
 
 
 def imports(path: Path) -> set[str]:
-    """模块导入的顶层包；相对导入记为 ``t1``。"""
+    """模块导入的顶层包；相对导入记为 ``pweval``。"""
     out: set[str] = set()
     for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
         if isinstance(node, ast.Import):
             out |= {a.name.split(".")[0] for a in node.names}
         elif isinstance(node, ast.ImportFrom):
-            out.add("t1" if node.level else (node.module or "").split(".")[0])
+            out.add("pweval" if node.level else (node.module or "").split(".")[0])
     return out
 
 

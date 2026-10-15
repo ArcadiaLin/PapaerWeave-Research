@@ -1,7 +1,7 @@
 """读者探针：在检查点上，由固定的读者 Agent 回答探针，记录回答与轨迹（探针与金标准见 ``config/probes-ltsf.yml``）。
 
-    python -m t1.probe <运行名> --checkpoint K [--arms A3,A0] [--conditions store_only] [--probes A1,C1] [--at-head]
-    python -m t1.probe <运行名> --baselines [--probes …]        # 闭卷与神谕参照线，各探针一次，与组无关
+    python -m pweval.probe <运行名> --checkpoint K [--arms A3,A0] [--conditions store_only] [--probes A1,C1] [--at-head]
+    python -m pweval.probe <运行名> --baselines [--probes …]        # 闭卷与神谕参照线，各探针一次，与组无关
 
 读者是一次 pi 会话（与写者同一模型与设置），每个探针一次，彼此没有记忆。库只读：A3 的 MCP 服务只列出不写入的工具；
 A0 读检查点标签处的笔记库副本（只读挂载）。两种读者条件（配置 ``probe_conditions``）：
@@ -12,9 +12,9 @@ A0 读检查点标签处的笔记库副本（只读挂载）。两种读者条�
 参照线没有库也没有论文：闭卷只给问题，神谕另给金标准所在的原文行，表格行前带上表的标题与表头（:func:`excerpt`）。
 
 探针在其金标准涉及的论文中最早的一篇写入后的检查点起有效（:func:`eligible`）；多篇论文的金标准只计入检查点时
-已写入的论文（:func:`gold_at`）。回答记入 ``<运行目录>/probes.jsonl``，判分见 :mod:`t1.grade`。
+已写入的论文（:func:`gold_at`）。回答记入 ``<运行目录>/probes.jsonl``，判分见 :mod:`pweval.grade`。
 
-A3 的库是正在运行的图库，没有按检查点的快照：在运行中由 :mod:`t1.run` 在每个检查点、下一个写者开始之前调用，
+A3 的库是正在运行的图库，没有按检查点的快照：在运行中由 :mod:`pweval.run` 在每个检查点、下一个写者开始之前调用，
 库的状态就是检查点的状态。事后单独调用时（``--at-head``）读到的是库的当前状态，只用于试跑。
 """
 
@@ -38,7 +38,7 @@ from . import source_tables, versions
 from .paths import REPO
 from .sandbox import Arm, Paths, Writer, prepare, run_session
 
-PROBES = REPO / "experiments/t1/config/probes-ltsf.yml"
+PROBES = REPO / "eval/config/probes-ltsf.yml"
 CONDITIONS = ("store_only", "with_papers")
 MATERIAL_PATH = re.compile(r"papers/\d{4}\.\d{4,5}")  # 原文材料的路径
 _LOCK = threading.Lock()  # 各组并行时 probes.jsonl 的写入
@@ -93,7 +93,7 @@ def eligible(probes: list[dict[str, Any]], config: dict[str, Any], k: int) -> li
 
 def gold_at(probe: dict[str, Any], config: dict[str, Any], k: int) -> dict[str, Any]:
     """检查点 ``k`` 时的金标准：只保留出处论文已写入的项，以及检查点在其 ``from_checkpoint`` /
-    ``until_checkpoint`` 之内的项（论文新版本改动的数值：事件之前是旧值，之后是新值，:mod:`t1.versions`）。"""
+    ``until_checkpoint`` 之内的项（论文新版本改动的数值：事件之前是旧值，之后是新值，:mod:`pweval.versions`）。"""
     written = k * config["schedule"]["checkpoint_every_papers"]
     index = paper_index(config)
     gold = dict(probe["gold"])
@@ -110,7 +110,7 @@ def gold_at(probe: dict[str, Any], config: dict[str, Any], k: int) -> dict[str, 
 
 def check_anchors(probes: dict[str, Any], material_root: Path) -> list[str]:
     """金标准的锚点都在原文中，且每个数值出现在它的锚点行上；带方法与指标的数值确实是锚点行上那一列（按
-    :mod:`t1.source_tables` 解析的结果表）；神谕的行范围都存在。"""
+    :mod:`pweval.source_tables` 解析的结果表）；神谕的行范围都存在。"""
     problems: list[str] = []
 
     def lines(arxiv: str) -> list[str]:
@@ -356,9 +356,9 @@ def condition_of(record: dict[str, Any]) -> str:
 def main(argv: Sequence[str] | None = None) -> int:
     from .run import _llm_url
 
-    parser = argparse.ArgumentParser(prog="python -m t1.probe", description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(prog="python -m pweval.probe", description=__doc__.split("\n\n")[0])
     parser.add_argument("name", help="运行名（<workdir_root>/<运行名>/）")
-    parser.add_argument("--config", default=str(REPO / "experiments/t1/config/pilot-ltsf.yml"))
+    parser.add_argument("--config", default=str(REPO / "eval/config/pilot-ltsf.yml"))
     parser.add_argument("--probes-file", default=str(PROBES))
     parser.add_argument("--arms", default="A3,A0")
     parser.add_argument("--checkpoint", type=int)

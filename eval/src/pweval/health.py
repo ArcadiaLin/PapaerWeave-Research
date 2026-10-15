@@ -1,17 +1,17 @@
 """库健康度（evaluation_draft.md §4.3，诊断，不用 judge）：在检查点上从库中统计四项，两组用同一口径。
 
-    python -m t1.health <运行名> --checkpoint K [--arms A3,A0]    # 写出 <运行目录>/health/<组>-cp<K>.yml
+    python -m pweval.health <运行名> --checkpoint K [--arms A3,A0]    # 写出 <运行目录>/health/<组>-cp<K>.yml
 
-只读：A3 读检查点的冻结快照（:mod:`t1.snapshot`，``checkpoints/<K>/A3/``），A0 用 ``git show <检查点标签>:<路径>``，
+只读：A3 读检查点的冻结快照（:mod:`pweval.snapshot`，``checkpoints/<K>/A3/``），A0 用 ``git show <检查点标签>:<路径>``，
 都不改动写者的库。评测代码不导入被测系统（evaluation_draft §10.1）：产物文档的头部与数据块按格式自行解析。
 
 1. **有据层忠实度**：库中抄下的每个结果数值，抽成（论文, 方法, 数据集, 预测长度, 指标, 数值），与核对读者清单的
-   :func:`t1.grade.verify` 一样对照原文结果表，分为 supported / misattributed / unsupported / unknown_paper。带出处
+   :func:`pweval.grade.verify` 一样对照原文结果表，分为 supported / misattributed / unsupported / unknown_paper。带出处
    行号的，另核对原文中对上的格子是否落在所引的行内（``anchor``：ok；near 为差 3 行以内，多是表的首尾行；off 为
    更远，多是引错了表）。A3 取 Extract 产物的数据行；A0 取论文笔记
    （``papers/*.md``）中的 Markdown 结果表，表上方最近的标题段中的 ``lines a-b`` 或 ``::a:b`` 作为出处行。其余形式
    的数值（正文、MatrixConstruct、方法笔记中的表）不计入，``coverage`` 给出计入与跳过的数量。
-   论文有多个版本时（:mod:`t1.versions`），数值按所引的版本核对（忠实于所引版本）；``versions`` 另计检查点时
+   论文有多个版本时（:mod:`pweval.versions`），数值按所引的版本核对（忠实于所引版本）；``versions`` 另计检查点时
    仍引用旧版本的数值（``cites_old``），以及其中当前版本已经不是这个数的（``outdated``：读者照此会读到旧值）。
 2. **悬空引用率**：解析不了的引用占全部引用的比例。A3：数据行的来源引用（材料在、哈希一致、行号不越界）、数据行
    中引用的节点、产物文档的 ``nodes_used``、FROM 关系上的定位。A0：笔记间的相对链接、论文笔记中 ``::a:b`` 形式的
@@ -793,9 +793,9 @@ def summary(result: dict[str, Any]) -> str:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m t1.health", description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(prog="python -m pweval.health", description=__doc__.split("\n\n")[0])
     parser.add_argument("name")
-    parser.add_argument("--config", default=str(REPO / "experiments/t1/config/pilot-ltsf.yml"))
+    parser.add_argument("--config", default=str(REPO / "eval/config/pilot-ltsf.yml"))
     parser.add_argument("--arms", default="A3,A0")
     parser.add_argument("--checkpoint", type=int, required=True)
     parser.add_argument("--at-head", action="store_true", help="读库的当前状态而不是检查点（试跑用）")

@@ -32,7 +32,7 @@ PaperWeave 是经 MCP 提供给通用 Agent 的中间件，对每次写入施加
   版本接口、项目视图）。
 - `references/`：外部材料；`references/refs.bib` 是论文元数据的跟踪来源。
 - `system/`（包 `paperweave`）与 `packages/`（`graph-doc`、`graph-vc` 等）：原型实现；
-  `experiments/t1`：T1 的实验准备。
+  `eval/`（包 `pweval`）：评测（T1 的运行框架与测量），与系统互不导入。
 
 ## Setup
 

@@ -1,4 +1,4 @@
-"""种子产物的检入：经被测系统的 MCP 入口，以 ``seed`` 身份检入 ``experiments/t1/seeds/`` 中的 Leaderboard 与 skill。
+"""种子产物的检入：经被测系统的 MCP 入口，以 ``seed`` 身份检入 ``eval/seeds/`` 中的 Leaderboard 与 skill。
 
 先检入全部 Leaderboard（一个提交，id 按文件名顺序为 ``art_0001`` 起），再检入 skill（另一个提交），表的 id 因此不随
 skill 的增减而变。运行框架的 A3 起点与 ``seeds/scripts/checkin.py`` 共用这里的批次。

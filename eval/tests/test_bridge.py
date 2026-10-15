@@ -9,7 +9,7 @@ import threading
 import time
 from pathlib import Path
 
-from t1.sandbox import BRIDGE
+from pweval.sandbox import BRIDGE
 
 
 def _bridge(*args: str) -> subprocess.Popen:

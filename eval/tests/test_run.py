@@ -10,11 +10,11 @@ from pathlib import Path
 
 import yaml
 
-from t1 import seeding
-from t1.paths import REPO, SEEDS
-from t1.run import assign, check_checkpoint0, discard_leftovers, preflight, prompt, request_errors, schedule
+from pweval import seeding
+from pweval.paths import REPO, SEEDS
+from pweval.run import assign, check_checkpoint0, discard_leftovers, preflight, prompt, request_errors, schedule
 
-CONFIG = yaml.safe_load((REPO / "experiments/t1/config/pilot-ltsf.yml").read_text(encoding="utf-8"))
+CONFIG = yaml.safe_load((REPO / "eval/config/pilot-ltsf.yml").read_text(encoding="utf-8"))
 
 
 def test_writers_alternate_and_checkpoints_follow_every_second_paper() -> None:
@@ -97,7 +97,7 @@ def test_checkpoint0_holds_every_seed_verbatim(tmp_path: Path) -> None:
     assert check_checkpoint0(tmp_path, CONFIG) == [f"{docs[0]}: stored 0 times verbatim"]
 
 
-PILOT3 = yaml.safe_load((REPO / "experiments/t1/config/pilot3-ltsf.yml").read_text(encoding="utf-8"))
+PILOT3 = yaml.safe_load((REPO / "eval/config/pilot3-ltsf.yml").read_text(encoding="utf-8"))
 
 
 def test_assignment_is_fixed_by_the_seed_and_overlaps_a_quarter() -> None:

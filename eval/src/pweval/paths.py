@@ -2,8 +2,8 @@
 
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[4]
-T1 = REPO / "experiments/t1"
-SEEDS = T1 / "seeds"
+REPO = Path(__file__).resolve().parents[3]
+EVAL = REPO / "eval"
+SEEDS = EVAL / "seeds"
 
-__all__ = ["REPO", "SEEDS", "T1"]
+__all__ = ["EVAL", "REPO", "SEEDS"]
