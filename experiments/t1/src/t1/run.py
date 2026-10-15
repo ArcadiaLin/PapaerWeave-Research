@@ -55,7 +55,7 @@ import yaml
 from . import probe, seeding, skills, snapshot, versions
 from .a0_seed import commit_seed, read_boards, render, write
 from .paths import REPO, SEEDS
-from .sandbox import Arm, Paths, Writer, prepare, run_session
+from .sandbox import Arm, Paths, Writer, pi_version, prepare, run_session
 
 PROTECTED = {7687, 7688}  # neo4j-e09 与 neo4j-test：不清空
 _LOCK = threading.Lock()  # 各组并行时，sessions.jsonl 与 checkpoints.yml 的写入
@@ -501,6 +501,8 @@ def _record_run(run: Path, config_path: Path, arms: list[str], overrides: dict[s
         "arms": arms,
         "config_file": str(config_path.relative_to(REPO)),
         "overrides": overrides,
+        # 写者与读者所用的 pi 与 node（换机器后版本可能不同，运行之间据此区分）
+        "agent_runtime": {"pi": pi_version(), "node": _node_version()},
     }
     path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
     shutil.copy(config_path, run / "config.yml")
@@ -509,6 +511,11 @@ def _record_run(run: Path, config_path: Path, arms: list[str], overrides: dict[s
         cwd=REPO,
         check=True,
     )
+
+
+def _node_version() -> str:
+    done = subprocess.run(["node", "--version"], capture_output=True, text=True)
+    return done.stdout.strip() or "unknown"
 
 
 def _checkpoints(run: Path) -> dict[str, Any]:

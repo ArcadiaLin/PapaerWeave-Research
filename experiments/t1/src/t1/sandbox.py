@@ -34,6 +34,39 @@ from .paths import REPO
 
 BRIDGE = Path(__file__).with_name("bridge.py")
 LLM_PORT = 30000  # 沙箱内大模型服务的回环端口
+PI_DIR = "/opt/pi"  # 托管安装的 pi：当前版本的 release 目录只读挂到这里
+
+
+def pi_install(launcher: str | None = None) -> tuple[Path | None, str]:
+    """宿主机上的 pi 怎样带进沙箱：返回要只读挂载的目录（不需要时为 ``None``）与沙箱内的启动命令。
+
+    - npm 全局安装：``pi`` 在 node 的 bin 目录下，随 node 一起挂载，沙箱内直接用 ``pi``；
+    - pi 的托管安装（``~/.pi/agent/bin/pi`` 启动脚本，版本在 ``install/current-version``，程序在
+      ``install/releases/<版本>/``）：只挂当前版本的 release 目录。不挂 ``~/.pi/agent`` 本身，其中有宿主机的模型
+      配置、认证与会话记录；沙箱内的 agent 目录仍是写者自己的 ``HOME``。
+    """
+    found = launcher or shutil.which("pi")
+    if not found:
+        raise FileNotFoundError("pi is not on PATH")
+    path = Path(found).resolve()
+    node_bin = Path(shutil.which("node") or "").resolve().parent
+    if path.parent == node_bin or node_bin in path.parents:
+        return None, "pi"
+    agent = path.parent.parent
+    version_file = agent / "install/current-version"
+    if path.parent.name != "bin" or not version_file.exists():
+        raise FileNotFoundError(f"{path} is neither in node's tree nor a managed pi install")
+    release = agent / "install/releases" / version_file.read_text(encoding="utf-8").strip()
+    if not (release / "node_modules/.bin/pi").exists():
+        raise FileNotFoundError(f"managed pi release is missing: {release}")
+    return release, f"{PI_DIR}/node_modules/.bin/pi"
+
+
+def pi_version() -> str:
+    """宿主机上 pi 的版本（运行记录用）。"""
+    found = shutil.which("pi")
+    done = subprocess.run([found or "pi", "--version"], capture_output=True, text=True, timeout=30)
+    return (done.stdout or done.stderr).strip().splitlines()[-1] if done.returncode == 0 else "unknown"
 
 
 @dataclass(frozen=True)
@@ -124,7 +157,7 @@ def run_session(paths: Paths, arm: Arm, writer: Writer, prompt: str, *, timeout_
         started = time.monotonic()
         inner = (
             f"python3 /opt/t1/bridge.py tcp-to-unix 127.0.0.1:{LLM_PORT} /run/t1/llm.sock & "
-            'sleep 0.3; exec pi -p --offline --approve --mode json "$T1_PROMPT"'
+            f'sleep 0.3; exec {pi_install()[1]} -p --offline --approve --mode json "$T1_PROMPT"'
         )
         killed: list[dict] = []
         with open(runs / f"{stamp}.jsonl", "wb") as out, open(runs / f"{stamp}.err", "wb") as err:
@@ -200,6 +233,7 @@ def _bwrap(paths: Paths, arm: Arm, writer: Writer, prompt: str) -> list[str]:
         "--ro-bind", "/etc", "/etc", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
         "--ro-bind", str(node), str(node),
         "--ro-bind", str(BRIDGE), "/opt/t1/bridge.py",
+        *(["--ro-bind", str(pi_dir), PI_DIR] if (pi_dir := pi_install()[0]) else []),
         "--bind", str(paths.sock), "/run/t1",
         "--bind", str(paths.work), "/work",
         "--bind", str(paths.home), "/home/agent",
@@ -271,4 +305,4 @@ def _write_json(path: Path, data: object) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-__all__ = ["Arm", "Paths", "Writer", "prepare", "run_session"]
+__all__ = ["Arm", "Paths", "Writer", "pi_install", "pi_version", "prepare", "run_session"]
