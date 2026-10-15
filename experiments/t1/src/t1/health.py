@@ -2,7 +2,8 @@
 
     python -m t1.health <运行名> --checkpoint K [--arms A3,A0]    # 写出 <运行目录>/health/<组>-cp<K>.yml
 
-只读：A3 用 graph-vc 求检查点提交时的状态（``state_at``），A0 用 ``git show <检查点标签>:<路径>``，都不改动写者的库。
+只读：A3 读检查点的冻结快照（:mod:`t1.snapshot`，``checkpoints/<K>/A3/``），A0 用 ``git show <检查点标签>:<路径>``，
+都不改动写者的库。评测代码不导入被测系统（evaluation_draft §10.1）：产物文档的头部与数据块按格式自行解析。
 
 1. **有据层忠实度**：库中抄下的每个结果数值，抽成（论文, 方法, 数据集, 预测长度, 指标, 数值），与核对读者清单的
    :func:`t1.grade.verify` 一样对照原文结果表，分为 supported / misattributed / unsupported / unknown_paper。带出处
@@ -30,16 +31,17 @@ import argparse
 import json
 import re
 import subprocess
-from collections.abc import Sequence
-from dataclasses import dataclass
+import tempfile
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 import yaml
-from e09.config import REPO
 
-from . import source_tables, versions
+from . import snapshot, source_tables, versions
 from .grade import paper_aliases, paper_of, verify
+from .paths import REPO
 
 SECTION_LINES = re.compile(r"::(\d+):(\d+)")
 NOTE_LINES = re.compile(r"lines?\s+(\d+)\s*[-–]\s*(\d+)")
@@ -150,12 +152,13 @@ def a3_health(
     history: list[Any],
     since: str,
     until: str,
-    data: Path,
+    locate: Callable[[str], Path],
     material_root: Path,
     config: dict[str, Any],
     k: int | None = None,
 ) -> dict[str, Any]:
-    """检查点状态 ``state``；覆盖只计 ``since``（检查点 0）之后、``until``（含）之前的提交。"""
+    """检查点状态 ``state``；覆盖只计 ``since``（检查点 0）之后、``until``（含）之前的提交。``locate`` 把材料的相对
+    路径映射到文件（产物文档取快照中的副本，论文取材料根目录）。"""
     aliases = paper_aliases(config, k)
     nodes = state.nodes
     facts, skipped, refs, bad = [], {}, 0, []
@@ -179,7 +182,7 @@ def a3_health(
         if material is None:
             bad.append({"where": where, "ref": ref, "why": "no such material"})
             return None, None
-        path = data / material["path"]
+        path = locate(material["path"])
         if not path.exists():
             bad.append({"where": where, "ref": ref, "why": "file missing"})
             return None, None
@@ -199,10 +202,8 @@ def a3_health(
             refs += 1
             bad.append({"where": art, "ref": "document", "why": "no document material"})
             continue
-        from e09.artifact.document import data_of, header_of
-
-        text = (data / path).read_text(encoding="utf-8")
-        for used in header_of(text).get("nodes_used") or []:
+        text = locate(path).read_text(encoding="utf-8")
+        for used in _header_of(text).get("nodes_used") or []:
             if "::" in str(used):
                 check_ref(str(used), f"{art} nodes_used")
             else:
@@ -212,7 +213,7 @@ def a3_health(
         if props.get("op") != "Extract":
             skipped[props.get("op", "?")] = skipped.get(props.get("op", "?"), 0) + 1
             continue
-        block = data_of(text) or {}
+        block = _data_of(text) or {}
         fields = (block.get("schema") or {}).get("fields") or {}
         role = _roles(fields)
         default_paper = _used_paper(art, state, nodes)
@@ -648,23 +649,120 @@ def _float(x: Any) -> float | None:
 
 
 def measure(run: Path, config: dict[str, Any], arm: str, k: int, *, at_head: bool = False) -> dict[str, Any]:
-    """``at_head``：读库的当前状态而不是检查点（试跑用）。"""
+    """``at_head``：读库的当前状态而不是检查点（试跑用；A3 临时导出一份快照）。"""
     material_root = REPO / config["corpus"]["material_root"]
     checkpoints = yaml.safe_load((run / "checkpoints.yml").read_text(encoding="utf-8"))
     if arm == "A0":
         return a0_health(run / "A0/store", "HEAD" if at_head else f"checkpoint-{k}", "checkpoint-0", material_root, config, k)
-    from e09.store import open_graph
+    if not at_head:
+        snap = snapshot.load(run / f"checkpoints/{k}/A3")
+        return a3_measure(snap, checkpoints["A3"][0], checkpoints["A3"][k], run / "A3/data", material_root, config, k)
+    with tempfile.TemporaryDirectory() as tmp:
+        snapshot.export_a3(config["arms"]["A3"]["neo4j"], run / "A3/data", Path(tmp))
+        snap = snapshot.load(Path(tmp))
+        until = yaml.safe_load((Path(tmp) / "meta.yml").read_text(encoding="utf-8"))["branches"]["main"]
+        return a3_measure(snap, checkpoints["A3"][0], until, run / "A3/data", material_root, config, k)
 
-    from .run import _driver
 
-    driver = _driver(config["arms"]["A3"]["neo4j"])
-    try:
-        graph = open_graph(driver, file_root=run / "A3/data")
-        commit = graph.head() if at_head else checkpoints["A3"][k]
-        state, history = graph.state_at(commit), graph.history()
-    finally:
-        driver.close()
-    return a3_health(state, history, checkpoints["A3"][0], commit, run / "A3/data", material_root, config, k)
+def a3_measure(
+    snap: snapshot.Snapshot, since: str, until: str, data: Path, material_root: Path, config: dict[str, Any], k: int
+) -> dict[str, Any]:
+    """快照上的 A3 健康度：产物文档读快照中的副本，其余材料（论文）读 ``data``。"""
+    assert snap.root is not None
+    documents = snap.root / "documents"
+
+    def locate(path: str) -> Path:
+        copy = documents / path
+        return copy if path.startswith("artifacts/") and copy.exists() else data / path
+
+    return a3_health(_state(snap), _history(snap), since, until, locate, material_root, config, k)
+
+
+# 快照读回成 a3_health 用的形状：节点（labels、props）、以 (src, type, dst) 为键的边、主分支上从早到晚的提交。
+
+
+@dataclass(frozen=True)
+class _Node:
+    labels: frozenset[str]
+    props: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _Edge:
+    src: str
+    type: str
+    dst: str
+
+
+@dataclass
+class _State:
+    nodes: dict[str, _Node] = field(default_factory=dict)
+    edges: dict[_Edge, dict[str, Any]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class _Change:
+    id: str
+    op: str
+    before: dict[str, Any] | None
+    after: dict[str, Any] | None
+
+
+@dataclass(frozen=True)
+class _Changeset:
+    nodes: list[_Change]
+
+
+@dataclass(frozen=True)
+class _Record:
+    id: str
+    author: str
+    meta: dict[str, Any]
+    changeset: _Changeset
+
+
+def _state(snap: snapshot.Snapshot) -> _State:
+    state = _State()
+    for ident, node in snap.nodes.items():
+        state.nodes[ident] = _Node(frozenset(node["labels"]), {k: v for k, v in node["props"].items() if k != "id"})
+    for src, rel, dst, props in snap.edges:
+        state.edges[_Edge(src, rel, dst)] = props
+    return state
+
+
+def _history(snap: snapshot.Snapshot, branch: str = "main") -> list[_Record]:
+    """提交的变更集按 graph-vc 写下的 JSON 读：create 有 ``after``，delete 有 ``before``，update 的 ``props`` 是
+    ``{属性: {before, after}}``。"""
+    out = []
+    for c in sorted((c for c in snap.commits if c.get("branch", branch) == branch), key=lambda c: c["seq"]):
+        changes = []
+        for n in json.loads(c["changeset"]).get("nodes", []):
+            if n["op"] == "update":
+                diff = n.get("props") or {}
+                before, after = {k: v["before"] for k, v in diff.items()}, {k: v["after"] for k, v in diff.items()}
+            else:
+                before, after = n.get("before"), n.get("after")
+            changes.append(_Change(n["id"], n["op"], before, after))
+        out.append(_Record(c["id"], c["author"], json.loads(c.get("meta") or "{}"), _Changeset(changes)))
+    return out
+
+
+_HEADER = re.compile(r"\A---\n(?P<header>.*?)\n---\n", re.DOTALL)
+_FENCE = "```yaml\n"
+
+
+def _header_of(text: str) -> dict[str, Any]:
+    """产物文档的 YAML 头部（``---`` 之间）；没有时为空。"""
+    match = _HEADER.match(text)
+    header = yaml.safe_load(match["header"]) if match else None
+    return header if isinstance(header, dict) else {}
+
+
+def _data_of(text: str) -> Any:
+    """产物文档正文末尾的数据块（最后一个 ```yaml 代码块）；没有时为 ``None``。"""
+    start = text.rfind(_FENCE)
+    end = text.find("```", start + len(_FENCE)) if start >= 0 else -1
+    return yaml.safe_load(text[start + len(_FENCE) : end]) if end >= 0 else None
 
 
 def write(run: Path, arm: str, k: int, result: dict[str, Any]) -> Path:
