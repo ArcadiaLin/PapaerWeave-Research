@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from pweval.a0_seed import RenderError, check_board, commit_seed, object_views, render, render_board, write
-from pweval.snapshot import Snapshot, load
+from pweval.harness.a0_seed import RenderError, check_board, commit_seed, object_views, render, render_board, write
+from pweval.protocol.snapshot import Snapshot, load
 
 NODES = [
     ("paper_0001", ["Entity", "Paper"],

@@ -13,7 +13,7 @@ from typing import Any
 
 import yaml
 
-from . import snapshot
+from . import export
 from .mcp_client import Client
 from .sandbox import Arm, Paths, Writer, mcp_env
 
@@ -21,7 +21,7 @@ SKILLS_DIR = ".agents/skills"
 
 
 def skill_ids(uri: str) -> list[str]:
-    with snapshot.driver(uri) as d:
+    with export.driver(uri) as d:
         rows = d.execute_query("MATCH (a:Artifact {op: 'Skill'}) RETURN a.id AS id ORDER BY id").records
     return [r["id"] for r in rows]
 

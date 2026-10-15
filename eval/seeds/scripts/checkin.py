@@ -2,8 +2,9 @@
 （一个提交，id 按文件名顺序为 art_0001…），再是 ../skills/*/SKILL.md（另一个提交）。
 
 按 evaluation_draft §10.1，这里不 import paperweave：种库用系统的命令行
-（``python -m paperweave <文档> --source ... --apply``），检入用 MCP 入口（``python -m paperweave.mcp``，子进程；批次与身份见 :mod:`pweval.seeding`，与运行框架的
-A3 起点相同）。论文材料复制到临时目录，作为 ``PAPERWEAVE_DATA``。
+（``python -m paperweave <文档> --source ... --apply``），检入用 MCP 入口（``python -m paperweave.mcp``，子进程；
+批次与身份见 :mod:`pweval.harness.seeding`，与运行框架的 A3 起点相同）。论文材料复制到临时目录，作为
+``PAPERWEAVE_DATA``。
 
     PAPERWEAVE_NEO4J_URI=bolt://localhost:7692 .venv/bin/python eval/seeds/scripts/checkin.py [--check-only]
 
@@ -24,8 +25,8 @@ import tempfile
 from pathlib import Path
 from urllib.parse import urlparse
 
-from pweval.mcp_client import field, status
-from pweval.seeding import check_in
+from pweval.harness.mcp_client import field, status
+from pweval.harness.seeding import check_in
 
 REPO = Path(__file__).resolve().parents[3]
 CORPUS = REPO / "data/raw/t1-pilot-corpus"

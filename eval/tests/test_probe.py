@@ -7,10 +7,11 @@ from pathlib import Path
 
 import yaml
 
-from pweval.grade import claims_in, grade, numbers_in
+from pweval.harness.readers import answer_of, audit, baseline_prompt, excerpt, reader_prompt
+from pweval.measure.grade import claims_in, grade, numbers_in
 from pweval.paths import REPO
-from pweval.probe import answer_of, audit, baseline_prompt, check_anchors, eligible, excerpt, gold_at, load, reader_prompt
-from pweval.source_tables import lookup, same_method
+from pweval.protocol.probes import check_anchors, eligible, gold_at, load
+from pweval.protocol.source_tables import lookup, same_method
 
 CONFIG = yaml.safe_load((REPO / "eval/config/pilot-ltsf.yml").read_text(encoding="utf-8"))
 PROBES = load()
@@ -119,8 +120,8 @@ SCINet | Autoformer | ETTh2 | 24 | MSE | 0.260
 
 
 def test_store_only_a3_readers_read_artifact_documents_but_not_papers(tmp_path: Path) -> None:
-    from pweval.probe import _reader_arm
-    from pweval.sandbox import Paths, Writer, _mcp_command
+    from pweval.harness.readers import _reader_arm
+    from pweval.harness.sandbox import Paths, Writer, _mcp_command
 
     reader = Writer("reader", "reader@example", "pi/test")
     store_only = _reader_arm(tmp_path, CONFIG, "A3", 1, "store_only", at_head=True)
@@ -133,7 +134,7 @@ def test_store_only_a3_readers_read_artifact_documents_but_not_papers(tmp_path: 
 
 
 def test_paper_names_readers_write_resolve_to_corpus_ids() -> None:
-    from pweval.grade import paper_aliases, paper_of
+    from pweval.measure.grade import paper_aliases, paper_of
 
     aliases = paper_aliases(CONFIG, 2)
     assert paper_of("2106.13008 (Autoformer)", aliases) == "2106.13008v5"

@@ -1,6 +1,6 @@
 """A0（文件 + git）的笔记库：把 A3 检查点 0 的快照渲染成 Markdown 笔记，每个对象一个文件，再加上种子 Leaderboard。
 
-    python -m pweval.a0_seed <快照目录> <输出目录> [--boards eval/seeds/leaderboards] [--git]
+    python -m pweval.harness.a0_seed <快照目录> <输出目录> [--boards eval/seeds/leaderboards] [--git]
 
 布局（README 只描述它，不规定写者必须怎样做）：
 
@@ -9,8 +9,8 @@
 - ``leaderboards/``：种子 Leaderboard，按 ``eval/seeds/a0-leaderboards.md`` 的规则从 A3 的文档转写；
 - 对象之间用相对链接；原文位置写成 ``<章节>::<起始行>:<结束行>``，行号是论文材料文件的行号。
 
-输入是快照（:mod:`pweval.snapshot`），不导入被测系统（evaluation_draft §10.1）：对象视图按 graph_model_v2 自己装配
-（kind 取次级标签，别名来自指向对象的 ``NameKey``，材料取没有被取代的 ``Material``）。不渲染反向链接（A0 用 grep
+输入是快照（:mod:`pweval.protocol.snapshot`），不导入被测系统（evaluation_draft §10.1）：对象视图按 graph_model_v2
+自己装配（kind 取次级标签，别名来自指向对象的 ``NameKey``，材料取没有被取代的 ``Material``）。不渲染反向链接（A0 用 grep
 反查，对应 A3 的 Traverse）。A3 的 id 不出现在笔记中，来源引用中的论文 id 换成指向论文笔记的链接。渲染是确定性的：
 同一个快照渲染两次，结果逐字节相同。``--git`` 把输出目录下的 ``store/`` 初始化为 git 仓库，以作者 ``seed`` 提交，
 标签 ``checkpoint-0``。
@@ -28,8 +28,8 @@ from typing import Any
 
 import yaml
 
-from .paths import SEEDS
-from .snapshot import Snapshot, load
+from ..paths import SEEDS
+from ..protocol.snapshot import Snapshot, load
 
 DIRS = {"Paper": "papers", "Method": "methods", "Dataset": "datasets", "Task": "tasks"}
 CONTENT = ("Contribution", "Claim", "Experiment")  # 论文笔记中章节的顺序
@@ -453,8 +453,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="python -m pweval.a0_seed", description=__doc__.split("\n\n")[0])
-    parser.add_argument("snapshot", help="A3 检查点 0 的快照目录（pweval.snapshot）")
+    parser = argparse.ArgumentParser(prog="python -m pweval.harness.a0_seed", description=__doc__.split("\n\n")[0])
+    parser.add_argument("snapshot", help="A3 检查点 0 的快照目录（pweval.protocol.snapshot）")
     parser.add_argument("out", help="输出目录；笔记库写在其下的 store/")
     boards = str(SEEDS / "leaderboards")
     parser.add_argument("--boards", default=boards, help="种子 Leaderboard 的目录；空字符串表示不加")

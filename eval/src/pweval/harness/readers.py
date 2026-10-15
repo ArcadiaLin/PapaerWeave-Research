@@ -1,7 +1,8 @@
 """读者探针：在检查点上，由固定的读者 Agent 回答探针，记录回答与轨迹（探针与金标准见 ``config/probes-ltsf.yml``）。
 
-    python -m pweval.probe <运行名> --checkpoint K [--arms A3,A0] [--conditions store_only] [--probes A1,C1] [--at-head]
-    python -m pweval.probe <运行名> --baselines [--probes …]        # 闭卷与神谕参照线，各探针一次，与组无关
+    python -m pweval.harness.readers <运行名> --checkpoint K [--arms A3,A0] [--conditions store_only] [--probes A1,C1]
+        [--at-head]
+    python -m pweval.harness.readers <运行名> --baselines [--probes …]        # 闭卷与神谕参照线，各探针一次，与组无关
 
 读者是一次 pi 会话（与写者同一模型与设置），每个探针一次，彼此没有记忆。库只读：A3 的 MCP 服务只列出不写入的工具；
 A0 读检查点标签处的笔记库副本（只读挂载）。两种读者条件（配置 ``probe_conditions``）：
@@ -11,10 +12,10 @@ A0 读检查点标签处的笔记库副本（只读挂载）。两种读者条�
 
 参照线没有库也没有论文：闭卷只给问题，神谕另给金标准所在的原文行，表格行前带上表的标题与表头（:func:`excerpt`）。
 
-探针在其金标准涉及的论文中最早的一篇写入后的检查点起有效（:func:`eligible`）；多篇论文的金标准只计入检查点时
-已写入的论文（:func:`gold_at`）。回答记入 ``<运行目录>/probes.jsonl``，判分见 :mod:`pweval.grade`。
+探针的有效范围与金标准见 :mod:`pweval.protocol.probes`。回答记入 ``<运行目录>/probes.jsonl``，判分见
+:mod:`pweval.measure.grade`。
 
-A3 的库是正在运行的图库，没有按检查点的快照：在运行中由 :mod:`pweval.run` 在每个检查点、下一个写者开始之前调用，
+A3 的库是正在运行的图库，没有按检查点的快照：在运行中由 :mod:`pweval.harness.run` 在每个检查点、下一个写者开始之前调用，
 库的状态就是检查点的状态。事后单独调用时（``--at-head``）读到的是库的当前状态，只用于试跑。
 """
 
@@ -34,111 +35,14 @@ from typing import Any
 
 import yaml
 
-from . import source_tables, versions
-from .paths import REPO
+from ..paths import REPO
+from ..protocol import source_tables
+from ..protocol.config import run_config
+from ..protocol.probes import CONDITIONS, PROBES, check_anchors, condition_of, eligible, load
 from .sandbox import Arm, Paths, Writer, prepare, run_session
 
-PROBES = REPO / "eval/config/probes-ltsf.yml"
-CONDITIONS = ("store_only", "with_papers")
 MATERIAL_PATH = re.compile(r"papers/\d{4}\.\d{4,5}")  # 原文材料的路径
 _LOCK = threading.Lock()  # 各组并行时 probes.jsonl 的写入
-
-
-def load(path: Path = PROBES) -> dict[str, Any]:
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
-
-
-def for_run(config: dict[str, Any], repo: Path) -> dict[str, Any] | None:
-    """这次运行的探针：配置的 ``probes`` 文件去掉 ``probes_exclude`` 中的 id（例如不注入版本事件的运行去掉 G 类）。"""
-    if not config.get("probes"):
-        return None
-    probes = load(repo / config["probes"])
-    exclude = set(config.get("probes_exclude") or [])
-    if unknown := exclude - {p["id"] for p in probes["probes"]}:
-        raise ValueError(f"probes_exclude names unknown probes: {sorted(unknown)}")
-    return {**probes, "probes": [p for p in probes["probes"] if p["id"] not in exclude]}
-
-
-# ---------------------------------------------------------------- 有效范围与金标准
-
-
-def _paper_of(item: dict[str, Any]) -> str:
-    return item.get("paper") or item["anchor"].split(":", 1)[0]
-
-
-def _items(probe: dict[str, Any]) -> list[dict[str, Any]]:
-    gold = probe["gold"]
-    return [*gold.get("values", []), *gold.get("rubric", [])]
-
-
-def paper_index(config: dict[str, Any]) -> dict[str, int]:
-    """写入论文的顺序（从 1 开始）；种子论文为 0，检查点 0 起就在库中。"""
-    index = {p["arxiv"]: 0 for p in config["corpus"]["seeds"]}
-    index |= {p["arxiv"]: n for n, p in enumerate(config["corpus"]["papers"], 1)}
-    return index | {old: index[new] for new, old in versions.first_versions(config).items()}  # 早期版本同序
-
-
-def start(probe: dict[str, Any], config: dict[str, Any]) -> int:
-    """探针有效的第一个检查点。"""
-    if "start" in probe:
-        return probe["start"]
-    every = config["schedule"]["checkpoint_every_papers"]
-    first = min(paper_index(config)[_paper_of(i)] for i in _items(probe))
-    return max(1, -(-first // every))
-
-
-def eligible(probes: list[dict[str, Any]], config: dict[str, Any], k: int) -> list[dict[str, Any]]:
-    return [p for p in probes if start(p, config) <= k]
-
-
-def gold_at(probe: dict[str, Any], config: dict[str, Any], k: int) -> dict[str, Any]:
-    """检查点 ``k`` 时的金标准：只保留出处论文已写入的项，以及检查点在其 ``from_checkpoint`` /
-    ``until_checkpoint`` 之内的项（论文新版本改动的数值：事件之前是旧值，之后是新值，:mod:`pweval.versions`）。"""
-    written = k * config["schedule"]["checkpoint_every_papers"]
-    index = paper_index(config)
-    gold = dict(probe["gold"])
-    for key in ("values", "rubric"):
-        if key in gold:
-            gold[key] = [
-                i
-                for i in gold[key]
-                if index[_paper_of(i)] <= written
-                and i.get("from_checkpoint", 0) <= k <= i.get("until_checkpoint", k)
-            ]
-    return gold
-
-
-def check_anchors(probes: dict[str, Any], material_root: Path) -> list[str]:
-    """金标准的锚点都在原文中，且每个数值出现在它的锚点行上；带方法与指标的数值确实是锚点行上那一列（按
-    :mod:`pweval.source_tables` 解析的结果表）；神谕的行范围都存在。"""
-    problems: list[str] = []
-
-    def lines(arxiv: str) -> list[str]:
-        return (material_root / "papers" / arxiv / "paper.md").read_text(encoding="utf-8").splitlines()
-
-    for probe in probes["probes"]:
-        for item in _items(probe):
-            arxiv, line = item["anchor"].split(":")
-            text = lines(arxiv)
-            if not 1 <= int(line) <= len(text):
-                problems.append(f"{probe['id']}: {item['anchor']} is out of range")
-            elif "value" in item:
-                numbers = [float(x) for x in re.findall(r"\d+\.\d+", text[int(line) - 1])]
-                if not any(abs(x - item["value"]) < 1e-9 for x in numbers):
-                    problems.append(f"{probe['id']}: {item['value']} is not on {item['anchor']}")
-                elif "method" in item:
-                    cells = source_tables.lookup(material_root, arxiv, item["dataset"], item["horizon"], item["metric"])
-                    if not any(
-                        c.line == int(line) and abs(c.value - item["value"]) < 1e-9 and source_tables.same_method(item["method"], c.header)
-                        for c in cells
-                    ):
-                        problems.append(f"{probe['id']}: {item['method']} {item['metric']} {item['value']} is not that cell of {item['anchor']}")
-        for span in probe.get("oracle", []):
-            arxiv, lines_ = span.split(":")
-            first, last = map(int, lines_.split("-"))
-            if not 1 <= first <= last <= len(lines(arxiv)):
-                problems.append(f"{probe['id']}: oracle {span} is out of range")
-    return problems
 
 
 # ---------------------------------------------------------------- 任务文本
@@ -346,17 +250,10 @@ def _done(run: Path) -> set[tuple[str, str, int, str]]:
     return {(r["arm"], condition_of(r), r["checkpoint"], r["probe"]) for r in records}
 
 
-def condition_of(record: dict[str, Any]) -> str:
-    """早先的记录没有条件字段：它们是能读论文的读者，或参照线。"""
-    if "condition" in record:
-        return record["condition"]
-    return "none" if record["arm"] in ("closed_book", "oracle") else "with_papers"
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     from .run import _llm_url
 
-    parser = argparse.ArgumentParser(prog="python -m pweval.probe", description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(prog="python -m pweval.harness.readers", description=__doc__.split("\n\n")[0])
     parser.add_argument("name", help="运行名（<workdir_root>/<运行名>/）")
     parser.add_argument("--config", default=str(REPO / "eval/config/pilot-ltsf.yml"))
     parser.add_argument("--probes-file", default=str(PROBES))
@@ -373,8 +270,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     if problems:
         raise SystemExit("probe gold does not match the papers:\n" + "\n".join(problems))
     run = Path(config["runner"]["workdir_root"]).expanduser() / args.name
-    from .run import run_config
-
     config = run_config(run, config)
     only = set(args.probes.split(",")) if args.probes else None
     llm = _llm_url(config["runner"]["model"])

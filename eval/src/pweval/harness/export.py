@@ -1,20 +1,10 @@
-"""检查点的冻结快照（evaluation_draft §10.1）：运行到检查点时立即导出，之后的测量只读快照，可以离线重算。
+"""检查点快照的导出（格式见 :mod:`pweval.protocol.snapshot`）：运行到检查点时立即导出，之后的测量只读快照。
 
     export_a3(uri, data_root, out)   # Cypher 直接读库，按 graph_model_v2 写明的标签与属性
     export_a0(store, tag, out)       # git 标签下的文件树与提交列表
-    load(out) -> Snapshot            # 测量层也可以只用 json 与 yaml 自己读这些文件
+    head(uri)                        # 分支头的提交 id
 
-A3 的快照（``out/``）：
-
-- ``graph.jsonl``：每行一个节点 ``{"node": id, "labels": [...], "props": {...}}`` 或一条边
-  ``{"edge": [src, type, dst], "props": {...}}``；以节点的 ``id`` 属性连接，按 id 排序。不含版本记录（``Commit``、
-  ``Branch``、``IdCounter``、``TOUCHED``、``PARENT``）与派生的向量属性（``embedding``、``embedding_key``）；
-- ``commits.jsonl``：各提交的属性，按 ``seq``；``changeset``、``meta`` 等 JSON 字符串原样保留；
-- ``documents/``：产物文档（``Material`` 中路径以 ``artifacts/`` 开头的文件）的副本，保持相对路径；论文材料是语料，
-  不复制，``Material`` 上有路径与哈希；
-- ``meta.yml``：库地址、分支头、导出时间、各类计数。
-
-A0 的快照：``tree/``（``git archive <标签>`` 展开）、``log.jsonl``（标签及之前的提交）、``meta.yml``。
+    python -m pweval.harness.export <运行名> [--config …]   # A3 的当前状态 → <运行目录>/checkpoints/head/A3/（试跑）
 """
 
 from __future__ import annotations
@@ -25,7 +15,6 @@ import os
 import shutil
 import subprocess
 import tarfile
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -126,35 +115,6 @@ def export_a0(store: Path, tag: str, out: Path) -> dict[str, Any]:
     return meta
 
 
-@dataclass
-class Snapshot:
-    """A3 快照读回内存：节点 id → ``{labels, props}``，边 ``(src, type, dst, props)``，提交列表。"""
-
-    nodes: dict[str, dict[str, Any]] = field(default_factory=dict)
-    edges: list[tuple[str, str, str, dict[str, Any]]] = field(default_factory=list)
-    commits: list[dict[str, Any]] = field(default_factory=list)
-    root: Path | None = None
-
-    def document(self, path: str) -> str:
-        assert self.root is not None
-        return (self.root / "documents" / path).read_text(encoding="utf-8")
-
-
-def load(out: Path) -> Snapshot:
-    snap = Snapshot(root=out)
-    for line in (out / "graph.jsonl").read_text(encoding="utf-8").splitlines():
-        row = json.loads(line)
-        if "node" in row:
-            snap.nodes[row["node"]] = {"labels": row["labels"], "props": row["props"]}
-        else:
-            src, rel, dst = row["edge"]
-            snap.edges.append((src, rel, dst, row["props"]))
-    commits = out / "commits.jsonl"
-    if commits.exists():
-        snap.commits = [json.loads(line) for line in commits.read_text(encoding="utf-8").splitlines() if line]
-    return snap
-
-
 def _clean(props: dict[str, Any]) -> dict[str, Any]:
     return {k: props[k] for k in sorted(props) if k not in DERIVED}
 
@@ -169,4 +129,30 @@ def _empty(out: Path) -> None:
     out.mkdir(parents=True, exist_ok=True)
 
 
-__all__ = ["Snapshot", "driver", "export_a0", "export_a3", "head", "load"]
+def main(argv: list[str] | None = None) -> int:
+    """试跑时读库的当前状态：先导出成快照（``checkpoints/head/A3/``，已有的先删除），测量层再读这份快照。"""
+    import argparse
+
+    from ..paths import REPO
+    from ..protocol.config import run_config
+
+    parser = argparse.ArgumentParser(prog="python -m pweval.harness.export", description=main.__doc__)
+    parser.add_argument("name")
+    parser.add_argument("--config", default=str(REPO / "eval/config/pilot-ltsf.yml"))
+    args = parser.parse_args(argv)
+    config = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
+    run = Path(config["runner"]["workdir_root"]).expanduser() / args.name
+    config = run_config(run, config)
+    out = run / "checkpoints/head/A3"
+    if out.exists():
+        shutil.rmtree(out)
+    meta = export_a3(config["arms"]["A3"]["neo4j"], run / "A3/data", out)
+    print(f"{out}: {meta['counts']} head {meta['branches'].get('main')}")
+    return 0
+
+
+__all__ = ["driver", "export_a0", "export_a3", "head", "main"]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

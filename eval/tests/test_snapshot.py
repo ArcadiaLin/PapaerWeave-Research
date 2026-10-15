@@ -9,7 +9,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from pweval.snapshot import export_a0, load
+from pweval.harness.export import export_a0
+from pweval.protocol.snapshot import load
 
 GIT = ["-c", "user.name=seed", "-c", "user.email=seed@t1.example", "-c", "commit.gpgsign=false"]
 

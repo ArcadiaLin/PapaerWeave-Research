@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import sys
 
+from ..paths import SEEDS
 from .mcp_client import Client, status
-from .paths import SEEDS
 
 BATCHES = [  # (相对 seeds/ 的 glob，update_abstract)
     ("leaderboards/*.md", "Seed leaderboards from the seed papers' main tables."),

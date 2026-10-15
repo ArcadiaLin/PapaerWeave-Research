@@ -2,12 +2,12 @@
 
 沙箱里能看到的只有：系统目录与 node（只读）、本写者的工作目录 ``/work``（可写）、本写者的 ``HOME``（pi 的
 agent 目录：只有模型配置与设置，不带宿主机的扩展、skills 与认证）、论文材料 ``/work/papers``（只读）；A0 另有
-共享笔记库 ``/work/store``（可写，各写者共用一份）。读者（:mod:`pweval.probe`）的库只读：A0 的笔记库只读挂载，A3 的 MCP
-服务只列出不写入的工具；只读库的读者没有论文，A3 的 ReadEvidence 只读产物文档。闭卷与神谕参照线（``name`` 为 ``none``）
-既没有库，也没有论文。仓库、``docs/``、金标准、其他组与其他写者的目录都不可见；
+共享笔记库 ``/work/store``（可写，各写者共用一份）。读者（:mod:`pweval.harness.readers`）的库只读：A0 的笔记库只读挂载，
+A3 的 MCP 服务只列出不写入的工具；只读库的读者没有论文，A3 的 ReadEvidence 只读产物文档。闭卷与神谕参照线（``name`` 为
+``none``）既没有库，也没有论文。仓库、``docs/``、金标准、其他组与其他写者的目录都不可见；
 环境变量清空后只设必要的几个（宿主机的代理设置不带进去）。
 
-网络断开，只剩回环地址。与外面的联系只有挂载进去的 unix socket（:mod:`pweval.bridge`）：
+网络断开，只剩回环地址。与外面的联系只有挂载进去的 unix socket（:mod:`pweval.harness.bridge`）：
 
 - ``llm.sock``：沙箱内 ``127.0.0.1:<端口>`` → 沙箱外的大模型服务；
 - ``mcp.sock``（A3）：沙箱内登记的 MCP 服务只是一条转发命令，每个连接在沙箱外启动一个 ``python -m paperweave.mcp``，
@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .paths import REPO
+from ..paths import REPO
 
 BRIDGE = Path(__file__).with_name("bridge.py")
 LLM_PORT = 30000  # 沙箱内大模型服务的回环端口

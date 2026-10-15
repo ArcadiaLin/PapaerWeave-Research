@@ -10,9 +10,9 @@ from pathlib import Path
 
 import yaml
 
-from pweval import seeding
+from pweval.harness import seeding
+from pweval.harness.run import assign, check_checkpoint0, discard_leftovers, preflight, prompt, request_errors, schedule
 from pweval.paths import REPO, SEEDS
-from pweval.run import assign, check_checkpoint0, discard_leftovers, preflight, prompt, request_errors, schedule
 
 CONFIG = yaml.safe_load((REPO / "eval/config/pilot-ltsf.yml").read_text(encoding="utf-8"))
 

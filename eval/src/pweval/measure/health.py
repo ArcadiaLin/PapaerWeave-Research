@@ -1,18 +1,20 @@
 """库健康度（evaluation_draft.md §4.3，诊断，不用 judge）：在检查点上从库中统计四项，两组用同一口径。
 
-    python -m pweval.health <运行名> --checkpoint K [--arms A3,A0]    # 写出 <运行目录>/health/<组>-cp<K>.yml
+    python -m pweval.measure.health <运行名> --checkpoint K [--arms A3,A0]    # 写出 <运行目录>/health/<组>-cp<K>.yml
 
-只读：A3 读检查点的冻结快照（:mod:`pweval.snapshot`，``checkpoints/<K>/A3/``），A0 用 ``git show <检查点标签>:<路径>``，
-都不改动写者的库。评测代码不导入被测系统（evaluation_draft §10.1）：产物文档的头部与数据块按格式自行解析。
+只读：A3 读检查点的冻结快照（:mod:`pweval.protocol.snapshot`，``checkpoints/<K>/A3/``），A0 用 ``git show
+<检查点标签>:<路径>``，都不改动写者的库。评测代码不导入被测系统（evaluation_draft §10.1）：
+产物文档的头部与数据块按格式自行解析。
 
 1. **有据层忠实度**：库中抄下的每个结果数值，抽成（论文, 方法, 数据集, 预测长度, 指标, 数值），与核对读者清单的
-   :func:`pweval.grade.verify` 一样对照原文结果表，分为 supported / misattributed / unsupported / unknown_paper。带出处
-   行号的，另核对原文中对上的格子是否落在所引的行内（``anchor``：ok；near 为差 3 行以内，多是表的首尾行；off 为
-   更远，多是引错了表）。A3 取 Extract 产物的数据行；A0 取论文笔记
+   :func:`pweval.measure.grade.verify` 一样对照原文结果表，分为 supported / misattributed / unsupported /
+   unknown_paper。带出处行号的，另核对原文中对上的格子是否落在所引的行内（``anchor``：ok；near 为差 3 行以内，
+   多是表的首尾行；off 为更远，多是引错了表）。A3 取 Extract 产物的数据行；A0 取论文笔记
    （``papers/*.md``）中的 Markdown 结果表，表上方最近的标题段中的 ``lines a-b`` 或 ``::a:b`` 作为出处行。其余形式
    的数值（正文、MatrixConstruct、方法笔记中的表）不计入，``coverage`` 给出计入与跳过的数量。
-   论文有多个版本时（:mod:`pweval.versions`），数值按所引的版本核对（忠实于所引版本）；``versions`` 另计检查点时
-   仍引用旧版本的数值（``cites_old``），以及其中当前版本已经不是这个数的（``outdated``：读者照此会读到旧值）。
+   论文有多个版本时（:mod:`pweval.protocol.versions`），数值按所引的版本核对（忠实于所引版本）；``versions``
+   另计检查点时仍引用旧版本的数值（``cites_old``），以及其中当前版本已经不是这个数的（``outdated``：读者照此会读到旧值）
+   。
 2. **悬空引用率**：解析不了的引用占全部引用的比例。A3：数据行的来源引用（材料在、哈希一致、行号不越界）、数据行
    中引用的节点、产物文档的 ``nodes_used``、FROM 关系上的定位。A0：笔记间的相对链接、论文笔记中 ``::a:b`` 形式的
    行号引用（不越出材料的行数）、``material:`` 指向的材料。
@@ -31,7 +33,6 @@ import argparse
 import json
 import re
 import subprocess
-import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -39,9 +40,10 @@ from typing import Any
 
 import yaml
 
-from . import snapshot, source_tables, versions
+from ..paths import REPO
+from ..protocol import snapshot, source_tables, versions
+from ..protocol.config import run_config
 from .grade import paper_aliases, paper_of, verify
-from .paths import REPO
 
 SECTION_LINES = re.compile(r"::(\d+):(\d+)")
 NOTE_LINES = re.compile(r"lines?\s+(\d+)\s*[-–]\s*(\d+)")
@@ -649,7 +651,8 @@ def _float(x: Any) -> float | None:
 
 
 def measure(run: Path, config: dict[str, Any], arm: str, k: int, *, at_head: bool = False) -> dict[str, Any]:
-    """``at_head``：读库的当前状态而不是检查点（试跑用；A3 临时导出一份快照）。"""
+    """``at_head``：读库的当前状态而不是检查点（试跑用）。测量层不连库：A3 读 ``checkpoints/head/A3/``，由
+    ``python -m pweval.harness.export <运行名>`` 事先导出。"""
     material_root = REPO / config["corpus"]["material_root"]
     checkpoints = yaml.safe_load((run / "checkpoints.yml").read_text(encoding="utf-8"))
     if arm == "A0":
@@ -657,11 +660,11 @@ def measure(run: Path, config: dict[str, Any], arm: str, k: int, *, at_head: boo
     if not at_head:
         snap = snapshot.load(run / f"checkpoints/{k}/A3")
         return a3_measure(snap, checkpoints["A3"][0], checkpoints["A3"][k], run / "A3/data", material_root, config, k)
-    with tempfile.TemporaryDirectory() as tmp:
-        snapshot.export_a3(config["arms"]["A3"]["neo4j"], run / "A3/data", Path(tmp))
-        snap = snapshot.load(Path(tmp))
-        until = yaml.safe_load((Path(tmp) / "meta.yml").read_text(encoding="utf-8"))["branches"]["main"]
-        return a3_measure(snap, checkpoints["A3"][0], until, run / "A3/data", material_root, config, k)
+    head = run / "checkpoints/head/A3"
+    if not (head / "meta.yml").exists():
+        raise SystemExit(f"{head} is missing: export it first with python -m pweval.harness.export {run.name}")
+    until = yaml.safe_load((head / "meta.yml").read_text(encoding="utf-8"))["branches"]["main"]
+    return a3_measure(snapshot.load(head), checkpoints["A3"][0], until, run / "A3/data", material_root, config, k)
 
 
 def a3_measure(
@@ -793,17 +796,17 @@ def summary(result: dict[str, Any]) -> str:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m pweval.health", description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(prog="python -m pweval.measure.health", description=__doc__.split("\n\n")[0])
     parser.add_argument("name")
     parser.add_argument("--config", default=str(REPO / "eval/config/pilot-ltsf.yml"))
     parser.add_argument("--arms", default="A3,A0")
     parser.add_argument("--checkpoint", type=int, required=True)
-    parser.add_argument("--at-head", action="store_true", help="读库的当前状态而不是检查点（试跑用）")
+    parser.add_argument(
+        "--at-head", action="store_true", help="读库的当前状态（checkpoints/head/A3，先用 pweval.harness.export 导出；试跑用）"
+    )
     args = parser.parse_args(argv)
     config = yaml.safe_load(Path(args.config).read_text(encoding="utf-8"))
     run = Path(config["runner"]["workdir_root"]).expanduser() / args.name
-    from .run import run_config
-
     config = run_config(run, config)
     for arm in args.arms.split(","):
         result = measure(run, config, arm, args.checkpoint, at_head=args.at_head)

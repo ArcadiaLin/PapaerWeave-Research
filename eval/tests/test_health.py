@@ -8,10 +8,10 @@ from types import SimpleNamespace as NS
 
 import yaml
 
-from pweval.grade import paper_aliases
-from pweval.health import Fact, _cited_lines, _note_facts, a3_overwrites, candidates, fidelity
+from pweval.measure.grade import paper_aliases
+from pweval.measure.health import Fact, _cited_lines, _note_facts, a3_overwrites, candidates, fidelity
 from pweval.paths import REPO
-from pweval.source_tables import lookup, same_method
+from pweval.protocol.source_tables import lookup, same_method
 
 CONFIG = yaml.safe_load((REPO / "eval/config/pilot-ltsf.yml").read_text(encoding="utf-8"))
 MATERIAL = REPO / CONFIG["corpus"]["material_root"]

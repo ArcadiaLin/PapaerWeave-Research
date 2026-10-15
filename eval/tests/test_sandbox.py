@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from pweval import sandbox
-from pweval.sandbox import PI_DIR, pi_install
+from pweval.harness import sandbox
+from pweval.harness.sandbox import PI_DIR, pi_install
 
 
 def _fake_which(node: Path):

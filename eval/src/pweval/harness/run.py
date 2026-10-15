@@ -1,6 +1,6 @@
 """T1 先导的一次运行：按配置建立各组的起点（检查点 0），按顺序调度写者会话，在检查点存档。
 
-    python -m pweval.run <运行名> [--config …] [--arms A3,A0] [--limit N] [--reset-a3]
+    python -m pweval.harness.run <运行名> [--config …] [--arms A3,A0] [--limit N] [--reset-a3]
 
 运行目录 ``<workdir_root>/<运行名>/``：
 
@@ -11,19 +11,19 @@
   模型请求出错的次数与原因；A0 另记会话结束时笔记库中没有提交的改动）；
 - ``checkpoints.yml``：各组每个检查点的库版本（A3 为分支头的提交 id，A0 为 git 标签 ``checkpoint-<k>`` 的提交）；
 - ``checkpoints/<k>/<组>/``：检查点的快照；
-- ``probes.jsonl``：配置给出 ``probes`` 时，每个检查点上读者对有效探针的回答（:mod:`pweval.probe`），在下一个写者开始
-  之前跑完，所以读到的就是检查点的库；
+- ``probes.jsonl``：配置给出 ``probes`` 时，每个检查点上读者对有效探针的回答（:mod:`pweval.harness.readers`），
+  在下一个写者开始之前跑完，所以读到的就是检查点的库；
 - ``A3/data/``：A3 的材料根目录（论文副本与产物文档，``PAPERWEAVE_DATA``）；``A0/store/``：A0 的笔记库（git 仓库），
   ``A0/papers/``：A0 的论文副本。两组的论文副本起初只有写者最初拿到的版本，版本事件开始前才放入新版本
-  （:mod:`pweval.versions`）；
-- ``<组>/<写者>/``：写者的沙箱目录（见 :mod:`pweval.sandbox`）。
+  （:mod:`pweval.protocol.versions`）；
+- ``<组>/<写者>/``：写者的沙箱目录（见 :mod:`pweval.harness.sandbox`）。
 
 A3 的起点：清空图库（``--reset-a3``，只允许配置中的 T1 图库），用系统的命令行按 ``seed_docs`` 的顺序（作者取文档的
-``by``）提交，再经 MCP 检入种子 Leaderboard 与 skill（:mod:`pweval.seeding`）。A0 的起点由 A3 检查点 0 的快照渲染，加上
-同样的种子 Leaderboard（:mod:`pweval.a0_seed`），两组内容因此相同。
+``by``）提交，再经 MCP 检入种子 Leaderboard 与 skill（:mod:`pweval.harness.seeding`）。A0 的起点由 A3 检查点 0
+的快照渲染，加上同样的种子 Leaderboard（:mod:`pweval.harness.a0_seed`），两组内容因此相同。
 
-每个检查点导出冻结的快照 ``checkpoints/<k>/<组>/``（:mod:`pweval.snapshot`），之后的测量只读快照。评测代码不导入被测
-系统（evaluation_draft §10.1）：A3 的库只经命令行、MCP 与 Cypher 读取接触。
+每个检查点导出冻结的快照 ``checkpoints/<k>/<组>/``（:mod:`pweval.protocol.snapshot`），之后的测量只读快照。
+评测代码不导入被测系统（evaluation_draft §10.1）：A3 的库只经命令行、MCP 与 Cypher 读取接触。
 
 会话按“槽位”调度：每个槽位是一篇论文的一个写者，或一个版本事件（``events``：某个检查点之后，维护者把论文的新版本
 带进库）。组内按槽位顺序逐个运行（写者轮流写），各组同时运行：两组的存储互不相干，并行只缩短总时间。
@@ -52,9 +52,12 @@ from urllib.parse import urlsplit
 
 import yaml
 
-from . import probe, seeding, skills, snapshot, versions
+from ..paths import REPO, SEEDS
+from ..protocol import snapshot, versions
+from ..protocol.config import run_config
+from ..protocol.probes import check_anchors, for_run
+from . import export, readers, seeding, skills
 from .a0_seed import commit_seed, read_boards, render, write
-from .paths import REPO, SEEDS
 from .sandbox import Arm, Paths, Writer, pi_version, prepare, run_session
 
 PROTECTED = {7687, 7688}  # neo4j-e09 与 neo4j-test：不清空
@@ -159,7 +162,7 @@ def setup_a3(run: Path, config: dict[str, Any], *, reset: bool) -> None:
     data = run / "A3/data"
     if not (data / "papers").exists():
         copy_papers(config, data / "papers", versions.initial_papers(config))
-    driver = snapshot.driver(arm["neo4j"])
+    driver = export.driver(arm["neo4j"])
     try:
         nodes = driver.execute_query("MATCH (n) RETURN count(n) AS n").records[0]["n"]
         if nodes:
@@ -240,7 +243,7 @@ def version(run: Path, config: dict[str, Any], arm: str) -> str | None:
     if arm == "A0":
         done = subprocess.run(["git", "-C", str(run / "A0/store"), "rev-parse", "HEAD"], capture_output=True, text=True)
         return done.stdout.strip() or None
-    return snapshot.head(config["arms"]["A3"]["neo4j"])
+    return export.head(config["arms"]["A3"]["neo4j"])
 
 
 def checkpoint(run: Path, config: dict[str, Any], arm: str, k: int) -> str | None:
@@ -254,9 +257,9 @@ def checkpoint(run: Path, config: dict[str, Any], arm: str, k: int) -> str | Non
         if out.exists():
             shutil.rmtree(out)  # 上次导出到一半
         if arm == "A3":
-            snapshot.export_a3(config["arms"]["A3"]["neo4j"], run / "A3/data", out)
+            export.export_a3(config["arms"]["A3"]["neo4j"], run / "A3/data", out)
         else:
-            snapshot.export_a0(run / "A0/store", f"checkpoint-{k}", out)
+            export.export_a0(run / "A0/store", f"checkpoint-{k}", out)
     head = version(run, config, arm)
     path = run / "checkpoints.yml"
     with _LOCK:
@@ -300,8 +303,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         setup_a0(run, config)
         checkpoint(run, config, "A0", 0)
 
-    probes = probe.for_run(config, REPO)
-    if probes is not None and (problems := probe.check_anchors(probes, REPO / config["corpus"]["material_root"])):
+    probes = for_run(config, REPO)
+    if probes is not None and (problems := check_anchors(probes, REPO / config["corpus"]["material_root"])):
         raise SystemExit("probe gold does not match the papers:\n" + "\n".join(problems))
     titles = titles_of(config)
     done = _done(run)
@@ -319,7 +322,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         checkpoint(run, config, arm, slot.checkpoint)
                     if probes is not None:
                         _require_services(config, arm)
-                        probe.run_probes(run, config, probes, arm, slot.checkpoint, llm)
+                        readers.run_probes(run, config, probes, arm, slot.checkpoint, llm)
                 continue
             if slot.event:  # 新版本此刻才出现在论文副本中
                 copy_papers(config, papers_dir(run, config, arm), [slot.event["paper"]])
@@ -336,7 +339,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 checkpoint(run, config, arm, slot.checkpoint)
                 if probes is not None:  # 下一个写者开始之前：读者读到的就是检查点的库
                     _require_services(config, arm)
-                    probe.run_probes(run, config, probes, arm, slot.checkpoint, llm)
+                    readers.run_probes(run, config, probes, arm, slot.checkpoint, llm)
 
     with ThreadPoolExecutor(max_workers=len(arms)) as pool:
         for future in [pool.submit(run_arm, arm) for arm in arms]:
@@ -349,7 +352,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 def export_a3(run: Path, config: dict[str, Any]) -> Path:
     """A3 图库的全部节点与关系（含版本记录）写成 JSONL，供图库清空后复查。"""
     out = run / "A3/neo4j-export.jsonl"
-    driver = snapshot.driver(config["arms"]["A3"]["neo4j"])
+    driver = export.driver(config["arms"]["A3"]["neo4j"])
     try:
         nodes = driver.execute_query("MATCH (n) RETURN elementId(n) AS id, labels(n) AS labels, properties(n) AS props")
         edges = driver.execute_query(
@@ -454,24 +457,6 @@ def discard_leftovers(store: Path, patch: Path) -> list[str]:
     return changed
 
 
-def run_config(run: Path, config: dict[str, Any]) -> dict[str, Any]:
-    """配置加上这次运行的覆盖（``run.yml`` 的 ``overrides``）：A3 图库、各组的模型服务决定在哪里跑，不改协议；
-    ``composition`` 选择这条时间线的写者构成（配置中 ``compositions`` 的一项）。pweval.health、pweval.probe、pweval.grade
-    读同一份。"""
-    path = run / "run.yml"
-    overrides = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("overrides") or {} if path.exists() else {}
-    config = {**config, "arms": {**config["arms"]}, "runner": {**config["runner"]}}
-    if overrides.get("neo4j"):
-        config["arms"]["A3"] = {**config["arms"]["A3"], "neo4j": overrides["neo4j"]}
-    if overrides.get("endpoints"):
-        config["runner"]["endpoints"] = overrides["endpoints"]
-    if overrides.get("composition"):
-        config["composition"] = overrides["composition"]
-    if "assignment" in config and config.get("composition") not in config.get("compositions", {}):
-        raise ValueError(f"{path} names no writer composition of {sorted(config.get('compositions', {}))}")
-    return config
-
-
 def _record_run(run: Path, config_path: Path, arms: list[str], overrides: dict[str, Any]) -> None:
     """第一次运行记下 ``run.yml``；之后每次（续跑）另存一份源码快照 ``code-<时间>.tar.gz``。覆盖只能在第一次给出，
     续跑时给出不同的覆盖即停止。"""
@@ -570,7 +555,7 @@ def _system_env(arm: dict[str, Any], data: Path) -> dict[str, str]:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="python -m pweval.run", description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(prog="python -m pweval.harness.run", description=__doc__.split("\n\n")[0])
     parser.add_argument("name", help="运行名：运行目录为 <workdir_root>/<name>/")
     parser.add_argument("--config", default=str(REPO / "eval/config/pilot-ltsf.yml"))
     parser.add_argument("--arms", default="A3,A0", help="逗号分隔，按此顺序在每个槽位运行")
@@ -594,7 +579,6 @@ __all__ = [
     "main",
     "papers_dir",
     "prompt",
-    "run_config",
     "schedule",
     "setup_a0",
     "setup_a3",
