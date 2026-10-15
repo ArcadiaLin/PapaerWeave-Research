@@ -20,6 +20,15 @@
 % 草稿期标记：refs.bib 里还没有的文献。定稿前全部换成 \cite。
 \newcommand{\citeneeded}[1]{\textcolor{red}{[cite: #1]}}
 
+% 算法草稿：用已有 float 包和标准列表，避免增加 TeX 安装依赖。
+\usepackage{float}
+\usepackage{array}  % 表格列的 >{\raggedright} 前缀
+\usepackage{tikz}   % 算子计划图（Figure: plan）
+\usetikzlibrary{positioning,arrows.meta}
+\floatstyle{ruled}
+\newfloat{algorithm}{tbp}{loa}
+\floatname{algorithm}{Algorithm}
+
 % —— camera-ready 时启用，内容以 ACM eRights 邮件为准 ——
 % \copyrightyear{2027}
 % \acmYear{2027}
@@ -259,6 +268,513 @@ In summary, this paper makes the following contributions.
     access and budgets, isolate the effect of each mechanism by ablation, and
     measure whether construction cost amortizes across readers.
 \end{itemize}
+
+% BEGIN formal-core draft (2026-10-14, v2)
+% 依据：docs/designs/v2/operators.md §2--§5、commit_contract.md §4--§7，
+% experiments/e09/src/e09/ 的实现（operators/db/、query/、commit/、artifact/、mcp/server.yml），
+% evaluation_draft.md §4--§6。
+% 组织：接口（表）→ 语义（公式）→ 执行（每个算子一个算法）→ 组合（图）。
+% 只有中间件执行的过程写成算法；Agent 怎样组合算子用计划图呈现，图中虚线框是 Agent 的判断。
+% TODO: 各节标题与次序按 narrative-draft.md 的大纲（第 5--7、9 节）定稿时调整。
+
+\section{Accumulation Model (Draft)}
+\label{sec:model-draft}
+
+\paragraph{States and commits.}
+PaperWeave stores a property graph together with a store of source materials.
+Writes are serialized commits $c_1, c_2, \ldots$; $G_t$ denotes the state after
+$c_t$, and $G_0$ the seed state. A commit
+\[
+c_t = (\mathit{author}_t,\ \mathit{op}_t,\ \mathit{msg}_t,\ \Delta_t,\
+  \mathit{meta}_t)
+\]
+records who wrote, through which operator, why, and what changed. The
+changeset $\Delta_t$ lists the value of every touched node and relationship
+before and after the write, with $\bot$ for absence; $\mathit{meta}_t$ holds the
+confirmations the write relied on, such as distinctness declarations, revision
+anchors, and reasons. Because $\Delta_t$ keeps both values, every earlier state
+$G_s$ with $s<t$ can be reconstructed from $G_t$. No write reaches the store
+except through a commit.
+
+\paragraph{Layers.}
+Entities and Concepts are identity objects. Every other record $o$ has a layer
+$\lambda(o)\in\{\mathsf{grd},\mathsf{int}\}$. Experiments and records with
+$\texttt{stated\_by}=\texttt{paper}$ (Claims, Contributions, and
+\texttt{SUPPORTS} and \texttt{OPPOSES} relationships) are source-grounded.
+Observations, records with $\texttt{stated\_by}=\texttt{agent}$, and Artifacts
+are interpretive. An interpretive record other than an Artifact carries the
+writer that formed it, $\mathit{fb}(o)$. An Artifact $a$ is a sequence of
+immutable versions $a@1, a@2, \ldots$; each version is a document registered as
+a material, and $\mathrm{head}_G(a)$ is the commit that formed its current
+version in $G$.
+
+\section{Access Methods (Draft)}
+\label{sec:access-draft}
+
+\subsection{Operator Interface}
+\label{sec:interface-draft}
+
+Table~\ref{tab:operators} lists the operators that PaperWeave exposes to agents
+through MCP. All of them execute deterministically and make no LLM call. Read
+operators never write; every write goes through \textsc{Commit} or
+\textsc{CheckIn} and produces one commit. A read reports what it could not
+do, such as missing references, failed channels, and truncation, and never
+turns such a failure into an empty answer.
+
+% TODO: AGENTS.md 与 operators.md 仍把 Leaderboard 等列为独立的产物算子；实现（A8 之后）是
+% CheckIn 加类型契约，另有 Skill 类型。这里按实现写，Skill 暂未列出，待定。
+\begin{table*}[tbp]
+\caption{Operators exposed through MCP. W1--W6 refer to
+Definition~\ref{def:admissible}.}
+\label{tab:operators}
+\small
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.11\textwidth}
+  >{\raggedright\arraybackslash}p{0.18\textwidth}
+  >{\raggedright\arraybackslash}p{0.26\textwidth}
+  >{\raggedright\arraybackslash}p{0.30\textwidth}
+  >{\raggedright\arraybackslash}p{0.05\textwidth}@{}}
+\toprule
+Operator & Call & Returns & Contract & For \\
+\midrule
+\multicolumn{5}{@{}l}{\emph{Read}}\\
+\textsc{Search} & $(T, q, \phi, S, k)$ & ranked objects with excerpts; match
+evidence; coverage & hard constraints before ranking
+(Eq.~\ref{eq:constrained-retrieval}); executed by
+Algorithm~\ref{alg:search} & C5 \\
+\textsc{Resolve} & $(q, \mathit{kind}, \mathit{mode})$ & status, references,
+semantic neighbours & no threshold: absence is concluded by the agent, not by
+the store & C1 \\
+\textsc{Traverse} & $(X, h_1\cdots h_n, k)$ & objects on matched paths, with
+paths and edge properties & hops checked against the model
+(Eq.~\ref{eq:traverse}) & C5 \\
+\textsc{ReadEvidence} & $(\mathit{refs}, \mathit{at})$ & numbered lines of
+pinned materials & content hash checked; no misaligned text & C2 \\
+\textsc{FetchArtifact} & $(A, \mathit{at})$ & documents with $\mathit{id}$,
+$\mathit{base}$, edit hints & a past version is read-only & C4 \\
+\multicolumn{5}{@{}l}{\emph{Write}}\\
+\textsc{Commit} & $(\mathit{doc}, \kappa, \mathit{apply})$ & blocking items;
+or a commit and related Artifacts & W1--W5; Algorithm~\ref{alg:commit} &
+C1--C4 \\
+\textsc{CheckIn} & $(D, m, \mathit{apply}, \mathit{reason})$ & changes,
+others' rows, warnings; or new versions & W1--W3, W5, W6;
+Algorithm~\ref{alg:commit} & C3, C4 \\
+\multicolumn{5}{@{}l}{\emph{History}}\\
+\textsc{Log}, \textsc{Show}, \textsc{Diff}, \textsc{AsOf} & a commit, a pair
+of commits, or filters & commits; one commit's input and changes; net
+difference; past views & read-only; pinned to a commit & C3, C4 \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\textsc{CheckIn} accepts documents of five types: Leaderboard,
+CompareSettings, Verify, Summarize, and Generate. Each type declares an
+identity key, or none, and a row key. CompareSettings and Verify record each
+judgment as $\mathsf T$, $\mathsf F$, or $\mathsf U$. $\mathsf T$ and $\mathsf F$
+must cite evidence; $\mathsf U$ must state why the evidence is insufficient,
+conflicting, or unclear. Unknown is never read as true: a pair of results whose
+comparability is $\mathsf U$ does not enter a comparison.
+
+\subsection{Search: Semantics and Execution}
+\label{sec:search-draft}
+
+\paragraph{Semantics.}
+For family $T$, allowed scope $S$, and declared structural predicate $\phi$,
+define the feasible candidates and the logical ranked result as
+\begin{equation}
+\label{eq:constrained-retrieval}
+\begin{aligned}
+C_G(T,S,\phi)
+  &= \{o\in S : \operatorname{family}(o)=T,\ G\models\phi(o)\},\\
+\operatorname{Search}^{*}_G(q,T,S,\phi,k)
+  &= \operatorname{TopK}_{\preceq_{T,q}}\bigl(C_G(T,S,\phi)\bigr).
+\end{aligned}
+\end{equation}
+Here $\preceq_{T,q}$ is the declared family-specific ordering: exact matches
+first, in a declared priority, then the fused order of the semantic channels,
+with ties broken by identifier. Without a text query, the operation enumerates
+feasible objects. A relevance score cannot compensate for a failed hard
+constraint, and an absent relation means only that the snapshot contains no
+matching record.
+
+\paragraph{Retrieval surface.}
+The predicates $\phi$ and channels available for $T$ form its retrieval
+surface $R_T$: the part of an object's logical description that the store can
+match, filter, or rank on. Each field declares its type, its missing-value
+semantics, and the operations it supports; agents may read the whole
+description, while the store evaluates only declared operations. Fields may be
+backed by relationships, and some must be. Whether a code repository
+implements a method is not a property of the repository: two stores can agree
+on every property of a repository and still disagree on whether it answers
+``implementations of method $m$''. A surface that omits the relationship
+cannot answer that query, however its results are ranked.
+% TODO: 各 family 的 R_T 以表列出，来源 intents_decompose.md §2.2 与 operators.md §3.1。
+
+\paragraph{Execution.}
+Algorithm~\ref{alg:search} executes Equation~\ref{eq:constrained-retrieval}.
+Every channel recalls only within $C_G(T,S,\phi)$, so the hard constraints hold
+by construction. Recall is bounded: each semantic channel contributes at most
+$n$ candidates, so the output is drawn from the pool
+$\widehat C_B = E\cup\bigcup_h L_h \subseteq C_G(T,S,\phi)$ and can miss
+feasible objects that no channel recalled. The vector index is built per
+top-level label and filtered after retrieval, so it oversamples and may still
+lose feasible candidates. Algorithm~\ref{alg:search} therefore reports the
+pool, the oversampling, failed channels, and truncation; it does not claim
+exact top-$k$.
+
+\begin{algorithm}[tbp]
+\caption{\textsc{Search}: constrained hybrid retrieval}
+\label{alg:search}
+\raggedright
+\textbf{Input:} state $G$; family $T$; query $q$ (identifier, mention, text,
+or $\bot$); predicate $\phi$; scope $S$; budget $k$; offset $o$.\\
+\textbf{Parameters:} pool size $n$ per channel; RRF constant $r$.
+\begin{enumerate}
+  \item Record the head commit $h_0$. Compile $\phi$ and $S$ into a graph
+    pattern $\Pi$ for $C_G(T,S,\phi)$.
+  \item If $q=\bot$: return the objects matching $\Pi$, ordered by
+    identifier, from offset $o$ to $o+k$.
+  \item $E\gets$ objects matching $\Pi$ whose registered identifier equals
+    $q.\mathit{identifier}$ or whose name key equals that of
+    $q.\mathit{mention}$, in declared priority. \hfill\emph{Exact; unscored.}
+  \item For each semantic channel $h$ of $T$ (name lexical, full text,
+    vector): $L_h\gets$ the top $n$ objects matching $\Pi$ by $h$; the vector
+    channel retrieves more than $n$ and filters by $\Pi$. On failure, record
+    $h$ as failed and continue.
+  \item For each $x\in\bigcup_h L_h\setminus E$:
+    $s(x)\gets\sum_{h: x\in L_h} 1/(r+\mathrm{rank}_h(x))$.
+  \item $\mathit{ranked}\gets E$ followed by the rest in decreasing $s$, ties
+    by identifier.
+  \item $P\gets\mathit{ranked}[o:o+k]$. Build each result's view:
+    identifying fields and excerpts of retrieval fields within the size
+    limit, $\mathrm{Stale}_G$ for each Artifact
+    (Eq.~\ref{eq:stale}), revision notes for each grounded record.
+  \item Record the head commit $h_1$; the snapshot is $h_0$ if $h_0=h_1$, and
+    unknown otherwise.
+  \item Return $P$ with match evidence (exact match or per-channel ranks),
+    coverage (pool, oversampling, failed channels), the snapshot, and a
+    continuation if $\mathit{ranked}$ extends beyond $o+k$.
+\end{enumerate}
+\end{algorithm}
+
+\subsection{Resolve and Traverse}
+\label{sec:resolve-traverse-draft}
+
+\textsc{Resolve} maps a mention to Entity or Concept references in three
+stages: a registered identifier, then the exact name key, then semantic
+neighbours fused from the same three channels as \textsc{Search}. A unique hit
+in the first two stages is \textsf{resolved}; several hits are
+\textsf{ambiguous}; semantic neighbours alone are \textsf{candidates}. The
+store sets no similarity threshold, so ``not in the store'' is a conclusion the
+agent draws by rejecting each candidate. When channels fail and no reference
+results, the status is \textsf{unprocessed}, never \textsf{none}. In write mode,
+\textsc{Resolve} continues to the semantic stage even after a resolved hit;
+\textsc{Commit} uses this mode to find identity candidates
+(Algorithm~\ref{alg:commit}).
+
+\textsc{Traverse} follows declared relations from confirmed references. A hop
+$h=(\mathit{rel},\mathit{dir},\mathit{kinds},\mathit{where},\mathit{edge},
+\mathit{depth})$ matches an edge of a type in $\mathit{rel}$, in direction
+$\mathit{dir}$, with edge properties satisfying $\mathit{edge}$, ending at an
+object of a type in $\mathit{kinds}$ that satisfies $\mathit{where}$; for
+transitive relations, a hop may match a path of up to $\mathit{depth}$ edges
+without repeating an edge. Then
+\begin{equation}
+\label{eq:traverse}
+\begin{aligned}
+\mathrm{Traverse}_G(X, h_1\cdots h_n)={}
+  &\{x_0 e_1 x_1\cdots e_n x_n : x_0\in X,\\
+  &\ \ (x_{i-1},e_i,x_i)\models_G h_i \text{ for } 1\le i\le n\}.
+\end{aligned}
+\end{equation}
+Each hop is checked against the model's endpoint table before execution, and
+an impossible hop is a contract error, not an empty result. The result keeps
+every path as match evidence, and its object views carry
+$\mathrm{Stale}_G$ for every Artifact on a path. The budget $k$ counts paths.
+
+\section{Writes, Versions, and Shared Artifacts (Draft)}
+\label{sec:versions-draft}
+
+\subsection{Admissible Writes}
+\label{sec:admissible-draft}
+
+Let $c$ be a write submitted by author $u$ against the current state $G$, and
+$G'=c(G)$. For a new Entity or Concept $o$, let $\mathrm{Key}_G(o)$ be the
+existing objects that share its exact name key or an external identifier,
+$\mathrm{Cand}_G(o)$ the semantic neighbours that \textsc{Resolve} returns for
+$o$ in write mode, and $\mathrm{Dist}_c(o)$ the existing objects that $c$
+declares distinct from $o$.
+
+% TODO: 引言中 ``interpretations belong to their writers, who alone may modify
+% them'' 只对 W5 的前半句成立；共同产物允许他人修改，须写理由。
+\begin{definition}[Admissible write]
+\label{def:admissible}
+A write $c$ by $u$ is \emph{admissible} in $G$ if it satisfies W1--W6.
+\begin{itemize}
+  \item[\textbf{W1}] \emph{Attribution.} $u$ is nonempty, and $\Delta_c$
+    enters the store only as part of $c$.
+  \item[\textbf{W2}] \emph{Resolvable references and declared inputs.} Every
+    reference made by a touched object resolves in $G'$: relationship
+    endpoints exist; a source reference names a registered material whose
+    content hash matches and whose line range is in bounds; a record
+    reference $a\#k$ names a row of the current version of $a$. For each
+    Artifact version $a@v$ that $c$ writes,
+    $\mathrm{USED}(a@v)=\mathrm{refs}(\mathit{doc}(a@v))$, each input pinned to
+    the material version read at write time.
+  \item[\textbf{W3}] \emph{Identity.} Every new Entity or Concept $o$ has
+    $\mathrm{Key}_G(o)=\varnothing$ and
+    $\mathrm{Cand}_G(o)\subseteq\mathrm{Dist}_c(o)$. For every Artifact type
+    $p$ and key $\kappa$,
+    \begin{equation}
+    \label{eq:artifact-key}
+    \left|\{a\in\operatorname{Artifacts}(G'):
+      a.\mathit{op}=p\ \land\ a.\mathit{key}=\kappa\}\right|\leq 1.
+    \end{equation}
+  \item[\textbf{W4}] \emph{Grounded revision.} If $\Delta_c$ modifies or
+    deletes a record $o$ with $\lambda(o)=\mathsf{grd}$, then
+    $\mathit{meta}_c$ gives a reason, and for a modification also an anchor
+    that resolves in the material of $o$'s paper.
+  \item[\textbf{W5}] \emph{Accountable interpretation.} If $\Delta_c$ modifies
+    the content or outgoing relationships of an interpretive record $o$ that
+    is not an Artifact, or deletes it, then $u=\mathit{fb}(o)$. If $c$
+    modifies or deletes Artifact rows last edited by a writer other than $u$,
+    $\mathit{meta}_c$ gives a reason.
+  \item[\textbf{W6}] \emph{Current base.} A write that updates Artifact $a$
+    names the base $\mathrm{head}_G(a)$.
+\end{itemize}
+\end{definition}
+
+Each condition is decided from $c$ and from $G$ restricted to the objects $c$
+touches, their neighbourhoods, their candidates, and the heads of the Artifacts
+it updates. None refers to another writer's pending work or intent. This is the
+sense in which writers collaborate without coordinating. Admissibility does
+not imply correctness: an admissible write can still misread a paper, and the
+store leaves that judgment to its writers and readers.
+% 上面一段与引言倒数第二段呼应 I-confluence / CALM，措辞待定。
+
+\subsection{Executing Commit and CheckIn}
+\label{sec:commit-draft}
+
+Algorithm~\ref{alg:commit} decides admissibility and applies the write. The two
+write operators share it: \textsc{Commit} takes a graph document and stores its
+records in the graph; \textsc{CheckIn} takes Artifact documents and stores each
+as written, as a new version. Steps marked with one operator apply only to it.
+Without \textit{apply}, the call only validates; both modes run the same
+checks, so writers see warnings before a version is created.
+Table~\ref{tab:blocking} lists the blocking items and the writer's response to
+each. The store never resolves a blocking item itself.
+
+\begin{algorithm}[tbp]
+\caption{\textsc{Commit} and \textsc{CheckIn}: decide admissibility, then
+apply atomically}
+\label{alg:commit}
+\raggedright
+\textbf{Input:} state $G$; a graph document, or Artifact documents $D$;
+author $u$; message $m$; confirmations $\kappa$; flag \textit{apply}.\\
+\textbf{Output:} blocking items $P$; or changes and warnings; or a commit.
+\begin{enumerate}
+  \item Parse the input into a changeset $\Delta$ against $G$; add format and
+    reference errors to $P$. \hfill W2
+  \item \textsc{Commit}: for each new Entity or Concept $o$,
+    $(\mathit{refs},\mathit{similar})\gets
+    \textsc{Resolve}(o.\mathit{identifier}, o.\mathit{name}, o.\mathit{text};
+    \mathit{mode}{=}\mathit{write})$. If $\mathit{refs}\ne\varnothing$, add a
+    conflict; if $\mathit{similar}\setminus\kappa.\mathrm{distinct}(o)\ne
+    \varnothing$, add a pending item carrying these candidates. \hfill W3
+  \item \textsc{CheckIn}: for each $d\in D$, if $d$ updates $a$ and
+    $d.\mathit{base}\ne\mathrm{head}_G(a)$, add a conflict; if the key of $d$
+    belongs to another Artifact, add a conflict carrying it. Resolve the
+    references in $d$ into $\mathrm{USED}(d)$, pinning each input to its
+    current version. Compare $d$ with its base by row key, and let $O$ be
+    the changed or deleted rows last edited by a writer other than $u$.
+    \hfill W2, W3, W6
+  \item \textsc{Commit}: apply $\Delta$ to the neighbourhood of the touched
+    objects, and check required fields and relationships on the result.
+    \hfill W2
+  \item \textsc{Commit}: for each grounded record that $\Delta$ modifies or
+    deletes, require a reason in $\kappa$ and, for a modification, an anchor
+    in its paper; for each other interpretive record $o$ that $\Delta$
+    modifies or deletes, require $u=\mathit{fb}(o)$. \hfill W4, W5
+  \item \textsc{CheckIn}: check the type's light rules on added and modified
+    rows; add violations that would corrupt the store to $P$, and the rest to
+    warnings $W$.
+  \item If $P\ne\varnothing$, return $P$ without writing.
+  \item If not \textit{apply}, return $(\Delta, O, W)$ without writing.
+  \item If $O\ne\varnothing$ and $\kappa$ gives no reason, return an error.
+    \hfill W5
+  \item If $\Delta$ is empty, return \texttt{noop}.
+  \item In one transaction, write $\Delta$ and the commit
+    $c=(u,\mathit{op},m,\Delta,\kappa)$; verify the written state against
+    $\Delta$, and abort on mismatch.
+  \item Return $c$. \textsc{Commit} also returns the Leaderboards keyed by
+    the evaluation datasets of the Experiments that $c$ touched, and the
+    datasets that have none.
+\end{enumerate}
+\end{algorithm}
+
+\begin{table}[tbp]
+\caption{Blocking items returned by Algorithm~\ref{alg:commit}. The store
+reports them; the writer resolves them.}
+\label{tab:blocking}
+\small
+\begin{tabular}{@{}>{\raggedright\arraybackslash}p{0.14\columnwidth}>{\raggedright\arraybackslash}p{0.40\columnwidth}>{\raggedright\arraybackslash}p{0.38\columnwidth}@{}}
+\toprule
+Class & Raised when & Writer's response \\
+\midrule
+Error & malformed document; unresolvable reference; violated model or type
+rule; missing revision anchor or reason; others' rows changed without a reason
+& repairs the indicated lines \\
+Pending & a new object has candidates it neither reuses nor declares distinct
+& judges each candidate: reuses it, or declares the object distinct \\
+Conflict & a key or identifier is taken; an Artifact base is not current
+& refers to the existing object, or fetches the current version and redoes
+the edit \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Staleness}
+\label{sec:staleness-draft}
+
+Admissibility holds when a write is admitted, but later admissible writes can
+change what an Artifact relied on: a paper gains a version, a record is
+revised or deleted. PaperWeave neither blocks such writes nor recomputes
+Artifacts, whose derivation is an agent's costly and nondeterministic work.
+Instead it computes at read time why an Artifact may be stale. Let $v$ be the
+current version of $a$, formed by commit $c_{t_v}$ with document $d$, and let
+each reference $x\in\mathrm{refs}(d)$ be pinned to the material version
+$\mu(x)$ read when $v$ was written. At state $G_t$, if $d$ is missing or its
+content hash differs from the registered one, then
+$\mathrm{Stale}_t(a)=\{(a,\textsf{document})\}$. Otherwise,
+\begin{equation}
+\label{eq:stale}
+\begin{aligned}
+\mathrm{Stale}_t(a) ={}
+  &\{(x,\textsf{removed}) : x\notin G_t\}\\
+  \cup\ &\{(x,\textsf{material}) : \mu(x)\text{ is missing or altered}\}\\
+  \cup\ &\{(x,\textsf{superseded}) : \mu(x)\text{ has a successor in }G_t\}\\
+  \cup\ &\{(x,\textsf{revised}) : \exists s\in(t_v,t],\
+    \mathrm{rev}(c_s,x)\}\\
+  \cup\ &\{(x,\textsf{stale input}) : x\in\operatorname{Artifacts}(G_t),\
+    \mathrm{Stale}_t(x)\ne\varnothing\},
+\end{aligned}
+\end{equation}
+where $x$ ranges over $\mathrm{refs}(d)$. The predicate $\mathrm{rev}(c,x)$
+holds when $c$ changes the content, labels, or outgoing relationships of a
+grounded or interpretive record $x$. It excludes agents' \texttt{SUPPORTS} and
+\texttt{OPPOSES} relationships and relationships that others add to an
+interpretive record. Changes to Entities and Concepts, such as a new alias, do
+not count, so that the hint is not drowned in identity maintenance. The
+recursion over Artifacts is memoized, and a revisit ends it. Staleness is a
+hint: nothing is modified or deleted. \textsc{Search} and \textsc{Traverse}
+attach it to every Artifact they return.
+
+\subsection{Composing Operators}
+\label{sec:composition-draft}
+
+The operators are composed by the agent, not by the store.
+Figure~\ref{fig:plan} shows one plan, for a writer task that adds a method's
+results on the \emph{Weather} dataset to the shared leaderboard. Each solid
+box is an operator call that PaperWeave executes with the algorithms above;
+each dashed box is a judgment that only the agent makes. The same operators
+serve a reader: a plan that stops after \textsc{FetchArtifact} answers a
+question from the table, with its staleness in view.
+
+% TODO: 图中的对象 id 与返回值是示意，定稿时换成真实运行中的一段轨迹。
+\begin{figure}[tbp]
+\centering
+\begin{tikzpicture}[
+  node distance=3.2mm,
+  box/.style={draw, rounded corners=1.5pt, font=\scriptsize,
+    text width=0.50\columnwidth, inner sep=2.5pt, align=left},
+  op/.style={box},
+  ag/.style={box, dashed, font=\scriptsize\itshape},
+  ret/.style={font=\scriptsize, text width=0.40\columnwidth, align=left,
+    anchor=west, inner sep=1pt},
+  flow/.style={-{Latex[length=1.6mm]}}]
+\node[op] (res) {\textsc{Resolve}(mention: Weather, kind: Dataset)};
+\node[ag, below=of res] (pick) {pick the dataset the paper used};
+\node[op, below=of pick] (trav) {\textsc{Traverse}($d$, in \texttt{USED},
+  Leaderboard)};
+\node[op, below=of trav] (fetch) {\textsc{FetchArtifact}($a$)};
+\node[op, below=of fetch] (read) {\textsc{ReadEvidence}(paper, Table 2)};
+\node[ag, below=of read] (edit) {write the method's rows, citing lines};
+\node[op, below=of edit] (chk) {\textsc{CheckIn}($a$, no \textit{apply})};
+\node[ag, below=of chk] (why) {give a reason for others' rows};
+\node[op, below=of why] (ci) {\textsc{CheckIn}($a$, \textit{apply},
+  reason)};
+\draw[flow] (res) -- (pick);
+\draw[flow] (pick) -- (trav);
+\draw[flow] (trav) -- (fetch);
+\draw[flow] (fetch) -- (read);
+\draw[flow] (read) -- (edit);
+\draw[flow] (edit) -- (chk);
+\draw[flow] (chk) -- (why);
+\draw[flow] (why) -- (ci);
+\node[ret] at ([xshift=2mm]res.east) {candidates: two datasets named
+  Weather};
+\node[ret] at ([xshift=2mm]trav.east) {Leaderboard $a$, with
+  $\mathrm{Stale}(a)$};
+\node[ret] at ([xshift=2mm]fetch.east) {document, $\mathit{base}$, others'
+  recent edits};
+\node[ret] at ([xshift=2mm]read.east) {numbered lines of the pinned
+  version};
+\node[ret] at ([xshift=2mm]chk.east) {changes; $O\ne\varnothing$;
+  warnings};
+\node[ret] at ([xshift=2mm]ci.east) {commit; version $a@v{+}1$};
+\end{tikzpicture}
+\caption{An operator plan for one writer task. Solid boxes are operator calls
+executed by PaperWeave; dashed boxes are the agent's judgments; text on the
+right is what each call returns. The agent chooses the plan.}
+\label{fig:plan}
+\end{figure}
+
+\section{Evaluation Measures (Draft)}
+\label{sec:eval-draft}
+
+\paragraph{Multi-writer cost (E1).}
+The same paper sequence is written by one pseudo-user or by four, with the
+same papers, order, seeds, and assignment. For a measure $Y$ where higher is
+better, either probe accuracy or $-\mathrm{Loss}$, the multi-writer cost of an
+arm at a checkpoint is
+\begin{equation}
+\label{eq:multiwriter-cost}
+\Delta_{\text{arm}} = Y_{\text{arm}}(1) - Y_{\text{arm}}(4).
+\end{equation}
+E1 holds if $\Delta$ for PaperWeave is significantly smaller than $\Delta$ for
+files under Git.
+% 注意：evaluation_draft.md §4.2 写作 Y(4) - Y(1)，又要求 Δ_A3 显著小于 Δ_A0；
+% Y 越大越好时两者方向相反。这里取 Y(1) - Y(4)，待与评测草案对齐。
+
+\paragraph{Knowledge loss.}
+Let $R_t$ be the result rows in the store at checkpoint $t$, and $C^{ok}_t$
+the cells among them that agree with the source. The knowledge loss between
+consecutive checkpoints is
+\begin{equation}
+\label{eq:loss}
+\mathrm{Loss}(t)=\frac{\lvert C^{ok}_t\setminus C^{ok}_{t+1}\rvert}
+  {\lvert C^{ok}_t\rvert}.
+\end{equation}
+Loss is reported together with coverage: an empty store loses nothing.
+
+\paragraph{Sufficiency (E2).}
+For each intent $I$, the same probes are answered by readers with the store
+only and with the store and papers:
+\begin{equation}
+\label{eq:sufficiency}
+\rho_I=\frac{\mathrm{Acc}_{\text{store\_only}}(I)}
+  {\mathrm{Acc}_{\text{with\_papers}}(I)}.
+\end{equation}
+
+\paragraph{Amortization (E3).}
+With $C_{\text{build}}$ the total cost of construction and maintenance, and
+$c_{\text{base}}$ and $c_{\text{ours}}$ the per-use cost of a baseline and of
+PaperWeave, the break-even number of uses, defined when
+$c_{\text{base}}>c_{\text{ours}}$, is
+\begin{equation}
+\label{eq:breakeven}
+N^{*}=\frac{C_{\text{build}}}{c_{\text{base}}-c_{\text{ours}}}.
+\end{equation}
+% END formal-core draft
 
 \section{Conclusion}
 \label{sec:conclusion}
