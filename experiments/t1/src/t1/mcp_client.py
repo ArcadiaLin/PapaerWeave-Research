@@ -1,7 +1,7 @@
 """最小的 MCP stdio 客户端，只用标准库：评测框架经被测系统的 MCP 入口检入种子、给写者取 skill（evaluation_draft
 §10.1“只经外部接口交互”）。
 
-    with Client([sys.executable, "-m", "e09.mcp"], env) as client:
+    with Client([sys.executable, "-m", "paperweave.mcp"], env) as client:
         text = client.call("CheckIn", {"artifact_doc": [...], "update_abstract": "..."})
 
 服务进程的环境（库地址、``E09_WORKDIR``、``E09_USER`` 等）由调用者给出；stdio 上逐行 JSON-RPC。工具结果是文本，

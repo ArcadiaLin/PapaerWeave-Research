@@ -35,7 +35,7 @@ def place(paths: Paths, arm: Arm, writer: Writer) -> dict[str, Any]:
         env = mcp_env(paths, arm, writer)
         for key in ("E09_MCP_LOG", "E09_ENABLE_COMMIT"):
             env.pop(key, None)
-        with Client([sys.executable, "-m", "e09.mcp"], {**os.environ, **env}, name="t1-skills") as client:
+        with Client([sys.executable, "-m", "paperweave.mcp"], {**os.environ, **env}, name="t1-skills") as client:
             reply = yaml.safe_load(client.call("FetchArtifact", {"artifact": ids})) or {}
         out["versions"] = {item["artifact"]: item.get("version") for item in reply.get("items") or []}
         if reply.get("missing") or reply.get("errors"):

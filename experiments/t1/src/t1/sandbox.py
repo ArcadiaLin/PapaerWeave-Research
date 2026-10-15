@@ -10,7 +10,7 @@ agent 目录：只有模型配置与设置，不带宿主机的扩展、skills �
 网络断开，只剩回环地址。与外面的联系只有挂载进去的 unix socket（:mod:`t1.bridge`）：
 
 - ``llm.sock``：沙箱内 ``127.0.0.1:<端口>`` → 沙箱外的大模型服务；
-- ``mcp.sock``（A3）：沙箱内登记的 MCP 服务只是一条转发命令，每个连接在沙箱外启动一个 ``python -m e09.mcp``，
+- ``mcp.sock``（A3）：沙箱内登记的 MCP 服务只是一条转发命令，每个连接在沙箱外启动一个 ``python -m paperweave.mcp``，
   登录身份与连接参数在沙箱外写定。写者拿不到图库的端口与口令，进入共享库的唯一途径是 MCP 接口。
 
 ``pi`` 从工作目录及其上层加载 ``AGENTS.md``，沙箱中 ``/work`` 的上层为空，仓库的说明文件不会被加载。
@@ -286,11 +286,11 @@ def mcp_env(paths: Paths, arm: Arm, writer: Writer) -> dict[str, str]:
 
 def _mcp_command(paths: Paths, arm: Arm, writer: Writer) -> list[str]:
     env = mcp_env(paths, arm, writer)
-    return ["env", *(f"{k}={v}" for k, v in env.items()), str(REPO / ".venv/bin/python"), "-m", "e09.mcp"]
+    return ["env", *(f"{k}={v}" for k, v in env.items()), str(REPO / ".venv/bin/python"), "-m", "paperweave.mcp"]
 
 
 def _spawn(args: list[str], stderr) -> subprocess.Popen:
-    return subprocess.Popen(["python3", str(BRIDGE), *args], cwd=REPO / "experiments/e09", stderr=stderr)
+    return subprocess.Popen(["python3", str(BRIDGE), *args], cwd=REPO / "system", stderr=stderr)
 
 
 def _wait_for(*socks: Path, timeout_s: float = 10) -> None:

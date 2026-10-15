@@ -117,8 +117,10 @@ without looking wrong.
 
 **In scope.** The existing prototype is the system; no new subsystem is planned.
 
-- `experiments/e09/`: data model, Commit, operators, `_stale`, MCP server;
-  `packages/graph-doc` and `packages/graph-vc` underneath.
+- `system/` (package `paperweave`, formerly `experiments/e09`): data model,
+  Commit, operators, `_stale`, MCP server; `packages/graph-doc` and
+  `packages/graph-vc` underneath. Its outside interface is the `paperweave`
+  CLI and the `paperweave-mcp` server.
 - `experiments/t1/`: the evaluation harness. It is evaluation engineering and
   does not change the system.
 - **Writers are general-purpose agents.** Runs use the default pi

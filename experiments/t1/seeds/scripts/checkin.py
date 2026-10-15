@@ -1,8 +1,8 @@
 """在一次性 Neo4j 上种入锚点与两篇种子论文，再检入种子产物（只用标准库与 t1）：先是 ../leaderboards/ 的全部 Leaderboard
 （一个提交，id 按文件名顺序为 art_0001…），再是 ../skills/*/SKILL.md（另一个提交）。
 
-按 evaluation_draft §10.1，这里不 import e09：种库用 e09 的命令行（``python -m e09 <文档> --source ... --apply``），
-检入用 MCP 入口（``python -m e09.mcp``，子进程；批次与身份见 :mod:`t1.seeding`，与运行框架的
+按 evaluation_draft §10.1，这里不 import paperweave：种库用系统的命令行（``python -m paperweave <文档> --source ... --apply``），
+检入用 MCP 入口（``python -m paperweave.mcp``，子进程；批次与身份见 :mod:`t1.seeding`，与运行框架的
 A3 起点相同）。论文材料复制到临时目录，作为 ``E09_DATA``。
 
     E09_NEO4J_URI=bolt://localhost:7692 .venv/bin/python experiments/t1/seeds/scripts/checkin.py [--check-only]
@@ -53,7 +53,7 @@ def main() -> int:
 
     for doc, source, extra in SEED_DOCS:
         run = subprocess.run(
-            [sys.executable, "-m", "e09", str(CORPUS / "docs" / doc), "--source", source, "--apply", *extra],
+            [sys.executable, "-m", "paperweave", str(CORPUS / "docs" / doc), "--source", source, "--apply", *extra],
             env=env, capture_output=True, text=True,
         )
         print(f"seed {doc}: rc={run.returncode} status={status(run.stdout) or '?'}")

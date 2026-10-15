@@ -5,7 +5,7 @@ graph-doc 是读写同形的 YAML 子图：Agent 读到的视图是一份 graph-
 1. **语法**（`graph_doc.document`）：把文本解析成 `Document`，检查顶层结构、字段拼写、取值类型与文档内引用。
 2. **求差**（`graph_doc.fragment`）：把上层翻译出的物理目标状态与库中现状比对，得到 [graph-vc](../graph-vc) 的变更集。
 
-`kind`、`aliases`、`material`、端点规则、查重等属于数据模型，由上层（E09）把 `Document` 翻译成物理目标状态时处理。格式设计见 `docs/experiments/e09/operators/commit.md` §2–§3。
+`kind`、`aliases`、`material`、端点规则、查重等属于数据模型，由上层（PaperWeave）把 `Document` 翻译成物理目标状态时处理。格式设计见 `docs/experiments/e09/operators/commit.md` §2–§3。
 
 ## 语法
 

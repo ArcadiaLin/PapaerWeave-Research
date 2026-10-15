@@ -26,7 +26,7 @@ def check_in(env: dict[str, str], *, confirm: bool = True) -> tuple[bool, list[t
     ``E09_DATA``；工作目录与登录身份在这里设定。"""
     mcp_env = {**env, "E09_WORKDIR": str(SEEDS), "E09_USER": "seed", "E09_AGENT": "t1-seed"}
     replies: list[tuple[str, str]] = []
-    with Client([sys.executable, "-m", "e09.mcp"], mcp_env, name="t1-seed") as client:
+    with Client([sys.executable, "-m", "paperweave.mcp"], mcp_env, name="t1-seed") as client:
         for pattern, abstract in BATCHES:
             request = {"artifact_doc": documents(pattern), "update_abstract": abstract}
             replies.append((f"check {pattern}", client.call("CheckIn", request)))

@@ -31,8 +31,8 @@ PaperWeave 是经 MCP 提供给通用 Agent 的中间件，对每次写入施加
 - [`docs/designs/v2`](docs/designs/v2)：详细系统设计（数据模型、Commit 契约、算子、
   版本接口、项目视图）。
 - `references/`：外部材料；`references/refs.bib` 是论文元数据的跟踪来源。
-- `packages/`（`graph-doc`、`graph-vc` 等）与 `experiments/e09`：原型实现，以及 T1 的
-  实验准备。
+- `system/`（包 `paperweave`）与 `packages/`（`graph-doc`、`graph-vc` 等）：原型实现；
+  `experiments/t1`：T1 的实验准备。
 
 ## Setup
 

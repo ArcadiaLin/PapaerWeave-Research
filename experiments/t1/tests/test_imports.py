@@ -1,4 +1,4 @@
-"""评测代码与被测系统分离（evaluation_draft §10.1）：t1 不导入 e09、graph-doc、graph-vc；测量层只用标准库与 pyyaml。
+"""评测代码与被测系统分离（evaluation_draft §10.1）：t1 不导入 paperweave、graph-doc、graph-vc；测量层只用标准库与 pyyaml。
 
 尚未按 §10.1 改写的模块列在 ``PENDING`` 中，改完一个移出一个；``PENDING`` 为空即达标。
 """
@@ -13,7 +13,7 @@ import pytest
 
 T1 = Path(__file__).resolve().parents[1]
 SOURCES = sorted([*(T1 / "src/t1").glob("*.py"), *(T1 / "seeds/scripts").glob("*.py")])
-SYSTEM = {"e09", "graph_doc", "graph_vc"}
+SYSTEM = {"paperweave", "graph_doc", "graph_vc"}
 MEASURE = {"health", "grade", "source_tables"}  # 测量层：只读快照，不连库
 MEASURE_OK = {"yaml", "t1"}
 PENDING: set[str] = set()

@@ -4,7 +4,7 @@
 
 运行目录 ``<workdir_root>/<运行名>/``：
 
-- ``run.yml``：配置副本、仓库提交与是否有未提交改动、开始时间；``code.tar.gz``：开始时 t1、e09 与 packages 的
+- ``run.yml``：配置副本、仓库提交与是否有未提交改动、开始时间；``code.tar.gz``：开始时 t1、system 与 packages 的
   源码（仓库有未提交改动时据此复现）；
 - ``A3/neo4j-export.jsonl``：各组跑完后 A3 图库的全部节点与关系（图库会被下一次运行清空）；
 - ``sessions.jsonl``：每次会话一行（组、序号、论文、写者、退出码、用时、事件流与会话记录的位置、会话前后的库版本、
@@ -170,13 +170,13 @@ def setup_a3(run: Path, config: dict[str, Any], *, reset: bool) -> None:
             driver.execute_query("MATCH (n) DETACH DELETE n")
     finally:
         driver.close()
-    env = _e09_env(arm, data)
+    env = _system_env(arm, data)
     for doc in config["seed_docs"]:
         args = [str(REPO / doc["doc"]), "--source", doc["source"], "--apply"]  # 作者取文档的 by
         args += ["--message", f"seed: {Path(doc['doc']).name}"] + ([] if doc["dedup"] else ["--no-dedup"])
         if not arm.get("embeddings", True):
             args.append("--no-embed")
-        done = subprocess.run([sys.executable, "-m", "e09", *args], env=env, capture_output=True, text=True)
+        done = subprocess.run([sys.executable, "-m", "paperweave", *args], env=env, capture_output=True, text=True)
         if done.returncode != 0:
             raise SystemExit(f"seeding {doc['doc']} failed:\n{done.stdout}\n{done.stderr}")
     env = {**env, "E09_NO_EMBED": "1"} if not arm.get("embeddings", True) else env
@@ -477,7 +477,7 @@ def _record_run(run: Path, config_path: Path, arms: list[str], overrides: dict[s
     续跑时给出不同的覆盖即停止。"""
     path = run / "run.yml"
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
-    sources = ["experiments/t1", "experiments/e09/src", "packages"]
+    sources = ["experiments/t1", "system/src", "packages"]
     if path.exists():
         recorded = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("overrides") or {}
         if overrides and overrides != recorded:
@@ -490,7 +490,7 @@ def _record_run(run: Path, config_path: Path, arms: list[str], overrides: dict[s
         return
     sha = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
     dirty = subprocess.run(
-        ["git", "-C", str(REPO), "status", "--porcelain", "--", "experiments", "packages"],
+        ["git", "-C", str(REPO), "status", "--porcelain", "--", "experiments", "system", "packages"],
         capture_output=True,
         text=True,
     ).stdout.strip()
@@ -564,7 +564,7 @@ def _llm_url(model: str) -> str:
     return models["providers"][provider]["baseUrl"]
 
 
-def _e09_env(arm: dict[str, Any], data: Path) -> dict[str, str]:
+def _system_env(arm: dict[str, Any], data: Path) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if not k.startswith("E09_")}
     return env | {"E09_NEO4J_URI": arm["neo4j"], "E09_DATA": str(data)}
 

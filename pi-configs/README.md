@@ -76,7 +76,7 @@ pi-configs/<版本>/
 - `GUIDE_ZH.md` 是面向 Agent 的数据模型指南，经 `--append-system-prompt` 追加在 `SYSTEM.md` 之后；
   定义以 `docs/designs/graph_model.md` 为准，文件头注明对应版本，数据模型修改后需同步。
 
-## e09 不在这里
+## PaperWeave 不在这里
 
-E09 的算子经 MCP 提供给默认配置的 pi，不需要专门的启动配置：`python -m e09.workspace <目录>` 在仓库外生成一个
-只含 `.pi/mcp.json` 的实验目录，在其中直接运行 `pi`，见 `experiments/e09/README.md`。
+PaperWeave 的算子经 MCP 提供给默认配置的 pi，不需要专门的启动配置：`python -m paperweave.workspace <目录>` 在仓库外
+生成一个只含 `.pi/mcp.json` 的实验目录，在其中直接运行 `pi`，见 `system/README.md`。

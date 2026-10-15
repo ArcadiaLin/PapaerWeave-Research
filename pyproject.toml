@@ -23,7 +23,7 @@ default-groups = ["notebook", "test"]    # 一次 `uv sync` 就得到完整开�
 [tool.uv.workspace]
 members = [
     "experiments/e08",
-    "experiments/e09",
+    "system",
     "experiments/t1",
     "packages/arxiv2md",
     "packages/apply-patch",
