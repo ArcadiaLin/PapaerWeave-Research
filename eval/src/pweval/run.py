@@ -13,7 +13,7 @@
 - ``checkpoints/<k>/<组>/``：检查点的快照；
 - ``probes.jsonl``：配置给出 ``probes`` 时，每个检查点上读者对有效探针的回答（:mod:`pweval.probe`），在下一个写者开始
   之前跑完，所以读到的就是检查点的库；
-- ``A3/data/``：A3 的材料根目录（论文副本与产物文档，``E09_DATA``）；``A0/store/``：A0 的笔记库（git 仓库），
+- ``A3/data/``：A3 的材料根目录（论文副本与产物文档，``PAPERWEAVE_DATA``）；``A0/store/``：A0 的笔记库（git 仓库），
   ``A0/papers/``：A0 的论文副本。两组的论文副本起初只有写者最初拿到的版本，版本事件开始前才放入新版本
   （:mod:`pweval.versions`）；
 - ``<组>/<写者>/``：写者的沙箱目录（见 :mod:`pweval.sandbox`）。
@@ -179,7 +179,7 @@ def setup_a3(run: Path, config: dict[str, Any], *, reset: bool) -> None:
         done = subprocess.run([sys.executable, "-m", "paperweave", *args], env=env, capture_output=True, text=True)
         if done.returncode != 0:
             raise SystemExit(f"seeding {doc['doc']} failed:\n{done.stdout}\n{done.stderr}")
-    env = {**env, "E09_NO_EMBED": "1"} if not arm.get("embeddings", True) else env
+    env = {**env, "PAPERWEAVE_NO_EMBED": "1"} if not arm.get("embeddings", True) else env
     ok, replies = seeding.check_in(env)
     if not ok:
         raise SystemExit(f"checking in the seed artifacts failed:\n{replies[-1][1]}")
@@ -565,8 +565,8 @@ def _llm_url(model: str) -> str:
 
 
 def _system_env(arm: dict[str, Any], data: Path) -> dict[str, str]:
-    env = {k: v for k, v in os.environ.items() if not k.startswith("E09_")}
-    return env | {"E09_NEO4J_URI": arm["neo4j"], "E09_DATA": str(data)}
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PAPERWEAVE_")}
+    return env | {"PAPERWEAVE_NEO4J_URI": arm["neo4j"], "PAPERWEAVE_DATA": str(data)}
 
 
 def _parser() -> argparse.ArgumentParser:

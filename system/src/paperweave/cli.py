@@ -8,7 +8,7 @@
 （以 ``graph-doc:`` 开头）时视为 ``Commit``，``--source`` 等选项给出它的参数。写入时可给出
 ``--session`` 与 ``--formed-by``（调用环境的信息，不写在请求中）；FetchArtifact 与 CheckIn 读写写者的工作目录，只经
 MCP 入口。作为 MCP 工具提供给 Agent 的入口见
-:mod:`paperweave.mcp`。连接、文档目录与向量服务用 ``E09_NEO4J_URI`` 所指的库、
+:mod:`paperweave.mcp`。连接、文档目录与向量服务用 ``PAPERWEAVE_NEO4J_URI`` 所指的库、
 ``paperweave.config.DATA`` 与 ``EMBED_URL``；``--no-embed`` 关闭查询向量，写入后也不补算向量。写入前建立约束与
 索引。没有版本记录的旧库一律拒绝。
 

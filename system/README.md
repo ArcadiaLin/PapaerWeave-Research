@@ -54,8 +54,8 @@ neo4j-e09 的全部内容由 `data/raw/e09-paper-knowledge/docs/` 中的 graph-d
   已下线；库中已有的旧版产物只读。
 - 给通用 Agent 用的入口是 MCP 服务 PaperWeave（`python -m paperweave.mcp`，stdio）：每个算子一个工具，工具名即算子名，参数与
   结果与命令行相同，错误结果标为 `isError`。给模型看的全部文字（`instructions`、工具的标题与说明、参数说明）在
-  `src/paperweave/mcp/server.yml`，启动时按它装配，对不上算子时服务不启动；算子的代码只给结构。CheckIn 记下的 `session` 由服务进程启动时生成，编辑者取环境变量 `E09_USER`；
-  `E09_ENABLE_COMMIT=1` 时才列出 Commit。`make workspace DIR=...`（`python -m paperweave.workspace`）在仓库外生成实验目录，
+  `src/paperweave/mcp/server.yml`，启动时按它装配，对不上算子时服务不启动；算子的代码只给结构。CheckIn 记下的 `session` 由服务进程启动时生成，编辑者取环境变量 `PAPERWEAVE_USER`；
+  `PAPERWEAVE_ENABLE_COMMIT=1` 时才列出 Commit。`make workspace DIR=...`（`python -m paperweave.workspace`）在仓库外生成实验目录，
   其中只有登记该服务的 `.pi/mcp.json`（`formed_by` 默认取 pi 的默认模型）、把会话存到 `.pi/sessions/` 的
   `.pi/settings.json` 与启动脚本 `pi.sh`（`./pi.sh` 进入交互界面，`./pi.sh -r` 选择会话继续）。第一次启动时确认信任该
   目录，非交互运行加 `--approve`。目录必须在仓库外，否则 pi 会加载仓库的 `AGENTS.md`。
@@ -63,7 +63,7 @@ neo4j-e09 的全部内容由 `data/raw/e09-paper-knowledge/docs/` 中的 graph-d
   它们从版本机制推导，不算算子；分支名在第一次调用时固定到具体提交，续取位置带着它；旧状态由完整状态的逆向重放求得
   （graph-vc 的 `state_at`）；结果不超过 16 KB，单个对象放不下时截短，并标出 `_cut`，原值用 `field` 与 `offset` 分块读取。
 - 读视图是一份 graph-doc：`nodes` 原样交回 Commit 为 `noop`，`meta` 是 AccessResult。
-- 连接、查重与向量补算都用 `E09_NEO4J_URI` 所指的库。有数据却没有版本记录的库（如旧写入路径建出的库）一律拒绝。
+- 连接、查重与向量补算都用 `PAPERWEAVE_NEO4J_URI` 所指的库。有数据却没有版本记录的库（如旧写入路径建出的库）一律拒绝。
   首次提交时建立版本记录、约束、全文索引与向量索引。提交后补算向量，向量服务不可用时只给
   提示，之后用 `make embed` 再补。
 - `--no-embed` 关闭查询向量，写入后也不补算；`--no-dedup` 关闭 Commit 的查重，用于种子这类可信的批量入库。

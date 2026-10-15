@@ -43,8 +43,8 @@ anchors:
 
 writers:
   # 写者 = 一个固定身份 + 一个意图任务；每篇论文一次 pi 会话，会话之间没有记忆，唯一的联系是共享库。
-  # user 是登录身份（.example 保留域名，不指向真实的人或机构）：A3 写入 MCP 连接配置的 E09_USER，由服务端
-  # 记为 formed_by 与提交的 author；A0 写入 git 的 author。agent 记入 E09_AGENT（提交的 meta.agent）。
+  # user 是登录身份（.example 保留域名，不指向真实的人或机构）：A3 写入 MCP 连接配置的 PAPERWEAVE_USER，由服务端
+  # 记为 formed_by 与提交的 author；A0 写入 git 的 author。agent 记入 PAPERWEAVE_AGENT（提交的 meta.agent）。
   - id: writer-i3
     user: results.curator@forecast-lab.example
     agent: pi/sglang/qwen3.8-27b

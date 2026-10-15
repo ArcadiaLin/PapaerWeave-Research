@@ -7,9 +7,9 @@
 调用日志写到 ``.pi/paperweave.log``）；``.pi/settings.json`` 把 pi 的会话存到 ``.pi/sessions/``，一次实验的记录都在
 目录里；``pi.sh`` 在目录中启动 pi
 （``./pi.sh`` 进入交互界面，``./pi.sh -r`` 选择会话继续）。pi 会从工作目录及其上层目录加载 ``AGENTS.md`` 等上下文
-文件，所以目录必须在仓库之外；目录已存在且不空时拒绝。``--user`` 是写入者的登录身份（``E09_USER``，记为
-``formed_by``）；``--agent`` 是所用的 Agent 与模型（``E09_AGENT``），默认取 pi 的默认模型（``$PI_CODING_AGENT_DIR`` 或
-``~/.pi/agent`` 下 ``settings.json`` 的 ``defaultProvider/defaultModel``），写成 ``pi/provider/model``；不给 ``--user`` 时
+文件，所以目录必须在仓库之外；目录已存在且不空时拒绝。``--user`` 是写入者的登录身份（``PAPERWEAVE_USER``，
+记为 ``formed_by``）；``--agent`` 是所用的 Agent 与模型（``PAPERWEAVE_AGENT``），默认取 pi 的默认模型
+（``$PI_CODING_AGENT_DIR`` 或 ``~/.pi/agent`` 下 ``settings.json`` 的 ``defaultProvider/defaultModel``），写成 ``pi/provider/model``；不给 ``--user`` 时
 登录身份与它相同。
 项目级的 ``.pi/mcp.json`` 只在信任该目录后加载：第一次在目录中启动 pi 时确认信任，非交互模式用 ``--approve``。
 """
@@ -57,19 +57,19 @@ def mcp_config(
 ) -> dict[str, Any]:
     """``.pi/mcp.json`` 的内容。stdio 服务只拿到这里写出的环境变量，连接参数因此都写明。服务在仓库中运行，
     ``workdir``（写者的工作目录）因此也写明，草稿文件只从那里读。"""
-    env = {"E09_NEO4J_URI": neo4j_uri, "E09_USER": user}
+    env = {"PAPERWEAVE_NEO4J_URI": neo4j_uri, "PAPERWEAVE_USER": user}
     if workdir is not None:
-        env["E09_WORKDIR"] = str(workdir)
+        env["PAPERWEAVE_WORKDIR"] = str(workdir)
     if agent:
-        env["E09_AGENT"] = agent
+        env["PAPERWEAVE_AGENT"] = agent
     if data is not None:
-        env["E09_DATA"] = str(data)
+        env["PAPERWEAVE_DATA"] = str(data)
     if log is not None:
-        env["E09_MCP_LOG"] = str(log)
+        env["PAPERWEAVE_MCP_LOG"] = str(log)
     if enable_commit:
-        env["E09_ENABLE_COMMIT"] = "1"
+        env["PAPERWEAVE_ENABLE_COMMIT"] = "1"
     if no_embed:
-        env["E09_NO_EMBED"] = "1"
+        env["PAPERWEAVE_NO_EMBED"] = "1"
     server = {
         "command": str(REPO / ".venv/bin/python"),
         "args": ["-m", "paperweave.mcp"],

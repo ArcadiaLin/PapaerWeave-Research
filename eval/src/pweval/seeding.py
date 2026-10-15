@@ -23,8 +23,8 @@ def documents(pattern: str) -> list[str]:
 
 def check_in(env: dict[str, str], *, confirm: bool = True) -> tuple[bool, list[tuple[str, str]]]:
     """按批次检入；``confirm`` 为假时只检查。返回是否全部通过与各次回复 ``(阶段, 文本)``。``env`` 给出库地址与
-    ``E09_DATA``；工作目录与登录身份在这里设定。"""
-    mcp_env = {**env, "E09_WORKDIR": str(SEEDS), "E09_USER": "seed", "E09_AGENT": "t1-seed"}
+    ``PAPERWEAVE_DATA``；工作目录与登录身份在这里设定。"""
+    mcp_env = {**env, "PAPERWEAVE_WORKDIR": str(SEEDS), "PAPERWEAVE_USER": "seed", "PAPERWEAVE_AGENT": "t1-seed"}
     replies: list[tuple[str, str]] = []
     with Client([sys.executable, "-m", "paperweave.mcp"], mcp_env, name="t1-seed") as client:
         for pattern, abstract in BATCHES:

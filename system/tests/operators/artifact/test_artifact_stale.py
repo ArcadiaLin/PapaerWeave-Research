@@ -125,10 +125,10 @@ def test_artifacts_only_reads_documents_but_not_papers(store: Store) -> None:
 
 
 def test_server_scopes_read_evidence_from_the_environment(store: Store, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("E09_READ_ONLY", "1")
+    monkeypatch.setenv("PAPERWEAVE_READ_ONLY", "1")
     tools, ops = scoped(enabled(load()))
     assert "only artifact documents" not in (tools["ReadEvidence"].description or "")
-    monkeypatch.setenv("E09_EVIDENCE_SCOPE", "artifacts")
+    monkeypatch.setenv("PAPERWEAVE_EVIDENCE_SCOPE", "artifacts")
     tools, ops = scoped(enabled(load()))
     assert "only artifact documents can be read" in (tools["ReadEvidence"].description or "")
     result = ops["ReadEvidence"].call(Context(store, at=AT), {"source_refs": [SOURCE]})

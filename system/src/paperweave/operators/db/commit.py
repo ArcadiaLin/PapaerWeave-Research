@@ -9,7 +9,7 @@
 dry_run。命令行入口（:mod:`paperweave.cli`）总是显式给出 ``apply``，仍须加 ``--apply`` 才提交。
 
 ``source`` 省略时记为调用所在的会话（``session:<id>``）；没有会话时必须给出。写入管线在 :mod:`paperweave.commit`：
-解析 → 翻译 → 求差 → 写入后检查 →（apply 时）分配 id 并经 graph-vc 提交。查重（Resolve）与向量补算用 ``E09_NEO4J_URI`` 所指的同一个库。没有版本记录的旧库一律拒绝。
+解析 → 翻译 → 求差 → 写入后检查 →（apply 时）分配 id 并经 graph-vc 提交。查重（Resolve）与向量补算用 ``PAPERWEAVE_NEO4J_URI`` 所指的同一个库。没有版本记录的旧库一律拒绝。
 ``status`` 为 ``blocked`` 或 ``conflict`` 时是错误结果，``errors`` 列出阻塞项或冲突。
 """
 

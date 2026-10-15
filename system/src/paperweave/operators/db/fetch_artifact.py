@@ -3,7 +3,7 @@
     FetchArtifact(artifact, at?) -> {items, missing, next}
 
 ``artifact`` 是产物 id 或 id 列表。它是检出：编辑后经 ``CheckIn`` 检入。只写写者的工作目录，不改动库，所以
-``E09_READ_ONLY`` 时也列出。流程见 :mod:`paperweave.artifact.checkout`。
+``PAPERWEAVE_READ_ONLY`` 时也列出。流程见 :mod:`paperweave.artifact.checkout`。
 """
 
 from __future__ import annotations

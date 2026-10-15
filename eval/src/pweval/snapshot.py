@@ -41,7 +41,7 @@ def driver(uri: str):
     """连接被测系统的库；用户名与密码取系统自己的环境变量（只是连接配置，不导入系统代码）。"""
     from neo4j import GraphDatabase
 
-    auth = (os.environ.get("E09_NEO4J_USER", "neo4j"), os.environ.get("E09_NEO4J_PASSWORD", "password"))
+    auth = (os.environ.get("PAPERWEAVE_NEO4J_USER", "neo4j"), os.environ.get("PAPERWEAVE_NEO4J_PASSWORD", "password"))
     return GraphDatabase.driver(uri, auth=auth, notifications_disabled_classifications=["UNRECOGNIZED"])
 
 

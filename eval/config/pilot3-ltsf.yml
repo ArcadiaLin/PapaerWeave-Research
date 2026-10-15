@@ -46,7 +46,7 @@ anchors:
 writers:
   # 伪用户 = 固定身份 + 长期的工作背景（对应一个意图）。每次会话是全新的上下文，只有身份与背景跨会话保持；
   # 写者之间没有共同计划，也不通信，唯一的联系是共享库。user 是登录身份（.example 保留域名，不指向真实的人或
-  # 机构）：A3 写入 E09_USER（formed_by、提交 author），A0 写入 git author。agent 记入 E09_AGENT。
+  # 机构）：A3 写入 PAPERWEAVE_USER（formed_by、提交 author），A0 写入 git author。agent 记入 PAPERWEAVE_AGENT。
   - id: user-i3
     user: results.curator@forecast-lab.example
     agent: pi/sglang/qwen3.8-27b

@@ -28,9 +28,9 @@ def anyio_backend() -> str:
 
 async def _tools(monkeypatch: pytest.MonkeyPatch, commit: bool) -> dict[str, Any]:
     if commit:
-        monkeypatch.setenv("E09_ENABLE_COMMIT", "1")
+        monkeypatch.setenv("PAPERWEAVE_ENABLE_COMMIT", "1")
     else:
-        monkeypatch.delenv("E09_ENABLE_COMMIT", raising=False)
+        monkeypatch.delenv("PAPERWEAVE_ENABLE_COMMIT", raising=False)
     server = serve(NO_STORE, session="s-test", formed_by="test/model", sync=None)
     async with create_connected_server_and_client_session(server) as client:
         return {t.name: t for t in (await client.list_tools()).tools}
@@ -55,11 +55,11 @@ async def test_each_operator_is_a_tool_and_commit_is_listed_only_when_enabled(mo
 
 @pytest.mark.anyio
 async def test_read_only_lists_only_tools_that_do_not_write(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("E09_READ_ONLY", "1")  # 读者：Commit 即使开启也不列出，CheckIn 也不列出
+    monkeypatch.setenv("PAPERWEAVE_READ_ONLY", "1")  # 读者：Commit 即使开启也不列出，CheckIn 也不列出
     tools = await _tools(monkeypatch, commit=True)
     assert list(tools) == [n for n, op in OPERATORS.items() if not op.writes]
     assert {"Search", "Traverse", "ReadEvidence", "Log"} <= set(tools) and "CheckIn" not in tools
-    monkeypatch.setenv("E09_HIDE_TOOLS", "ReadEvidence")  # 只读库的读者：不按行号读原文
+    monkeypatch.setenv("PAPERWEAVE_HIDE_TOOLS", "ReadEvidence")  # 只读库的读者：不按行号读原文
     assert "ReadEvidence" not in await _tools(monkeypatch, commit=False)
 
 
@@ -79,7 +79,7 @@ async def test_read_only_lists_only_tools_that_do_not_write(monkeypatch: pytest.
 async def test_rejected_calls_are_errors_with_the_unified_shape(
     monkeypatch: pytest.MonkeyPatch, name: str, arguments: dict[str, Any], at: str
 ) -> None:
-    monkeypatch.delenv("E09_ENABLE_COMMIT", raising=False)
+    monkeypatch.delenv("PAPERWEAVE_ENABLE_COMMIT", raising=False)
     server = serve(NO_STORE, session="s-test", formed_by="test/model", sync=None)
     async with create_connected_server_and_client_session(server) as client:
         result = await client.call_tool(name, arguments)
@@ -146,6 +146,11 @@ def test_workspace_registers_the_server(tmp_path: Path) -> None:
     server = json.loads((target / ".pi/mcp.json").read_text(encoding="utf-8"))["mcpServers"]["PaperWeave"]
     assert server["args"] == ["-m", "paperweave.mcp"] and server["exposure"] == "direct"
     log = str(target / ".pi/paperweave.log")  # 服务启动后才写
-    env = {"E09_NEO4J_URI": "bolt://localhost:7688", "E09_USER": "u@lab.example", "E09_AGENT": "pi/p/m"}
-    assert server["env"] == env | {"E09_MCP_LOG": log, "E09_WORKDIR": str(target)}  # 草稿文件只从工作目录读
+    env = {
+        "PAPERWEAVE_NEO4J_URI": "bolt://localhost:7688",
+        "PAPERWEAVE_USER": "u@lab.example",
+        "PAPERWEAVE_AGENT": "pi/p/m",
+    }
+    # 草稿文件只从工作目录读
+    assert server["env"] == env | {"PAPERWEAVE_MCP_LOG": log, "PAPERWEAVE_WORKDIR": str(target)}
     assert workspace([str(target), "--user", "u@lab.example"]) == 1  # 已存在且不空

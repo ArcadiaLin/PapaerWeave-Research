@@ -4,8 +4,8 @@
     with Client([sys.executable, "-m", "paperweave.mcp"], env) as client:
         text = client.call("CheckIn", {"artifact_doc": [...], "update_abstract": "..."})
 
-服务进程的环境（库地址、``E09_WORKDIR``、``E09_USER`` 等）由调用者给出；stdio 上逐行 JSON-RPC。工具结果是文本，
-:func:`status` 与 :func:`field` 只按行取顶层键，不解析结果的结构。
+服务进程的环境（库地址、``PAPERWEAVE_WORKDIR``、``PAPERWEAVE_USER`` 等）由调用者给出；stdio 上逐行 JSON-RPC。
+工具结果是文本，:func:`status` 与 :func:`field` 只按行取顶层键，不解析结果的结构。
 """
 
 from __future__ import annotations

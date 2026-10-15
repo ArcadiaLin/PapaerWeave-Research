@@ -72,8 +72,8 @@ def pi_version() -> str:
 @dataclass(frozen=True)
 class Writer:
     id: str
-    user: str  # 登录身份：A3 的 E09_USER（formed_by、提交 author），A0 的 git author
-    agent: str  # 所用的 Agent 与模型：A3 的 E09_AGENT（提交 meta.agent）
+    user: str  # 登录身份：A3 的 PAPERWEAVE_USER（formed_by、提交 author），A0 的 git author
+    agent: str  # 所用的 Agent 与模型：A3 的 PAPERWEAVE_AGENT（提交 meta.agent）
 
 
 @dataclass(frozen=True)
@@ -82,7 +82,7 @@ class Arm:
     papers: Path | None  # 论文材料目录（只读挂载到 /work/papers）；参照线为 None
     store: Path | None = None  # A0：共享笔记库（git 仓库）
     neo4j: str | None = None  # A3：图库
-    data: Path | None = None  # A3：材料根目录（E09_DATA：论文与产物文档）
+    data: Path | None = None  # A3：材料根目录（PAPERWEAVE_DATA：论文与产物文档）
     embeddings: bool = True
     read_only: bool = False  # 读者：库只读
     hide_tools: tuple[str, ...] = ()  # A3：不列出的 MCP 工具
@@ -263,24 +263,24 @@ def mcp_env(paths: Paths, arm: Arm, writer: Writer) -> dict[str, str]:
     """写者的 MCP 服务在沙箱外的环境：库、材料根目录、登录身份、工作目录与开关。"""
     assert arm.neo4j is not None and arm.data is not None
     env = {
-        "E09_NEO4J_URI": arm.neo4j,
-        "E09_DATA": str(arm.data),
-        "E09_USER": writer.user,
-        "E09_AGENT": writer.agent,
-        "E09_ENABLE_COMMIT": "1",
-        "E09_MCP_LOG": str(paths.root / "paperweave.log"),
-        "E09_WORKDIR": str(paths.work),  # 草稿文件（payload_file、doc_file）只从写者的工作目录读
-        "E09_WORKDIR_ALIAS": "/work",  # 写者在沙箱中看到的同一目录
+        "PAPERWEAVE_NEO4J_URI": arm.neo4j,
+        "PAPERWEAVE_DATA": str(arm.data),
+        "PAPERWEAVE_USER": writer.user,
+        "PAPERWEAVE_AGENT": writer.agent,
+        "PAPERWEAVE_ENABLE_COMMIT": "1",
+        "PAPERWEAVE_MCP_LOG": str(paths.root / "paperweave.log"),
+        "PAPERWEAVE_WORKDIR": str(paths.work),  # 草稿文件（payload_file、doc_file）只从写者的工作目录读
+        "PAPERWEAVE_WORKDIR_ALIAS": "/work",  # 写者在沙箱中看到的同一目录
     }
     if not arm.embeddings:
-        env["E09_NO_EMBED"] = "1"
+        env["PAPERWEAVE_NO_EMBED"] = "1"
     if arm.read_only:
-        env["E09_READ_ONLY"] = "1"
-        del env["E09_ENABLE_COMMIT"]
+        env["PAPERWEAVE_READ_ONLY"] = "1"
+        del env["PAPERWEAVE_ENABLE_COMMIT"]
     if arm.hide_tools:
-        env["E09_HIDE_TOOLS"] = ",".join(arm.hide_tools)
+        env["PAPERWEAVE_HIDE_TOOLS"] = ",".join(arm.hide_tools)
     if arm.evidence_scope:
-        env["E09_EVIDENCE_SCOPE"] = arm.evidence_scope
+        env["PAPERWEAVE_EVIDENCE_SCOPE"] = arm.evidence_scope
     return env
 
 

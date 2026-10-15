@@ -35,9 +35,9 @@ class Workdir:
 
     @classmethod
     def from_env(cls) -> Workdir:
-        """``E09_WORKDIR`` 与 ``E09_WORKDIR_ALIAS``；没有设置时用服务进程的当前目录。"""
-        root = os.environ.get("E09_WORKDIR") or os.getcwd()
-        return cls(Path(root), os.environ.get("E09_WORKDIR_ALIAS") or None)
+        """``PAPERWEAVE_WORKDIR`` 与 ``PAPERWEAVE_WORKDIR_ALIAS``；没有设置时用服务进程的当前目录。"""
+        root = os.environ.get("PAPERWEAVE_WORKDIR") or os.getcwd()
+        return cls(Path(root), os.environ.get("PAPERWEAVE_WORKDIR_ALIAS") or None)
 
 
 @dataclass(frozen=True, slots=True)

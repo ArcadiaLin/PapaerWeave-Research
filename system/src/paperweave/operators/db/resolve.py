@@ -1,7 +1,7 @@
 """Resolve：把一个说法解析为已存对象的引用（docs/designs/v2/operators.md §3.2）。
 
 三级逐级解析（标识、名称精确键、语义候选），实现见 :mod:`paperweave.query.resolve`；Commit 的查重也用它。Resolve 经
-``paperweave.store.graph`` 的连接读 ``E09_NEO4J_URI`` 所指的库，不用调用环境中的 ``store``。
+``paperweave.store.graph`` 的连接读 ``PAPERWEAVE_NEO4J_URI`` 所指的库，不用调用环境中的 ``store``。
 
 返回给 Agent 的是解析视图：``status`` 与 ``refs``，每个引用带 kind、名称、别名与说明的开头，供 Agent 判断候选
 是否就是它要找的对象；语义阶段另给的近似对象（read 模式的 ambiguous、write 模式的查重）在 ``similar`` 中。

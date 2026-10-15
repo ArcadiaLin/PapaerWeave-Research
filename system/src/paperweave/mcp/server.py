@@ -8,20 +8,22 @@
 ``rejected``、``blocked`` 或 ``conflict`` 时标为 ``isError``，内容照样交给模型。
 
 **调用环境。** MCP 调用不带客户端的会话与模型，所以 CheckIn 记下的 ``session`` 由服务进程启动时生成（一个客户端
-会话对应一个服务进程）。写入者的身份由连接配置给出，相当于登录：``E09_USER`` 是编辑者，记为提交的作者与 Artifact
-的 ``formed_by``；Commit 的 ``by`` 可以省略（取登录身份），写了就必须相同。``E09_AGENT`` 是所用的 Agent 与模型，记入
-提交的 ``meta.agent``。写入者无法自己声明身份。
+会话对应一个服务进程）。写入者的身份由连接配置给出，相当于登录：``PAPERWEAVE_USER`` 是编辑者，记为提交的作者与
+Artifact 的 ``formed_by``；Commit 的 ``by`` 可以省略（取登录身份），写了就必须相同。``PAPERWEAVE_AGENT`` 是所用的
+Agent 与模型，记入提交的 ``meta.agent``。写入者无法自己声明身份。
 
-环境变量：``E09_NEO4J_URI`` 等连接参数（:mod:`paperweave.config`）；``E09_USER`` 登录身份，写入时记为编辑者；
-``E09_AGENT`` 所用的 Agent 与模型；
-``E09_ENABLE_COMMIT=1`` 时才列出 ``Commit``（它改动知识本身）；``E09_READ_ONLY=1`` 时只列出不写入的工具，``E09_HIDE_TOOLS`` 中的工具不列出；
-``E09_EVIDENCE_SCOPE=artifacts`` 时 ReadEvidence 只读 Artifact 的文档，不读论文原文（:func:`scoped`）；``E09_NO_EMBED=1`` 时关闭查询向量，写入后也不补算；
-``E09_MCP_LOG`` 给出日志文件（追加写）；``E09_WORKDIR`` 是写者的工作目录，草稿文件（``doc_file``、
-``artifact_doc``）只从这里读，FetchArtifact 也取到这里，不设时取服务进程的当前目录；``E09_WORKDIR_ALIAS`` 是写者
-看到的同一目录（如沙箱中的 ``/work``，见 :mod:`paperweave.draft`）。库没有版本记录时服务不启动。
+环境变量：``PAPERWEAVE_NEO4J_URI`` 等连接参数（:mod:`paperweave.config`）；``PAPERWEAVE_USER`` 登录身份，写入时记为
+编辑者；``PAPERWEAVE_AGENT`` 所用的 Agent 与模型；
+``PAPERWEAVE_ENABLE_COMMIT=1`` 时才列出 ``Commit``（它改动知识本身）；``PAPERWEAVE_READ_ONLY=1`` 时只列出不写入的
+工具，``PAPERWEAVE_HIDE_TOOLS`` 中的工具不列出；
+``PAPERWEAVE_EVIDENCE_SCOPE=artifacts`` 时 ReadEvidence 只读 Artifact 的文档，不读论文原文（:func:`scoped`）；
+``PAPERWEAVE_NO_EMBED=1`` 时关闭查询向量，写入后也不补算；
+``PAPERWEAVE_MCP_LOG`` 给出日志文件（追加写）；``PAPERWEAVE_WORKDIR`` 是写者的工作目录，草稿文件（``doc_file``、
+``artifact_doc``）只从这里读，FetchArtifact 也取到这里，不设时取服务进程的当前目录；``PAPERWEAVE_WORKDIR_ALIAS``
+是写者看到的同一目录（如沙箱中的 ``/work``，见 :mod:`paperweave.draft`）。库没有版本记录时服务不启动。
 
 **日志。** 每次调用记一行：会话、工具、结果状态，以及执行前对参数的兜底修复（:mod:`paperweave.operators.repair`）。
-修复不告诉模型，只记在这里；日志写到 stderr，给了 ``E09_MCP_LOG`` 时也写入该文件。
+修复不告诉模型，只记在这里；日志写到 stderr，给了 ``PAPERWEAVE_MCP_LOG`` 时也写入该文件。
 """
 
 from __future__ import annotations
@@ -51,11 +53,11 @@ log = logging.getLogger("paperweave.mcp")
 
 
 def enabled(spec: Spec) -> dict[str, types.Tool]:
-    """列出的工具：``Commit`` 只在 ``E09_ENABLE_COMMIT=1`` 时列出；``E09_READ_ONLY=1`` 时只列出不写入的工具
-    （读者：查找、读取与历史，不能写 Artifact，也不能提交）；``E09_HIDE_TOOLS`` 中逗号分隔的工具不列出。"""
-    commit = os.environ.get("E09_ENABLE_COMMIT") == "1"
-    read_only = os.environ.get("E09_READ_ONLY") == "1"
-    hidden = set(filter(None, os.environ.get("E09_HIDE_TOOLS", "").split(",")))
+    """列出的工具：``Commit`` 只在 ``PAPERWEAVE_ENABLE_COMMIT=1`` 时列出；``PAPERWEAVE_READ_ONLY=1`` 时只列出不写入的工具
+    （读者：查找、读取与历史，不能写 Artifact，也不能提交）；``PAPERWEAVE_HIDE_TOOLS`` 中逗号分隔的工具不列出。"""
+    commit = os.environ.get("PAPERWEAVE_ENABLE_COMMIT") == "1"
+    read_only = os.environ.get("PAPERWEAVE_READ_ONLY") == "1"
+    hidden = set(filter(None, os.environ.get("PAPERWEAVE_HIDE_TOOLS", "").split(",")))
     return {
         name: t
         for name, t in spec.tools.items()
@@ -64,10 +66,10 @@ def enabled(spec: Spec) -> dict[str, types.Tool]:
 
 
 def scoped(tools: dict[str, types.Tool]) -> tuple[dict[str, types.Tool], dict[str, Operator]]:
-    """``E09_EVIDENCE_SCOPE=artifacts`` 时把 ReadEvidence 换成只读产物文档的版本，说明中补一句。T1 中只读库的读者
+    """``PAPERWEAVE_EVIDENCE_SCOPE=artifacts`` 时把 ReadEvidence 换成只读产物文档的版本，说明中补一句。T1 中只读库的读者
     这样设置：库的内容都能读，论文原文不能读（产物存在集中式的库中，ReadEvidence 是读产物文档的途径）。"""
     ops = dict(TOOLS)
-    if os.environ.get("E09_EVIDENCE_SCOPE") != "artifacts" or "ReadEvidence" not in tools:
+    if os.environ.get("PAPERWEAVE_EVIDENCE_SCOPE") != "artifacts" or "ReadEvidence" not in tools:
         return tools, ops
     base = TOOLS["ReadEvidence"]
     ops["ReadEvidence"] = replace(base, execute=_artifacts_only(base))
@@ -127,12 +129,12 @@ def main() -> int:
     from ..store.embedding import embed, sync_embeddings
     from ..store.graph import driver
 
-    _logging(os.environ.get("E09_MCP_LOG"))
+    _logging(os.environ.get("PAPERWEAVE_MCP_LOG"))
     spec = load()
 
-    no_embed = os.environ.get("E09_NO_EMBED") == "1"
-    formed_by = os.environ.get("E09_USER") or None
-    agent = os.environ.get("E09_AGENT") or None
+    no_embed = os.environ.get("PAPERWEAVE_NO_EMBED") == "1"
+    formed_by = os.environ.get("PAPERWEAVE_USER") or None
+    agent = os.environ.get("PAPERWEAVE_AGENT") or None
     session = f"mcp-{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{secrets.token_hex(3)}"
     try:
         check_versioned(driver, database=NEO4J_DB)

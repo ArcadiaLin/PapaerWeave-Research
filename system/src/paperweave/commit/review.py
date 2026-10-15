@@ -149,7 +149,7 @@ def _identifier(value: Any) -> str | None:
 class ResolveDeduper:
     """经 Resolve 的写入模式查重：标识、名称精确命中，以及名称词面、文本、向量三路语义近邻。
 
-    桩节点只开名称词面通道（commit_contract.md §4）。Resolve 连接 ``E09_NEO4J_URI`` 所指的库，
+    桩节点只开名称词面通道（commit_contract.md §4）。Resolve 连接 ``PAPERWEAVE_NEO4J_URI`` 所指的库，
     应与写入的库相同。
     """
 

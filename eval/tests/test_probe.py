@@ -125,10 +125,11 @@ def test_store_only_a3_readers_read_artifact_documents_but_not_papers(tmp_path: 
     reader = Writer("reader", "reader@example", "pi/test")
     store_only = _reader_arm(tmp_path, CONFIG, "A3", 1, "store_only", at_head=True)
     assert store_only.papers is None and store_only.hide_tools == () and store_only.evidence_scope == "artifacts"
-    assert "E09_EVIDENCE_SCOPE=artifacts" in _mcp_command(Paths(tmp_path), store_only, reader)
+    assert "PAPERWEAVE_EVIDENCE_SCOPE=artifacts" in _mcp_command(Paths(tmp_path), store_only, reader)
     with_papers = _reader_arm(tmp_path, CONFIG, "A3", 1, "with_papers", at_head=True)
     assert with_papers.evidence_scope is None
-    assert not any(a.startswith("E09_EVIDENCE_SCOPE") for a in _mcp_command(Paths(tmp_path), with_papers, reader))
+    command = _mcp_command(Paths(tmp_path), with_papers, reader)
+    assert not any(a.startswith("PAPERWEAVE_EVIDENCE_SCOPE") for a in command)
 
 
 def test_paper_names_readers_write_resolve_to_corpus_ids() -> None:

@@ -33,7 +33,7 @@ def place(paths: Paths, arm: Arm, writer: Writer) -> dict[str, Any]:
     out: dict[str, Any] = {"ids": ids}
     if ids:
         env = mcp_env(paths, arm, writer)
-        for key in ("E09_MCP_LOG", "E09_ENABLE_COMMIT"):
+        for key in ("PAPERWEAVE_MCP_LOG", "PAPERWEAVE_ENABLE_COMMIT"):
             env.pop(key, None)
         with Client([sys.executable, "-m", "paperweave.mcp"], {**os.environ, **env}, name="t1-skills") as client:
             reply = yaml.safe_load(client.call("FetchArtifact", {"artifact": ids})) or {}

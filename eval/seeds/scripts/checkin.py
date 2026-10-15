@@ -1,11 +1,11 @@
 """在一次性 Neo4j 上种入锚点与两篇种子论文，再检入种子产物（只用标准库与 t1）：先是 ../leaderboards/ 的全部 Leaderboard
 （一个提交，id 按文件名顺序为 art_0001…），再是 ../skills/*/SKILL.md（另一个提交）。
 
-按 evaluation_draft §10.1，这里不 import paperweave：种库用系统的命令行（``python -m paperweave <文档> --source ... --apply``），
-检入用 MCP 入口（``python -m paperweave.mcp``，子进程；批次与身份见 :mod:`pweval.seeding`，与运行框架的
-A3 起点相同）。论文材料复制到临时目录，作为 ``E09_DATA``。
+按 evaluation_draft §10.1，这里不 import paperweave：种库用系统的命令行
+（``python -m paperweave <文档> --source ... --apply``），检入用 MCP 入口（``python -m paperweave.mcp``，子进程；批次与身份见 :mod:`pweval.seeding`，与运行框架的
+A3 起点相同）。论文材料复制到临时目录，作为 ``PAPERWEAVE_DATA``。
 
-    E09_NEO4J_URI=bolt://localhost:7692 .venv/bin/python eval/seeds/scripts/checkin.py [--check-only]
+    PAPERWEAVE_NEO4J_URI=bolt://localhost:7692 .venv/bin/python eval/seeds/scripts/checkin.py [--check-only]
 
 库必须是空的一次性库：长期使用的库（7687 neo4j-e09、7688、7689 neo4j-t1）一律拒绝。需要向量服务（``EMBED_URL``），
 关闭向量时只按词面去重，会给出错误的候选。MCP 的完整回复写到 ``--out``（默认临时目录），这里只打印摘要。
@@ -40,16 +40,16 @@ LONG_LIVED_PORTS = {7687, 7688, 7689}
 
 def main() -> int:
     args = _parser().parse_args()
-    uri = os.environ.get("E09_NEO4J_URI", "")
+    uri = os.environ.get("PAPERWEAVE_NEO4J_URI", "")
     port = urlparse(uri).port
     if not uri or port in LONG_LIVED_PORTS:
         refused = sorted(LONG_LIVED_PORTS)
-        print(f"error: set E09_NEO4J_URI to a throwaway Neo4j (got {uri or 'nothing'}; {refused} refused)")
+        print(f"error: set PAPERWEAVE_NEO4J_URI to a throwaway Neo4j (got {uri or 'nothing'}; {refused} refused)")
         return 1
     data = Path(tempfile.mkdtemp(prefix="t1-seed-data-"))
     for paper in PAPERS:
         shutil.copytree(CORPUS / "papers" / paper, data / "papers" / paper)
-    env = {**os.environ, "E09_DATA": str(data)}
+    env = {**os.environ, "PAPERWEAVE_DATA": str(data)}
 
     for doc, source, extra in SEED_DOCS:
         run = subprocess.run(
