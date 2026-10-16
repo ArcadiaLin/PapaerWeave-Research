@@ -5,9 +5,11 @@
 
 - 属性：写了就设置，``None`` 就清除，没写就不动；
 - Label：给出时是完整的 Label 集合，``None`` 表示不动；
-- 关系：``rels`` 的每个类型给出该类型出边的完整集合，多出的新建、缺少的删除；
-  两边都有的边，边属性同样是写了就设置、``None`` 就清除、没写就不动；
+- 关系：``rels`` 中列出的边，不存在的新建，已存在的按边属性更新（写了就设置、``None`` 就清除、没写就不动）；
+  没列出的边不动。要删的边列在 ``edge_deletes`` 中；
 - 删除：``deletes`` 中的节点连同它的全部关系一起删除。
+
+动词与现状是否相符（``create`` 的边不能已存在、``set`` 的边必须存在）由上层在翻译时检查，这里只做求差。
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ class FragmentNode:
     props: dict[str, Any] = field(default_factory=dict)
     rels: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)  # 类型 → {终点 id: 边属性}
     new: bool = False
+    edge_deletes: frozenset[tuple[str, str]] = frozenset()  # 要删除的出边：(类型, 终点 id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +43,7 @@ class Fragment:
     def ids(self) -> set[str]:
         """求差需要的现状范围：传给 ``VersionedGraph.local_state`` 的 id。"""
         targets = {dst for node in self.nodes.values() for edges in node.rels.values() for dst in edges}
+        targets |= {dst for node in self.nodes.values() for _, dst in node.edge_deletes}
         return set(self.nodes) | set(self.deletes) | targets
 
     def rename(self, mapping: Mapping[str, str]) -> Fragment:
@@ -54,6 +58,7 @@ class Fragment:
                 props=dict(node.props),
                 rels={t: {r(dst): dict(p) for dst, p in edges.items()} for t, edges in node.rels.items()},
                 new=node.new,
+                edge_deletes=frozenset((t, r(dst)) for t, dst in node.edge_deletes),
             )
             for ref, node in self.nodes.items()
         }
@@ -89,6 +94,9 @@ def diff(fragment: Fragment, state: GraphState) -> Changeset:
         for rel_type in sorted(node.rels):
             for change in _rel_changes(node_id, rel_type, node.rels[rel_type], state):
                 edges[change.key] = change
+        for rel_type, dst in sorted(node.edge_deletes):
+            key = EdgeKey(node_id, rel_type, dst)
+            edges[key] = EdgeChange(key, dict(state.edges[key]), None)
 
     for node_id in sorted(fragment.deletes):
         current = state.nodes[node_id]
@@ -121,6 +129,12 @@ def _check(fragment: Fragment, state: GraphState) -> list[str]:
                     problems.append(f"{at}: the target is deleted in the same fragment")
                 elif dst not in state.nodes and not (dst in fragment.nodes and fragment.nodes[dst].new):
                     problems.append(f"{at}: the target does not exist")
+        for rel_type, dst in sorted(node.edge_deletes):
+            at = f"{node_id}-[{rel_type}]->{dst}"
+            if EdgeKey(node_id, rel_type, dst) not in state.edges:
+                problems.append(f"{at}: cannot delete an edge that does not exist")
+            elif dst in fragment.nodes.get(node_id, FragmentNode()).rels.get(rel_type, {}):
+                problems.append(f"{at}: listed both as an edge to write and as a deletion")
     return problems
 
 
@@ -129,8 +143,6 @@ def _rel_changes(
 ) -> list[EdgeChange]:
     current = {k.dst: props for k, props in state.edges.items() if k.src == src and k.type == rel_type}
     changes = []
-    for dst in sorted(current.keys() - wanted.keys()):
-        changes.append(EdgeChange.delete(src, rel_type, dst, current[dst]))
     for dst in sorted(wanted):
         if dst not in current:
             changes.append(EdgeChange.create(src, rel_type, dst, _present(wanted[dst])))

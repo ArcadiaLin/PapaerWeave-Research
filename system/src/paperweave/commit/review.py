@@ -1,8 +1,9 @@
-"""需要外部判断的检查：新对象查重与 ``confirm``，以及删除的影响面。
+"""需要写者判断的检查：新建的 Entity / Concept 查重与 ``confirm``，以及删除的影响面。
 
-查重只给候选，不判断是不是同一对象（middleware 不做语义判断）：新的 Entity / Concept 有未判定的候选时阻塞，
-由 Agent 二选一——是同一对象，就把 ``$`` 引用换成候选 id；不是，就在 ``confirm.<引用>.distinct_from`` 中列出它。
-语义通道没有阈值，只要库中有同类对象就会给出近邻，所以每个新对象都要有一次明确的判断（commit.md §5、§6 P）。
+查重只给候选，不判断是不是同一对象（中间件不做语义判断）：新节点有未判定的候选时阻塞，由写者二选一——是同一对象，
+就删掉这个 ``$`` 节点、在引用处改用候选 id；不是，就在 ``confirm.<$ 名>.distinct_from`` 中列出它。
+
+查重的实现（名称、标识、描述的多路检索）在读取层，由算子注入（:class:`Deduper`），写入管线不依赖它。
 """
 
 from __future__ import annotations
@@ -14,16 +15,17 @@ from typing import Any, Protocol
 from graph_doc import Document, is_temp
 from graph_vc import Changeset
 
-from ..model.schema import ARTIFACT, CONCEPT, ENTITY, FAMILY, NAMESPACES, kind_of
+from ..model.schema import ANCHOR, ARTIFACT, NAMED, kind_of
 from .problems import Problem
 
-CONFIRM_KEYS = frozenset({"distinct_from", "revise"})  # revise 的含义见 revision.py
+CONFIRM_KEYS = frozenset({"distinct_from", "revise"})
+REVISE_KEYS = frozenset({"reason", "anchor"})
 
 
 @dataclass(frozen=True, slots=True)
 class Candidate:
     id: str
-    channels: tuple[str, ...]  # identifier、name、lexical_name、lexical_text、semantic
+    channels: tuple[str, ...]  # identity、name、text、vector
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,7 +36,7 @@ class Lookup:
 
 class Deduper(Protocol):
     def lookup(
-        self, kind: str, *, name: str | None, identifier: str | None, text: str | None, stub: bool
+        self, kind: str, *, name: str | None, identities: list[str], description: str | None, stub: bool
     ) -> Lookup: ...
 
 
@@ -43,31 +45,31 @@ def review(doc: Document, deduper: Deduper | None) -> list[Problem]:
     problems = _check_confirm(doc)
     if deduper is None:
         return problems
-    deleted = {ref for ref, node in doc.nodes.items() if node is None}
-    for ref, node in doc.nodes.items():
-        kind = node.props.get("kind") if node is not None and is_temp(ref) else None
-        if kind not in ENTITY | CONCEPT:
+    deleted = set(doc.deleted_nodes())
+    for ref, node in doc.create.items():
+        kind = node.props.get("kind")
+        if not is_temp(ref) or kind not in NAMED:
             continue
-        assert node is not None
-        name, text = node.props.get("name"), node.props.get("description") or node.props.get("definition")
+        name, description = node.props.get("name"), node.props.get("description")
+        identities = node.props.get("identities")
         lookup = deduper.lookup(
             kind,
             name=name if isinstance(name, str) else None,
-            identifier=_identifier(node.props.get("identifiers")),
-            text=text if isinstance(text, str) else node.props.get("text"),
+            identities=[i for i in identities if isinstance(i, str)] if isinstance(identities, list) else [],
+            description=description if isinstance(description, str) else None,
             stub=node.props.get("stub") is True,
         )
-        at = f"nodes.{ref}"
+        at = f"create.{ref}"
         if lookup.errors:
             problems.append(Problem("dedup", at, "some dedup channels failed: " + "; ".join(lookup.errors), "warning"))
-        confirmed = set(_distinct_from(doc.confirm.get(ref)))
+        confirmed = set(distinct_from(doc.confirm.get(ref)))
         open_ = [c for c in lookup.candidates if c.id not in confirmed and c.id not in deleted]
         if open_:
             problems.append(
                 Problem(
                     "dedup",
                     at,
-                    f"{len(open_)} possible duplicate(s) not yet judged",
+                    f"{len(open_)} existing {kind} node(s) may be the same as {ref}; judge each one",
                     candidates=tuple(c.id for c in open_),
                     evidence={c.id: c.channels for c in open_},
                 )
@@ -76,16 +78,14 @@ def review(doc: Document, deduper: Deduper | None) -> list[Problem]:
 
 
 def delete_impact(changeset: Changeset, before_labels: Mapping[str, frozenset[str]]) -> list[Problem]:
-    """删除节点时一并删除的、来自其他模型节点与 Artifact 的入边：提示影响面，不阻塞（可经 Revert 撤销）。
-
-    删掉 Artifact 的 ``USED`` 边后，该 Artifact 在读取时标为可能过期（按其文档头部的 ``nodes_used`` 核对）。"""
+    """删除节点时一并删除的、来自其他证据节点与产物的入边：提示影响面，不阻塞（可以回退）。"""
     deleted = {n.id for n in changeset.nodes if n.op == "delete"}
     problems = []
     for node_id in sorted(deleted):
         if kind_of(before_labels.get(node_id, frozenset())) is None:
             continue
         sources = sorted(
-            str(e.key)
+            f"{e.key.src} {e.key.type}"
             for e in changeset.edges
             if e.op == "delete"
             and e.key.dst == node_id
@@ -93,10 +93,10 @@ def delete_impact(changeset: Changeset, before_labels: Mapping[str, frozenset[st
             and _is_object(before_labels.get(e.key.src, frozenset()))
         )
         if sources:
-            msg = f"also removes {len(sources)} incoming relationship(s): {', '.join(sources)}"
-            if any("-[USED]->" in s for s in sources):
+            msg = f"also removes {len(sources)} incoming edge(s): {', '.join(sources)}"
+            if any(s.endswith(" USED") for s in sources):
                 msg += "; artifacts that used it will read as possibly stale"
-            problems.append(Problem("delete-impact", f"nodes.{node_id}", msg, "warning"))
+            problems.append(Problem("delete-impact", f"delete.{node_id}", msg, "warning"))
     return problems
 
 
@@ -106,80 +106,52 @@ def _is_object(labels: frozenset[str]) -> bool:
 
 def _check_confirm(doc: Document) -> list[Problem]:
     problems = []
+    refs = set(doc.refs())
     for ref, entry in doc.confirm.items():
         at = f"confirm.{ref}"
-        if ref not in doc.nodes:
-            problems.append(Problem("format", at, f"{ref} is not a node in this document"))
+        if ref not in refs:
+            problems.append(Problem("format", at, f"{ref} is not a node under create, set or delete in this file"))
         elif not isinstance(entry, Mapping) or not set(entry) <= CONFIRM_KEYS:
-            problems.append(Problem("format", at, f"a confirmation has only {sorted(CONFIRM_KEYS)}"))
+            problems.append(Problem("format", at, "a confirmation has distinct_from and/or revise"))
         elif not _is_ids(entry.get("distinct_from", [])):
             problems.append(Problem("format", f"{at}.distinct_from", "distinct_from is a list of existing ids"))
-        elif "revise" in entry and not _is_revise(entry["revise"]):
+        elif "revise" in entry and revise_of(entry) is None:
             problems.append(
-                Problem("format", f"{at}.revise", "revise is {reason: <why>, anchor: <section>::<start>:<end>}")
+                Problem("format", f"{at}.revise", "revise has reason (text) and anchor (line ranges like [120:135])")
             )
     return problems
 
 
-def _distinct_from(entry: Any) -> list[str]:
+def distinct_from(entry: Any) -> list[str]:
     if isinstance(entry, Mapping) and _is_ids(entry.get("distinct_from", [])):
         return list(entry.get("distinct_from", []))
     return []
 
 
-def _is_revise(value: Any) -> bool:
-    return (
-        isinstance(value, Mapping)
-        and set(value) <= {"anchor", "reason"}
-        and all(isinstance(v, str) and v.strip() for v in value.values())
-    )
+def revise_of(entry: Any) -> dict[str, Any] | None:
+    """``confirm.<ref>.revise`` → ``{reason?, anchor?: [<start>:<end>…]}``；格式不对时为 ``None``。"""
+    if not isinstance(entry, Mapping) or not isinstance(entry.get("revise"), Mapping):
+        return None
+    revise = entry["revise"]
+    if not set(revise) <= REVISE_KEYS:
+        return None
+    out: dict[str, Any] = {}
+    reason = revise.get("reason")
+    if reason is not None:
+        if not isinstance(reason, str) or not reason.strip():
+            return None
+        out["reason"] = reason.strip()
+    anchor = revise.get("anchor")
+    if anchor is not None:
+        anchor = [anchor] if isinstance(anchor, str) else anchor
+        if not isinstance(anchor, list) or not all(isinstance(a, str) and ANCHOR.fullmatch(a.strip()) for a in anchor):
+            return None
+        out["anchor"] = [a.strip() for a in anchor]
+    return out
 
 
 def _is_ids(value: Any) -> bool:
     return isinstance(value, list) and all(isinstance(v, str) and not is_temp(v) for v in value)
 
 
-def _identifier(value: Any) -> str | None:
-    """查重用的标识：优先唯一命名空间的，其次 url。"""
-    identifiers = [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
-    unique = [v for v in identifiers if NAMESPACES.get(v.partition(":")[0])]
-    return (unique or identifiers or [None])[0]
-
-
-class ResolveDeduper:
-    """经 Resolve 的写入模式查重：标识、名称精确命中，以及名称词面、文本、向量三路语义近邻。
-
-    桩节点只开名称词面通道（commit_contract.md §4）。Resolve 连接 ``PAPERWEAVE_NEO4J_URI`` 所指的库，
-    应与写入的库相同。
-    """
-
-    def __init__(self, top_n: int | None = None):
-        self._top_n = top_n
-
-    def lookup(self, kind: str, *, name: str | None, identifier: str | None, text: str | None, stub: bool) -> Lookup:
-        from ..query.fusion import TOP_N
-        from ..query.resolve import resolve
-
-        query = {k: v for k, v in {"mention": name, "identifier": identifier, "text": text}.items() if v}
-        if not query or FAMILY[kind] not in ("Entity", "Concept"):
-            return Lookup(())
-        result = resolve(
-            query,
-            kind=kind,
-            mode="write",
-            n=self._top_n or TOP_N,
-            channels={"lexical_name"} if stub else None,
-        )
-        found: dict[str, set[str]] = {}
-        for step in result["match_trace"]:
-            if step["stage"] in ("id", "alias"):
-                for hit in step["hits"]:
-                    found.setdefault(hit, set()).add("identifier" if step["stage"] == "id" else "name")
-            elif step["stage"] == "semantic":
-                for candidate in step["candidates"]:
-                    found.setdefault(candidate["id"], set()).update(candidate["evidence"])
-        candidates = tuple(Candidate(i, tuple(sorted(found[i]))) for i in found)
-        return Lookup(candidates, tuple(result["states"]["errors"]))
-
-
-__all__ = ["Candidate", "Deduper", "Lookup", "ResolveDeduper", "delete_impact", "review"]
+__all__ = ["Candidate", "Deduper", "Lookup", "delete_impact", "distinct_from", "review", "revise_of"]

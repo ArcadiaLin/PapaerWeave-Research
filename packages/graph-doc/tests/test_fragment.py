@@ -35,7 +35,8 @@ def check(fragment: Fragment, before: GraphState | None = None) -> Changeset:
     cs.validate()
     after = before.apply(cs)
     assert after.apply(cs.invert()) == before
-    restated = Fragment({ref: FragmentNode(node.labels, node.props, node.rels) for ref, node in fragment.nodes.items()})
+    restated = Fragment({ref: FragmentNode(node.labels, node.props, node.rels) for ref, node in fragment.nodes.items()
+                         if ref not in fragment.deletes})
     assert not diff(restated, after), "restating the target on the new state must change nothing"
     return cs
 
@@ -66,7 +67,7 @@ def test_labels_are_replaced_as_a_whole() -> None:
     assert cs.nodes == (NodeChange.update("method_0016", M, {}, {}, labels_after={"Concept", "Task"}),)
 
 
-def test_relationship_key_is_the_complete_set_of_that_type() -> None:
+def test_listed_edges_are_upserted_and_deletions_are_explicit() -> None:
     fragment = Fragment(
         {
             "exp_0001": FragmentNode(
@@ -75,17 +76,16 @@ def test_relationship_key_is_the_complete_set_of_that_type() -> None:
                         "method_0016": {"role": "baseline"},  # 改一个边属性，note 没写：不动
                         "method_0004": {"role": "baseline", "note": None},  # 新边，None 的属性不写入
                     },
-                    # USES 没写：不动
+                    # method_0005 没列出：不动；USES 没写：不动
                 }
             ),
-            "method_0016": FragmentNode(rels={"BROADER": {}}),  # 删掉全部 BROADER
+            "method_0016": FragmentNode(edge_deletes=frozenset({("BROADER", "method_0004")})),
         }
     )
     cs = check(fragment)
     assert cs.nodes == ()
     assert sorted(cs.edges, key=lambda e: str(e.key)) == [
         EdgeChange.create("exp_0001", "EVALUATES", "method_0004", {"role": "baseline"}),
-        EdgeChange.delete("exp_0001", "EVALUATES", "method_0005", {"role": "baseline"}),
         EdgeChange.update("exp_0001", "EVALUATES", "method_0016", {"role": "target"}, {"role": "baseline"}),
         EdgeChange.delete("method_0016", "BROADER", "method_0004"),
     ]
@@ -115,7 +115,7 @@ def test_new_nodes_and_edges_between_them() -> None:
 
 def test_delete_removes_every_relationship_once() -> None:
     fragment = Fragment(
-        {"method_0016": FragmentNode(rels={"BROADER": {}})},  # 这条边也会因删除 method_0004 而删除，只列一次
+        {"method_0016": FragmentNode(edge_deletes=frozenset({("BROADER", "method_0004")}))},  # 也因删除 method_0004 而删除，只列一次
         deletes=frozenset({"method_0004"}),
     )
     cs = check(fragment)
@@ -160,6 +160,10 @@ def test_merge_by_composition() -> None:
         (
             Fragment({"method_0016": FragmentNode(rels={"BROADER": {"method_0099": {}}})}),
             "the target does not exist",
+        ),
+        (
+            Fragment({"method_0016": FragmentNode(edge_deletes=frozenset({("BROADER", "method_0005")}))}),
+            "cannot delete an edge that does not exist",
         ),
     ],
 )

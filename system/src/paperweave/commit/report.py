@@ -16,23 +16,22 @@ from .problems import Problem
 from .reader import Reader
 from .submit import Prepared
 
-PLAN_VERSION = "v0.1"
-RESULT_VERSION = "v0.1"
-
 # 各类阻塞项的改法提示；{ref} 是出问题的节点引用
 FIXES = {
-    "dedup": "same object: replace {ref} with the candidate id; different: list it in confirm.{ref}.distinct_from",
-    "name-taken": "if it is the same object, edit the existing node by id; otherwise use a different name",
-    "identifier-taken": "if it is the same object, edit the existing node by id; otherwise correct the identifier",
-    "key-taken": "the record already exists; edit it by id instead of creating it again",
-    "material": "check the material path; changing a registered material is not supported yet",
-    "revision": (
-        "re-read the paper (ReadEvidence); if the record misstates it, add confirm.{ref}.revise with reason and "
-        "anchor (<section>::<start>:<end> of the supporting lines); otherwise leave the record unchanged"
+    "dedup": (
+        "read the candidates (get); if one is the same thing, drop {ref} and write the candidate id wherever {ref} "
+        "was used; if none is, list them in confirm.{ref}.distinct_from"
     ),
-    "coexist": "leave their record unchanged; state your own view in a new Observation (or OPPOSES between claims)",
+    "name-taken": "the name already belongs to the node shown: use that id instead of a new node, or pick another name",
+    "identity-taken": "the identity already belongs to the node shown: use that id instead of a new node",
+    "exp-taken": "this experiment is already recorded: change the existing record (set) instead of creating it again",
+    "exists": "the edge is already there: leave it out, or move it under set to change its properties",
+    "revision": (
+        "re-read the paper lines (read_evidence); if the record misstates the paper, add confirm.{ref}.revise with "
+        "reason and anchor (the supporting line ranges); otherwise leave the record unchanged"
+    ),
 }
-CONFLICT_FIX = "the database changed after the dry run; read the affected nodes again and resubmit"
+CONFLICT_FIX = "the store changed after your dry run; read the affected nodes again (get) and resubmit"
 
 
 def plan(prepared: Prepared, reader: Reader) -> dict[str, Any]:
@@ -43,7 +42,7 @@ def plan(prepared: Prepared, reader: Reader) -> dict[str, Any]:
         status = "noop"
     else:
         status = "ready"
-    out: dict[str, Any] = {"graph-plan": PLAN_VERSION, "status": status}
+    out: dict[str, Any] = {"status": status}
     ref = _ref_of(prepared)
     if prepared.changeset:
         out["changes"] = summarize(prepared.changeset, ref)
@@ -57,16 +56,16 @@ def plan(prepared: Prepared, reader: Reader) -> dict[str, Any]:
     return out
 
 
-def result(prepared: Prepared, record: CommitRecord) -> dict[str, Any]:
-    """apply 成功后的返回：提交 id、``$`` 引用到 id 的映射与计数。"""
+def result(prepared: Prepared, record: CommitRecord, names: dict[str, str] | None = None) -> dict[str, Any]:
+    """apply 成功后的返回：提交 id、``$`` 名到 id 的映射（附名称）与计数。"""
     assert prepared.changeset is not None
+    names = names or {}
     counts = Counter(f"nodes_{n.op}d" for n in prepared.changeset.nodes)
     counts.update(f"edges_{e.op}d" for e in prepared.changeset.edges)
     out: dict[str, Any] = {
-        "graph-result": RESULT_VERSION,
         "status": "committed",
         "commit": record.id,
-        "ids": dict(prepared.ids),
+        "ids": {ref: f"{node_id} ({names[ref]})" if names.get(ref) else node_id for ref, node_id in prepared.ids.items()},
         "counts": {
             key: counts.get(key, 0)
             for key in (
@@ -88,7 +87,6 @@ def result(prepared: Prepared, record: CommitRecord) -> dict[str, Any]:
 def conflict(error: ConflictError) -> dict[str, Any]:
     """提交时改前状态与库中当前状态不一致（dry_run 之后库被改动）：整批未写入，需重新读取后再交。"""
     return {
-        "graph-result": RESULT_VERSION,
         "status": "conflict",
         "errors": [{"rule": "conflict", "at": c.target, "msg": c.reason, "fix": CONFLICT_FIX} for c in error.conflicts],
     }
@@ -159,7 +157,8 @@ def _problem(problem: Problem, described: dict[str, dict[str, Any]]) -> dict[str
             for c in problem.candidates
         ]
     if problem.severity == "error" and problem.rule in FIXES:
-        node = problem.at.split(".")[1] if problem.at.startswith("nodes.") else problem.at
+        parts = problem.at.split(".")
+        node = parts[1] if len(parts) > 1 and parts[0] in ("create", "set", "delete", "confirm") else parts[0]
         out["fix"] = FIXES[problem.rule].format(ref=node)
     return out
 
@@ -175,12 +174,13 @@ def _describe_candidates(problems: list[Problem], reader: Reader) -> dict[str, d
         if node is None:
             continue
         info: dict[str, Any] = {"kind": kind_of(node.labels)}
-        for key in ("name", "text"):
-            if key in node.props:
-                info[key] = node.props[key]
-                break
+        if "name" in node.props:
+            info["name"] = node.props["name"]
         if node.props.get("stub") is True:
             info["stub"] = True
+        description = node.props.get("description")
+        if isinstance(description, str):
+            info["description"] = description if len(description) <= 200 else description[:200].rstrip() + " …"
         described[node_id] = info
     return described
 

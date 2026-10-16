@@ -1,17 +1,24 @@
 """graph-doc 的语法层：把 YAML 文本解析成 :class:`Document`，检查与数据模型无关的规则。
 
-一份 graph-doc 是图中的一个子图（设计见 ``docs/experiments/e09/operators/commit.md`` §2–§3）：
+一份 graph-doc 是对图的一组改动，借用 Cypher 的动词分成三节，一份文件就是一个提交：
 
-- 顶层键：``graph-doc``（版本，必填）、``meta``（读视图的说明，写入时忽略）、``by``（写入者）、
-  ``confirm``（写入时的确认，内容由上层解释）、``nodes``（节点，按引用作键）。
-- 引用：已有 id（如 ``method_0016``），或 ``$`` 开头的临时引用（如 ``$patchtst``），后者表示新建节点。
-- 字段类别看拼写：小写是属性，全大写是出边（键是关系类型），``_`` 开头是只读字段。
-- 写入语义：写了就设置，``null`` 就清除（节点写 ``null`` 即删除），没写就不动；关系键给出该类型出边的完整集合。
+- ``graph-doc``：格式版本，必填，``v0.2``；
+- ``create``：新建节点与边。键是 ``$`` 名（新节点，下面写字段与出边），或已有 id（只写要新建的出边）；
+- ``set``：修改已有节点的字段与已有边的属性。键只能是已有 id；
+- ``delete``：键是已有 id。值为空时删除节点及其全部边；值是关系键时只删列出的边；
+- ``confirm``：写入时的确认，内容由上层解释。
 
-本模块不认识数据模型：``kind``、``aliases``、``material`` 等在这里只是普通属性，由上层翻译。
+字段类别看拼写：小写是属性，全大写是从这个节点出发的关系，``_`` 开头是只读字段（写入时忽略）。关系键下是一个映射，
+键是终点（id 或 ``$`` 名），值是这条边的属性；边没有属性时可以写成终点的列表。
+
+``$`` 名是本文件内的临时名，只能在 ``create`` 中定义，在本文件任何地方都可以引用；不带 ``$`` 的是库中已有的 id。
+同一条边出现在两节中、一个节点被整体删除又出现在别的节中，都是错误。
+
+本模块不认识数据模型：``kind``、``alias``、``paper``、``extra`` 等在这里只是普通属性，由上层翻译。属性值可以是
+标量、标量的列表，或一层映射（如 ``extra``），能否存储由上层决定。
 
 YAML 按 1.2 核心模式解析标量：只有 ``null``、``true`` / ``false``、十进制整数与有限浮点数会转换类型，
-其余一律是字符串。因此 ``2026-10-04T15:30:00Z``、``yes``、``on``、``12:30``、``012`` 都保持为字符串原文。
+其余一律是字符串。因此 ``2026-10-04T15:30:00Z``、``yes``、``on``、``52:58`` 都保持为字符串原文。
 同一映射中重复的键视为错误，而不是后者覆盖前者。
 """
 
@@ -27,8 +34,10 @@ import yaml
 
 from .errors import DocError
 
-VERSIONS = frozenset({"v0.1"})
-TOP_LEVEL = ("graph-doc", "meta", "by", "confirm", "nodes")
+VERSION = "v0.2"
+VERSIONS = frozenset({VERSION})
+SECTIONS = ("create", "set", "delete")
+TOP_LEVEL = ("graph-doc", *SECTIONS, "confirm")
 
 TEMP_REF = re.compile(r"\$[A-Za-z0-9][A-Za-z0-9_.-]*")
 ID_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]*")
@@ -36,42 +45,48 @@ PROPERTY = re.compile(r"[a-z][a-z0-9_]*")
 RELATIONSHIP = re.compile(r"[A-Z][A-Z0-9_]*")
 READONLY = re.compile(r"_[A-Za-z][A-Za-z0-9_]*")
 
-PropertyValue = bool | int | float | str | list[Any] | None
-
 
 @dataclass(frozen=True, slots=True)
 class DocEdge:
-    """一条出边。``props`` 中值为 ``None`` 的属性表示清除；没写的属性不动。"""
+    """一条出边。``props`` 中值为 ``None`` 的属性表示清除（只在 ``set`` 中有意义）。"""
 
     to: str
-    props: dict[str, PropertyValue] = field(default_factory=dict)
-    readonly: dict[str, Any] = field(default_factory=dict)
+    props: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
 class DocNode:
-    """一个节点。``rels`` 的每个键给出该类型出边的完整集合；没写的关系类型不动。"""
+    """一个节点在某一节中的内容。``rels``：关系类型 → 终点 → 边。"""
 
-    props: dict[str, PropertyValue] = field(default_factory=dict)
-    rels: dict[str, list[DocEdge]] = field(default_factory=dict)
-    readonly: dict[str, Any] = field(default_factory=dict)
+    props: dict[str, Any] = field(default_factory=dict)
+    rels: dict[str, dict[str, DocEdge]] = field(default_factory=dict)
+
+    def edges(self) -> list[tuple[str, DocEdge]]:
+        return [(rel_type, edge) for rel_type, edges in self.rels.items() for edge in edges.values()]
 
 
 @dataclass(frozen=True, slots=True)
 class Document:
-    """``nodes`` 中值为 ``None`` 的节点表示删除。"""
+    """``delete`` 中值为 ``None`` 的节点整体删除，否则是要删的边：关系类型 → 终点列表。"""
 
     version: str
-    by: str | None = None
-    meta: dict[str, Any] = field(default_factory=dict)
+    create: dict[str, DocNode] = field(default_factory=dict)
+    set: dict[str, DocNode] = field(default_factory=dict)
+    delete: dict[str, dict[str, list[str]] | None] = field(default_factory=dict)
     confirm: dict[str, Any] = field(default_factory=dict)
-    nodes: dict[str, DocNode | None] = field(default_factory=dict)
 
     def temp_refs(self) -> list[str]:
-        return [ref for ref in self.nodes if is_temp(ref)]
+        return [ref for ref in self.create if is_temp(ref)]
 
-    def deleted(self) -> list[str]:
-        return [ref for ref, node in self.nodes.items() if node is None]
+    def deleted_nodes(self) -> list[str]:
+        return [ref for ref, rels in self.delete.items() if rels is None]
+
+    def refs(self) -> list[str]:
+        """文档中作为节点键出现的全部引用，按出现顺序去重。"""
+        return list(dict.fromkeys([*self.create, *self.set, *self.delete]))
+
+    def is_empty(self) -> bool:
+        return not (self.create or self.set or self.delete)
 
 
 def is_temp(ref: str) -> bool:
@@ -99,46 +114,60 @@ def from_data(data: Any) -> Document:
 
     for key in data:
         if key not in TOP_LEVEL:
-            problems.append(f"{key}: unknown top-level key (expected one of {', '.join(TOP_LEVEL)})")
+            hint = " (nodes is v0.1; v0.2 uses create, set and delete)" if key == "nodes" else ""
+            problems.append(f"{key}: unknown top-level key; expected one of {', '.join(TOP_LEVEL)}{hint}")
 
     version = data.get("graph-doc")
     if version is None:
-        problems.append("graph-doc: the format version is required")
+        problems.append(f"graph-doc: the format version is required; write graph-doc: {VERSION}")
     elif not isinstance(version, str) or version not in VERSIONS:
-        problems.append(f"graph-doc: unsupported version {version!r}")
+        problems.append(f"graph-doc: unsupported version {version!r}; write graph-doc: {VERSION}")
 
-    by = data.get("by")
-    if by is not None and (not isinstance(by, str) or not by.strip()):
-        problems.append("by: must be a non-empty string")
-
-    meta = _mapping(data.get("meta"), "meta", problems)
-    confirm = _mapping(data.get("confirm"), "confirm", problems)
-    raw_nodes = _mapping(data.get("nodes"), "nodes", problems)
-
-    nodes: dict[str, DocNode | None] = {}
-    for ref, value in raw_nodes.items():
-        where = f"nodes.{ref}"
-        if not _check_ref(ref, where, problems):
+    create: dict[str, DocNode] = {}
+    for ref, value in _mapping(data.get("create"), "create", problems).items():
+        at = f"create.{ref}"
+        if not _check_ref(ref, at, problems):
             continue
-        if value is None:
-            if is_temp(ref):
-                problems.append(f"{where}: a temporary reference names a new node and cannot be deleted")
-            nodes[ref] = None
-        elif isinstance(value, Mapping):
-            nodes[ref] = _node(value, where, problems)
-        else:
-            problems.append(f"{where}: a node must be a mapping, or null to delete it")
+        if not isinstance(value, Mapping):
+            problems.append(f"{at}: a node must be a mapping of fields and relationships")
+            continue
+        node = _node(value, at, problems)
+        if not is_temp(ref) and node.props:
+            problems.append(
+                f"{at}: {ref} already exists; under create an existing id only takes new relationships "
+                f"(change its fields under set)"
+            )
+        create[ref] = node
 
-    problems += _check_references(nodes)
+    sets: dict[str, DocNode] = {}
+    for ref, value in _mapping(data.get("set"), "set", problems).items():
+        at = f"set.{ref}"
+        if not _check_ref(ref, at, problems):
+            continue
+        if is_temp(ref):
+            problems.append(f"{at}: set changes existing nodes; write the fields of a new node under create.{ref}")
+            continue
+        if not isinstance(value, Mapping):
+            problems.append(f"{at}: a node must be a mapping of the fields and relationships to change")
+            continue
+        sets[ref] = _node(value, at, problems)
+
+    deletes: dict[str, dict[str, list[str]] | None] = {}
+    for ref, value in _mapping(data.get("delete"), "delete", problems).items():
+        at = f"delete.{ref}"
+        if not _check_ref(ref, at, problems):
+            continue
+        if is_temp(ref):
+            problems.append(f"{at}: a $ name is a node created in this file; it cannot be deleted")
+            continue
+        deletes[ref] = None if value is None else _deleted_edges(value, at, problems)
+
+    confirm = dict(_mapping(data.get("confirm"), "confirm", problems))
+    doc = Document(version=version, create=create, set=sets, delete=deletes, confirm=confirm)
+    problems += _check_references(doc)
     if problems:
         raise DocError(problems)
-    return Document(
-        version=version,
-        by=by,
-        meta=dict(meta),
-        confirm=dict(confirm),
-        nodes=nodes,
-    )
+    return doc
 
 
 # ── 节点与边 ──────────────────────────────────────────────────────────
@@ -151,12 +180,12 @@ def _node(data: Mapping[Any, Any], where: str, problems: list[str]) -> DocNode:
         if not isinstance(key, str):
             problems.append(f"{at}: field names must be strings")
         elif READONLY.fullmatch(key):
-            node.readonly[key] = value
+            continue  # 只读字段：读取结果原样贴回时出现，写入时忽略
         elif RELATIONSHIP.fullmatch(key):
             node.rels[key] = _edges(value, at, problems)
         elif PROPERTY.fullmatch(key):
             if key == "id":
-                problems.append(f"{at}: the node's identity is its key under nodes, not a property")
+                problems.append(f"{at}: the node's id is its key, not a field")
             elif _check_value(value, at, problems):
                 node.props[key] = value
         else:
@@ -164,73 +193,106 @@ def _node(data: Mapping[Any, Any], where: str, problems: list[str]) -> DocNode:
     return node
 
 
-def _edges(value: Any, where: str, problems: list[str]) -> list[DocEdge]:
-    if value is None:
-        problems.append(f"{where}: write [] to remove all relationships of this type")
-        return []
-    if not isinstance(value, list):
-        problems.append(f"{where}: relationships must be a list")
-        return []
-    edges: list[DocEdge] = []
-    seen: set[str] = set()
-    for i, item in enumerate(value):
-        at = f"{where}[{i}]"
-        edge = _edge(item, at, problems)
-        if edge is None:
+def _edges(value: Any, where: str, problems: list[str]) -> dict[str, DocEdge]:
+    """``{终点: 属性 | null}``，或终点的列表。"""
+    edges: dict[str, DocEdge] = {}
+    if isinstance(value, list):
+        for i, item in enumerate(value):
+            at = f"{where}[{i}]"
+            if isinstance(item, Mapping):
+                problems.append(f"{at}: write the target as a key: {where.rsplit('.', 1)[-1]}: {{<target>: <properties>}}")
+            elif _check_ref(item, at, problems):
+                if item in edges:
+                    problems.append(f"{at}: {item} appears more than once")
+                edges[item] = DocEdge(item)
+        return edges
+    if not isinstance(value, Mapping):
+        problems.append(f"{where}: a mapping from target id (or $ name) to the edge's properties, or a list of targets")
+        return edges
+    for to, props in value.items():
+        at = f"{where}.{to}"
+        if not _check_ref(to, at, problems):
             continue
-        if edge.to in seen:
-            problems.append(f"{at}: {edge.to} appears more than once; merge the entries")
-            continue
-        seen.add(edge.to)
-        edges.append(edge)
+        if props is None:
+            edges[to] = DocEdge(to)
+        elif isinstance(props, Mapping):
+            edge = DocEdge(to)
+            for key, v in props.items():
+                prop_at = f"{at}.{key}"
+                if not isinstance(key, str):
+                    problems.append(f"{prop_at}: field names must be strings")
+                elif READONLY.fullmatch(key):
+                    continue
+                elif PROPERTY.fullmatch(key):
+                    if key == "to":
+                        problems.append(f"{prop_at}: the target is the key {to}; do not write to")
+                    elif _check_value(v, prop_at, problems):
+                        edge.props[key] = v
+                elif RELATIONSHIP.fullmatch(key):
+                    problems.append(f"{prop_at}: relationships cannot have relationships")
+                else:
+                    problems.append(_bad_field(prop_at))
+            edges[to] = edge
+        else:
+            problems.append(f"{at}: the edge's properties must be a mapping (or empty)")
     return edges
 
 
-def _edge(item: Any, where: str, problems: list[str]) -> DocEdge | None:
-    if isinstance(item, str):
-        return DocEdge(item) if _check_ref(item, where, problems) else None
-    if not isinstance(item, Mapping):
-        problems.append(f"{where}: an entry must be a reference or a mapping with 'to'")
-        return None
-    to = item.get("to")
-    if to is None:
-        problems.append(f"{where}.to: required")
-        return None
-    if not _check_ref(to, f"{where}.to", problems):
-        return None
-    edge = DocEdge(to)
-    for key, value in item.items():
-        if key == "to":
+def _deleted_edges(value: Any, where: str, problems: list[str]) -> dict[str, list[str]]:
+    if not isinstance(value, Mapping):
+        problems.append(f"{where}: leave it empty to delete the node, or list relationships: {{TYPE: [targets]}}")
+        return {}
+    out: dict[str, list[str]] = {}
+    for rel_type, targets in value.items():
+        at = f"{where}.{rel_type}"
+        if not isinstance(rel_type, str) or not RELATIONSHIP.fullmatch(rel_type):
+            problems.append(f"{at}: under delete, a node lists only relationship types (UPPERCASE) and their targets")
             continue
-        at = f"{where}.{key}"
-        if not isinstance(key, str):
-            problems.append(f"{at}: field names must be strings")
-        elif READONLY.fullmatch(key):
-            edge.readonly[key] = value
-        elif PROPERTY.fullmatch(key):
-            if _check_value(value, at, problems):
-                edge.props[key] = value
-        elif RELATIONSHIP.fullmatch(key):
-            problems.append(f"{at}: relationships cannot have relationships")
-        else:
-            problems.append(_bad_field(at))
-    return edge
+        if isinstance(targets, Mapping):
+            targets = list(targets)
+        if not isinstance(targets, list) or not targets:
+            problems.append(f"{at}: a list of the targets whose {rel_type} edges are deleted")
+            continue
+        out[rel_type] = [t for i, t in enumerate(targets) if _check_ref(t, f"{at}[{i}]", problems)]
+    return out
 
 
-def _check_references(nodes: Mapping[str, DocNode | None]) -> list[str]:
-    """文档内的一致性：临时引用必须在 ``nodes`` 中定义；不能向本文档删除的节点连边。"""
+def _check_references(doc: Document) -> list[str]:
+    """文档内的一致性：``$`` 名必须在 ``create`` 中定义；被整体删除的节点不能在别处出现；同一条边只在一节中出现。"""
     problems = []
-    deleted = {ref for ref, node in nodes.items() if node is None}
-    for ref, node in nodes.items():
-        if node is None:
-            continue
-        for rel, edges in node.rels.items():
-            for i, edge in enumerate(edges):
-                at = f"nodes.{ref}.{rel}[{i}]"
-                if is_temp(edge.to) and edge.to not in nodes:
-                    problems.append(f"{at}: temporary reference {edge.to} is not defined under nodes")
+    defined = set(doc.temp_refs())
+    deleted = set(doc.deleted_nodes())
+    for section, nodes in (("create", doc.create), ("set", doc.set)):
+        for ref, node in nodes.items():
+            if ref in deleted:
+                problems.append(f"{section}.{ref}: {ref} is deleted in this file")
+            for rel_type, edge in node.edges():
+                at = f"{section}.{ref}.{rel_type}.{edge.to}"
+                if is_temp(edge.to) and edge.to not in defined:
+                    problems.append(f"{at}: {edge.to} is not defined under create")
                 if edge.to in deleted:
-                    problems.append(f"{at}: {edge.to} is deleted in this document")
+                    problems.append(f"{at}: {edge.to} is deleted in this file")
+    for ref, rels in doc.delete.items():
+        for rel_type, targets in (rels or {}).items():
+            for to in targets:
+                if is_temp(to):
+                    problems.append(f"delete.{ref}.{rel_type}: {to} is created in this file; there is no edge to delete")
+
+    seen: dict[tuple[str, str, str], str] = {}
+    edges = [
+        (section, ref, rel_type, edge.to)
+        for section, nodes in (("create", doc.create), ("set", doc.set))
+        for ref, node in nodes.items()
+        for rel_type, edge in node.edges()
+    ]
+    edges += [(
+        "delete", ref, rel_type, to) for ref, rels in doc.delete.items() for rel_type, targets in (rels or {}).items() for to in targets
+    ]
+    for section, ref, rel_type, to in edges:
+        key = (ref, rel_type, to)
+        if key in seen and seen[key] != section:
+            problems.append(f"{section}.{ref}.{rel_type}.{to}: this edge also appears under {seen[key]}")
+        seen.setdefault(key, section)
     return problems
 
 
@@ -240,21 +302,24 @@ def _check_references(nodes: Mapping[str, DocNode | None]) -> list[str]:
 def _check_ref(ref: Any, where: str, problems: list[str]) -> bool:
     if isinstance(ref, str) and (TEMP_REF.fullmatch(ref) or ID_REF.fullmatch(ref)):
         return True
-    problems.append(f"{where}: {ref!r} is neither an id nor a $ reference")
+    problems.append(f"{where}: {ref!r} is neither an id nor a $ name")
     return False
 
 
 def _check_value(value: Any, where: str, problems: list[str]) -> bool:
-    """属性值：``null``、布尔、整数、有限浮点数、字符串，或这些标量（非 ``null``）的同类型列表。"""
-    if value is None or _scalar(value):
+    """属性值：``null``、标量、标量的列表，或一层映射（值为 ``null``、标量或标量的列表）。"""
+    if value is None or _scalar(value) or _scalars(value):
         return True
-    if isinstance(value, list):
-        kinds = {bool if isinstance(v, bool) else type(v) for v in value}
-        if all(_scalar(v) for v in value) and len(kinds) <= 1:
+    if isinstance(value, Mapping):
+        bad = [k for k, v in value.items() if not isinstance(k, str) or not (v is None or _scalar(v) or _scalars(v))]
+        if not bad:
             return True
-        problems.append(f"{where}: a list must hold values of one scalar type")
+        problems.append(f"{where}: a mapping value holds scalars or lists of scalars, one level deep")
         return False
-    problems.append(f"{where}: a property must be a scalar or a list of scalars, got {type(value).__name__}")
+    if isinstance(value, list):
+        problems.append(f"{where}: a list holds scalars (strings, numbers, booleans)")
+        return False
+    problems.append(f"{where}: unsupported value of type {type(value).__name__}")
     return False
 
 
@@ -262,6 +327,10 @@ def _scalar(value: Any) -> bool:
     if isinstance(value, float):
         return math.isfinite(value)
     return isinstance(value, bool | int | str)
+
+
+def _scalars(value: Any) -> bool:
+    return isinstance(value, list) and all(_scalar(v) for v in value)
 
 
 def _bad_field(where: str) -> str:
@@ -323,4 +392,4 @@ _Loader.add_constructor("tag:yaml.org,2002:int", _construct_int)
 _Loader.add_constructor("tag:yaml.org,2002:float", _construct_float)
 
 
-__all__ = ["VERSIONS", "DocEdge", "DocNode", "Document", "from_data", "is_temp", "load", "parse"]
+__all__ = ["SECTIONS", "VERSION", "VERSIONS", "DocEdge", "DocNode", "Document", "from_data", "is_temp", "load", "parse"]

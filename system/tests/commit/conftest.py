@@ -24,84 +24,113 @@ TEST_AUTH = (
 )
 
 SEED = """
-graph-doc: v0.1
-by: seed
-nodes:
+graph-doc: v0.2
+create:
   $tsf:
     kind: Task
     name: Time series forecasting
-    aliases: [TSF]
-    definition: Predict future values of a series from its past.
+    alias: [TSF]
+    description: Predict future values of a series from its past.
   $ltsf:
     kind: Task
     name: Long-term time series forecasting
-    aliases: [LTSF]
-    definition: Forecasting with a long horizon.
+    alias: [LTSF]
+    description: Forecasting with a long horizon.
     BROADER: [$tsf]
   $tf:
     kind: Method
     name: Transformer-based forecasting
-    definition: Forecasting models built on Transformer architectures.
+    description: Forecasting models built on Transformer architectures.
   $ett:
     kind: Dataset
     name: ETT
     description: Electricity transformer temperature data.
-    identifiers: ["url:https://github.com/zhouhaoyi/ETDataset"]
+    identities: ["url:https://github.com/zhouhaoyi/ETDataset"]
     FOR_TASK: [$ltsf]
   $etth1:
     kind: Dataset
     name: ETTh1
     description: Hourly subset of ETT.
-    identifiers: ["url:https://github.com/zhouhaoyi/ETDataset"]
+    identities: ["url:https://github.com/zhouhaoyi/ETDataset"]
     PART_OF: [$ett]
     FOR_TASK: [$ltsf]
 """
 # 种子按文档顺序、按前缀分配：task_0001 tsf、task_0002 ltsf、method_0001 tf、dataset_0001 ett、dataset_0002 etth1
 
 DLINEAR = """
-graph-doc: v0.1
-by: claude
-nodes:
+graph-doc: v0.2
+create:
   $paper:
     kind: Paper
     name: Are Transformers Effective for Time Series Forecasting?
-    identifiers: ["arxiv:2205.13504"]
+    identities: ["arxiv:2205.13504"]
     year: 2023
     material: papers/2023-DLinear/paper.md
-    description: Questions whether Transformers are effective for LTSF and introduces DLinear.
+    description: |
+      Questions whether Transformers are effective for LTSF and introduces DLinear.
+    extra:
+      venue: AAAI 2023
   $dlinear:
     kind: Method
     name: DLinear
-    aliases: [D-Linear]
-    definition: A linear model on a trend and remainder decomposition.
+    alias: [D-Linear]
+    description: |
+      A linear model on a trend and remainder decomposition.
     BROADER: [method_0001]
+  $code:
+    kind: Code
+    name: LTSF-Linear
+    identities: ["url:https://github.com/cure-lab/LTSF-Linear"]
+    IMPLEMENTS:
+      $dlinear:
+        paper: $paper
+        anchor: [20:21]
   $exp:
     kind: Experiment
-    anchors: [S5.T2, A3.T9]
-    text: Compare DLinear with Transformer baselines on nine datasets.
-    FROM:
-      - {to: $paper, locators: ["5.2 Comparison::198:240"]}
+    paper: $paper
+    anchor: [198:240]
+    figures: [S5.T2, A3.T9]
+    description: |
+      Compare DLinear with Transformer baselines on nine datasets.
     EVALUATES:
-      - {to: $dlinear, role: target}
-      - {to: method_0001, role: baseline}
+      $dlinear:
+        role: target
+        result: own
+      method_0001:
+        role: baseline
+        result: cited
     USES:
-      - {to: dataset_0002, role: evaluation_data}
+      dataset_0002:
+        role: evaluation_data
+        printed_as: ETTh1
     ON_TASK: [task_0002]
   $claim:
     kind: Claim
-    text: DLinear outperforms Transformer methods in most settings.
-    FROM:
-      - {to: $paper, locators: ["Abstract::10:14"]}
+    paper: $paper
+    anchor: [10:14]
+    description: |
+      DLinear outperforms Transformer methods in most settings.
     ABOUT: [$dlinear, task_0002]
-    SUPPORTED_BY: [$exp]
   $contrib:
     kind: Contribution
-    stated_by: paper
-    text: Introduces a simple linear baseline for LTSF.
-    FROM:
-      - {to: $paper, locators: ["1 Introduction::40:44"]}
+    paper: $paper
+    anchor: [40:44]
+    description: |
+      Introduces a simple linear baseline for LTSF.
     ABOUT: [$dlinear]
+  $exp2:
+    kind: Experiment
+    paper: $paper
+    anchor: [250:260]
+    figures: [S5.T4]
+    description: |
+      Ablation of the decomposition.
+    EVALUATES:
+      $dlinear:
+        role: target
+    SUPPORTS: [$claim]
 """
+# 写入后：paper_0001、method_0002 dlinear、code_0001、exp_0001、claim_0001、contrib_0001、exp_0002
 
 
 class Counters:
@@ -125,18 +154,18 @@ class MemoryGraph:
         self.counters = Counters()
         self.deduper: Deduper | None = None
 
-    def context(self, source: str = "test") -> Context:
-        return Context(MemoryReader(self.state), source, AT, self.root, self.deduper)
+    def context(self, source: str = "test", user: str = "claude") -> Context:
+        return Context(MemoryReader(self.state), source, AT, self.root, user, self.deduper)
 
-    def dry_run(self, text: str, source: str = "test") -> Prepared:
-        return prepare(text, self.context(source))
+    def dry_run(self, text: str, source: str = "test", user: str = "claude") -> Prepared:
+        return prepare(text, self.context(source, user))
 
-    def submit(self, text: str, source: str = "test") -> Prepared:
-        dry = self.dry_run(text, source)
+    def submit(self, text: str, source: str = "test", user: str = "claude") -> Prepared:
+        dry = self.dry_run(text, source, user)
         if not dry.ok:
             return dry
         assert dry.document is not None
-        prepared = prepare(text, self.context(source), allocate_ids(dry.document, self.counters))
+        prepared = prepare(text, self.context(source, user), allocate_ids(dry.document, self.counters))
         assert prepared.ok, prepared.errors
         assert prepared.changeset is not None
         self.state = self.state.apply(prepared.changeset)
@@ -191,11 +220,5 @@ def rules(prepared: Prepared) -> set[str]:
 
 
 def doc(body: str) -> str:
-    """补上文档头；正文按两个空格缩进写在 nodes 下。"""
-    return "graph-doc: v0.1\nby: claude\nnodes:\n" + textwrap.indent(textwrap.dedent(body).strip("\n"), "  ") + "\n"
-
-
-def with_confirm(text: str, body: str) -> str:
-    """在文档头后插入 ``confirm`` 段；正文按两个空格缩进写在 confirm 下。"""
-    block = "confirm:\n" + textwrap.indent(textwrap.dedent(body).strip("\n"), "  ") + "\n"
-    return text.replace("by: claude\n", "by: claude\n" + block, 1)
+    """补上文档头；正文按原样（各节顶格）写出。"""
+    return "graph-doc: v0.2\n" + textwrap.dedent(body).strip("\n") + "\n"
