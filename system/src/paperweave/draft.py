@@ -167,8 +167,12 @@ def locate_doc(result: Mapping[str, Any], draft: Draft) -> dict[str, Any]:
     out = dict(result)
     for key in ("errors", "warnings"):
         if isinstance(out.get(key), list):
-            out[key] = [{**e, "at": locate(str(e.get("at", "")))} if isinstance(e, Mapping) else e for e in out[key]]
+            out[key] = [{**e, "at": _located(locate, e.get("at", ""))} if isinstance(e, Mapping) else e for e in out[key]]
     return out
+
+
+def _located(locate: Callable[[str], str], at: Any) -> str | list[str]:
+    return [locate(str(a)) for a in at] if isinstance(at, list) else locate(str(at))
 
 
 __all__ = [

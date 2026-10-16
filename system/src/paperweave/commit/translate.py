@@ -53,12 +53,27 @@ from ..model.schema import (
     endpoints,
     kind_of,
     labels_of,
+    relation_types,
 )
 from .problems import Problem
 from .reader import Reader
 from .review import Deduper
 
 _MISSING = object()
+_WORD = re.compile(r"[^\W_]{2,}")  # 一行里至少有一个词：空行、列表符号、分隔线不算
+
+
+def _nearest_text(lines: list[str], line: int) -> int | None:
+    """离第 ``line`` 行（从 1 起）最近的有字的行，先往后找。"""
+    for d in range(1, 6):
+        for n in (line + d, line - d):
+            if 1 <= n <= len(lines) and _WORD.search(lines[n - 1]):
+                return n
+    return None
+
+
+def _cut_line(line: str, width: int = 80) -> str:
+    return repr(line if len(line) <= width else line[:width] + "…")
 _ARXIV_VERSION = re.compile(r"(\d{4}\.\d{4,5})v\d+")
 
 
@@ -116,7 +131,7 @@ class _Translator:
     names: dict[str, tuple[Any, Any]] = field(default_factory=dict)  # 写了 name 或 alias 的节点 → (name, alias)
     new_materials: dict[str, _Material] = field(default_factory=dict)  # Paper id → 本次登记的材料
     papers: dict[str, str] = field(default_factory=dict)  # 本次新建或改了 paper 的 Content id → 论文 id
-    lines: dict[str, int | None] = field(default_factory=dict)  # 材料 id → 行数
+    lines: dict[str, list[str] | None] = field(default_factory=dict)  # 材料 id → 各行文字
     added: dict[str, list[tuple[str, str, bool]]] = field(default_factory=dict)
 
     def run(self) -> Translation:
@@ -502,7 +517,8 @@ class _Translator:
                 "file, as you read it, e.g. papers/2211.14730v2/paper.md> (a stub paper has no text)",
             )
             return
-        total = self.material_lines(material)
+        text = self.material_lines(material)
+        total = len(text) if text is not None else None
         for i, anchor in enumerate(value):
             m = ANCHOR.fullmatch(anchor.strip()) if isinstance(anchor, str) else None
             item_at = f"{at}[{i}]"
@@ -512,8 +528,12 @@ class _Translator:
                 self.error("anchor", item_at, f"material {material} cannot be read")
             elif not 1 <= int(m["start"]) <= int(m["end"]) <= total:
                 self.error("anchor", item_at, f"lines {anchor} are outside the paper (1:{total})")
+            elif not any(_WORD.search(line) for line in text[int(m["start"]) - 1 : int(m["end"])]):
+                near = _nearest_text(text, int(m["start"]))
+                hint = f"; the nearest line with text is {near}: {_cut_line(text[near - 1])}" if near else ""
+                self.error("anchor", item_at, f"lines {anchor} hold no text (blank or markup only){hint}")
 
-    def material_lines(self, material: str) -> int | None:
+    def material_lines(self, material: str) -> list[str] | None:
         if material not in self.lines:
             path = next((m.path for m in self.new_materials.values() if m.id == material), None)
             node = self.local.nodes.get(material)
@@ -521,7 +541,7 @@ class _Translator:
                 path = node.props.get("path")
             file = self.ctx.material_root / path if isinstance(path, str) else None
             self.lines[material] = (
-                len(file.read_text(encoding="utf-8").splitlines()) if file is not None and file.is_file() else None
+                file.read_text(encoding="utf-8").splitlines() if file is not None and file.is_file() else None
             )
         return self.lines[material]
 
@@ -543,8 +563,12 @@ class _Translator:
             return
         src_kind, dst_kind = self.kind(src), self.kind(dst)
         if not any(src_kind in srcs and dst_kind in dsts for srcs, dsts in spec.ends):
-            fits = [t for t, s in RELATIONSHIPS.items() if any(src_kind in a and dst_kind in b for a, b in s.ends)]
-            hint = f"; types from {src_kind} to {dst_kind}: {', '.join(fits)}" if fits else ""
+            if rel_type in relation_types(dst_kind, src_kind):  # 写反了方向：说明从另一端怎样写
+                hint = f"; write it the other way, under {self.ref(dst)}: {rel_type}: {{{self.ref(src)}: ...}}"
+            elif fits := relation_types(src_kind, dst_kind):
+                hint = f"; types from {src_kind} to {dst_kind}: {', '.join(fits)}"
+            else:
+                hint = ""
             self.error("endpoint", at, f"{rel_type} goes {endpoints(rel_type)}, not {src_kind} → {dst_kind}{hint}")
             return
         key = EdgeKey(src, rel_type, dst)

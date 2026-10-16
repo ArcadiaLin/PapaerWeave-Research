@@ -20,7 +20,7 @@ def confirmed(writer: Writer, doc: str) -> str:
     """把查重给出的候选都确认为不同（新节点确实是新的时，写者要做的就是这一步）。"""
     checked = writer.commit(doc, dry_run=True)
     lines = [
-        f"  {e['at'].split('create.')[1].rstrip(')')}: {{distinct_from: [{', '.join(c['id'] for c in e['candidates'])}]}}"
+        f"  {e['at'].split('create.')[1].rstrip(')')}: {{distinct_from: [{', '.join(e['candidates'])}]}}"
         for e in checked.get("errors", [])
         if e["rule"] == "dedup"
     ]
@@ -99,7 +99,7 @@ def test_a_new_name_that_exists_is_a_dedup_error(writer: Writer, store: Store) -
     blocked = writer.commit(doc)
     assert blocked["status"] == "blocked" and blocked["errors"][0]["rule"] == "dedup"
     candidates = blocked["errors"][0]["candidates"]
-    assert candidates[0]["id"] == "method_0003" and len(candidates) <= 4  # 名称命中在前，另有至多 3 个近邻
+    assert list(candidates)[0] == "method_0003" and len(candidates) <= 4  # 名称命中在前，另有至多 3 个近邻
     assert writer.commit(confirmed(writer, doc), dry_run=True)["status"] == "ready"
 
 
@@ -135,3 +135,16 @@ def test_an_arxiv_identity_has_no_version(writer: Writer) -> None:
     doc = "graph-doc: v0.2\ncreate:\n  $p:\n    kind: Paper\n    name: Some paper\n    stub: true\n    identities: [arxiv:2211.14730v2]\n"
     blocked = writer.commit(doc, dry_run=True)
     assert blocked["status"] == "blocked" and "arxiv:2211.14730 " in blocked["errors"][0]["msg"]
+
+
+def test_an_anchor_on_a_line_without_text_blocks(writer: Writer) -> None:
+    doc = "graph-doc: v0.2\ncreate:\n  claim_0001:\n    ABOUT:\n      task_0001: {anchor: [61:61]}\n"
+    blocked = writer.commit(doc, dry_run=True)
+    assert blocked["status"] == "blocked"
+    assert any("nearest line with text is 60" in e["msg"] for e in blocked["errors"]), blocked
+
+
+def test_a_reversed_edge_says_how_to_write_it(writer: Writer) -> None:
+    doc = "graph-doc: v0.2\ncreate:\n  claim_0001:\n    SUPPORTS:\n      exp_0001: {anchor: [12:13]}\n"
+    blocked = writer.commit(doc, dry_run=True)
+    assert "write it the other way, under exp_0001: SUPPORTS: {claim_0001: ...}" in blocked["errors"][0]["msg"]

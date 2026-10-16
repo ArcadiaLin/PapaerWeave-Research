@@ -28,8 +28,8 @@ AT = "2026-10-16T12:00:00+00:00"
 MATERIAL = "papers/2205.13504/paper.md"
 PAPER_TEXT = "".join(
     ["# Are Transformers Effective\n", "## Abstract\n", *[f"abstract line {i}\n" for i in range(3, 10)],
-     "## 5 Experiments\n", "### 5.2 Comparison\n", *[f"comparison line {i}\n" for i in range(12, 61)]]
-)  # 第 2 行起是摘要，第 11 行起是 5.2 节
+     "## 5 Experiments\n", "### 5.2 Comparison\n", *[f"comparison line {i}\n" for i in range(12, 61)], "- •\n"]
+)  # 第 2 行起是摘要，第 11 行起是 5.2 节，第 61 行只有列表符号
 
 SEED = """graph-doc: v0.2
 create:

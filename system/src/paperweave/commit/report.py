@@ -18,10 +18,7 @@ from .submit import Prepared
 
 # 各类阻塞项的改法提示；{ref} 是出问题的节点引用
 FIXES = {
-    "dedup": (
-        "read the candidates (get); if one is the same thing, drop {ref} and write the candidate id wherever {ref} "
-        "was used; if none is, list them in confirm.{ref}.distinct_from"
-    ),
+    "dedup": "one is the same thing: use its id instead of {ref}; none is: confirm: {{{ref}: {{distinct_from: [<ids>]}}}}",
     "name-taken": "the name already belongs to the node shown: use that id instead of a new node, or pick another name",
     "identity-taken": "the identity already belongs to the node shown: use that id instead of a new node",
     "exp-taken": "this experiment is already recorded: change the existing record (set) instead of creating it again",
@@ -50,9 +47,27 @@ def plan(prepared: Prepared, reader: Reader) -> dict[str, Any]:
     warnings = [p for p in prepared.problems if p.severity == "warning"]
     described = _describe_candidates(errors + warnings, reader)
     if errors:
-        out["errors"] = [_problem(p, described) for p in errors]
+        out["errors"] = _grouped([_problem(p, described) for p in errors])
     if warnings:
-        out["warnings"] = [_problem(p, described) for p in warnings]
+        out["warnings"] = _grouped([_problem(p, described) for p in warnings])
+    return out
+
+
+def _grouped(problems: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """同一条消息（规则、消息与改法都相同，没有候选）只列一次，``at`` 是各处位置的列表。"""
+    out: list[dict[str, Any]] = []
+    first: dict[tuple[str, ...], dict[str, Any]] = {}
+    for p in problems:
+        key = (p["rule"], p["msg"], p.get("fix", ""))
+        if "candidates" in p:
+            out.append(p)
+            continue
+        if key not in first:
+            first[key] = p
+            out.append(p)
+            continue
+        seen = first[key]
+        seen["at"] = [*seen["at"], p["at"]] if isinstance(seen["at"], list) else [seen["at"], p["at"]]
     return out
 
 
@@ -147,15 +162,10 @@ def summarize(changeset: Changeset, ref: dict[str, str]) -> dict[str, Any]:
 
 def _problem(problem: Problem, described: dict[str, dict[str, Any]]) -> dict[str, Any]:
     out: dict[str, Any] = {"rule": problem.rule, "at": problem.at, "msg": problem.msg}
-    if problem.candidates:
-        out["candidates"] = [
-            {
-                "id": c,
-                **described.get(c, {}),
-                **({"channels": list(problem.evidence[c])} if c in problem.evidence else {}),
-            }
-            for c in problem.candidates
-        ]
+    if problem.candidates:  # 一个候选一行：id → kind、名称、描述开头与命中的通道
+        out["candidates"] = {
+            c: _one_line(described.get(c, {}), problem.evidence.get(c, ())) for c in problem.candidates
+        }
     if problem.severity == "error" and problem.rule in FIXES:
         parts = problem.at.split(".")
         node = parts[1] if len(parts) > 1 and parts[0] in ("create", "set", "delete", "confirm") else parts[0]
@@ -180,9 +190,19 @@ def _describe_candidates(problems: list[Problem], reader: Reader) -> dict[str, d
             info["stub"] = True
         description = node.props.get("description")
         if isinstance(description, str):
-            info["description"] = description if len(description) <= 200 else description[:200].rstrip() + " …"
+            info["description"] = description
         described[node_id] = info
     return described
+
+
+def _one_line(info: dict[str, Any], channels: tuple[str, ...] | list[str]) -> str:
+    text = " ".join(str(info.get(k, "")) for k in ("kind", "name") if info.get(k))
+    if info.get("stub"):
+        text += " (stub)"
+    description = " ".join(str(info.get("description", "")).split())
+    if description:
+        text += ": " + (description if len(description) <= 100 else description[:100].rstrip() + " …")
+    return f"{text} [{', '.join(channels)}]" if channels else text
 
 
 def _ref_of(prepared: Prepared) -> dict[str, str]:

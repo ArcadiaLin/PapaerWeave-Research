@@ -31,7 +31,12 @@ KIND_SPECS: dict[str, Kind] = {
     "Paper": Kind("Entity", "paper", "a paper's bibliographic object", ("year", "material"), stub=True),
     "Dataset": Kind("Entity", "dataset", "data itself, or a named benchmark suite (members via PART_OF)", stub=True),
     "Code": Kind("Entity", "code", "a code repository", stub=True),
-    "Model": Kind("Entity", "model", "weights, a checkpoint, or a model called through an API", stub=True),
+    "Model": Kind(
+        "Entity",
+        "model",
+        "released weights or a checkpoint, or a model called through an API; a method a paper trains and compares is a Method",
+        stub=True,
+    ),
     "Tool": Kind("Entity", "tool", "software, a library or a service that is not a model", stub=True),
     "Method": Kind("Concept", "method", "a method or method family (variants and configurations are not nodes)", stub=True),
     "Task": Kind("Concept", "task", "a research task", stub=True),
@@ -211,6 +216,15 @@ def kind_of(labels: frozenset[str] | set[str]) -> str | None:
 def labels_of(kind: str) -> frozenset[str]:
     """一个 kind 的节点在库中的全部 Label。"""
     return frozenset({FAMILY[kind], kind, SEARCHABLE})
+
+
+def relation_types(src_kind: str | None, dst_kind: str | None) -> list[str]:
+    """从 ``src_kind`` 到 ``dst_kind`` 可以写的关系类型（含同 kind 的要求），按登记表的顺序。"""
+    return [
+        t
+        for t, spec in RELATIONSHIPS.items()
+        if any(src_kind in s and dst_kind in d for s, d in spec.ends) and not (spec.same_kind and src_kind != dst_kind)
+    ]
 
 
 def endpoints(rel_type: str) -> str:
