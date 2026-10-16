@@ -91,19 +91,25 @@ tools:
       A graph-doc has up to four sections:
         graph-doc: v0.2
         create:                              # new nodes, and new edges from any node
-          $dlinear:                          # $name: a new node; the reply maps it to an id
+          $paper:                            # $name: a new node; the reply maps it to an id
+            kind: Paper
+            name: Are Transformers Effective for Time Series Forecasting?
+            identities: [arxiv:2205.13504]   # without the version
+            year: 2023
+            material: papers/2205.13504v3/paper.md   # the Markdown you read; anchors are its line numbers
+          $dlinear:
             kind: Method
             name: DLinear
             description: |
               A one-layer linear model on decomposed trend and remainder ...
           $exp:
             kind: Experiment
-            paper: paper_0003
-            anchor: [120:135, 141:150]       # paper lines, read with read_evidence
+            paper: $paper
+            anchor: [120:135, 141:150]       # lines of the paper's material
             figures: [S4.T2]
             description: |
               Long-horizon forecasting on six benchmarks against Transformer baselines ...
-            EVALUATES:                       # UPPERCASE keys are relations: {target: properties}
+            EVALUATES:                       # UPPERCASE keys are relations: {target: properties}; methods, not Models
               $dlinear: {role: target, result: own}
               method_0004: {role: baseline, result: cited}
             USES:

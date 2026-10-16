@@ -23,6 +23,7 @@ FIXES = {
     "identity-taken": "the identity already belongs to the node shown: use that id instead of a new node",
     "exp-taken": "this experiment is already recorded: change the existing record (set) instead of creating it again",
     "exists": "the edge is already there: leave it out, or move it under set to change its properties",
+    "model": "write the edge to the Method instead; keep the Model only if its weights are released (give identities: [url:...])",
     "revision": (
         "re-read the paper lines (read_evidence); if the record misstates the paper, add confirm.{ref}.revise with "
         "reason and anchor (the supporting line ranges); otherwise leave the record unchanged"

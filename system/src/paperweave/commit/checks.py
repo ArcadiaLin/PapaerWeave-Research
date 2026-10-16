@@ -89,13 +89,14 @@ def _check_edge(state: GraphState, key: EdgeKey, ref: Callable[[str], str]) -> l
     for name in sorted(spec.required - props.keys()):
         problems.append(Problem("required-field", f"{at}.{name}", f"{key.type} requires {name}"))
     if key.type == "EVALUATES" and dst == "Model" and not state.nodes[key.dst].props.get("identities"):
+        # 排行榜行、related_artifacts 都按 EVALUATES → Method 汇总；论文训练并比较的模型就是方法本身
         methods = sorted(k.dst for k in state.edges if k.src == key.dst and k.type == "IMPLEMENTS")
         instead = f" ({', '.join(ref(m) for m in methods)})" if methods else ""
         msg = (
-            f"{ref(key.dst)} is a Model without identities, which is usually the method itself: evaluate the "
-            f"Method{instead}; a Model is released weights or an API model with a url"
+            f"{ref(key.dst)} is a Model without identities: an experiment evaluates the Method{instead}; a Model is "
+            "released weights or an API model, with its url under identities"
         )
-        problems.append(Problem("relationship", at, msg, "warning"))
+        problems.append(Problem("model", at, msg))
     if key.type == "RELATES_TO":
         if fits := [t for t in relation_types(src, dst) if t != "RELATES_TO"]:
             msg = f"a {src} → {dst} relation may be {' or '.join(fits)}; use RELATES_TO only when none of them fits"

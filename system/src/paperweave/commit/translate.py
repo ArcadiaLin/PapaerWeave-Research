@@ -60,6 +60,13 @@ from .reader import Reader
 from .review import Deduper
 
 _MISSING = object()
+_WEB = re.compile(r"(?:https?://)?(?:www\.)?[\w-]+(?:\.[\w-]+)+/", re.I)  # 像网址：域名后跟路径
+
+
+def _as_url(text: str) -> str:
+    return text if text.lower().startswith(("http://", "https://")) else f"https://{text}"
+
+
 _WORD = re.compile(r"[^\W_]{2,}")  # 一行里至少有一个词：空行、列表符号、分隔线不算
 
 
@@ -419,7 +426,9 @@ class _Translator:
         for i, identity in enumerate(value):
             namespace, sep, rest = identity.partition(":")
             if not sep or not rest or namespace not in NAMESPACES:
-                self.error("identity", f"{at}[{i}]", f"{identity!r}: the namespace is one of {', '.join(NAMESPACES)}")
+                hint = f"; a web address is url:{_as_url(identity)}" if _WEB.match(identity) else ""
+                msg = f"{identity!r}: the namespace is one of {', '.join(NAMESPACES)}{hint}"
+                self.error("identity", f"{at}[{i}]", msg)
             elif namespace == "arxiv" and (bare := _ARXIV_VERSION.fullmatch(rest)):
                 msg = f"write the arXiv id without its version: arxiv:{bare[1]} (the version is the paper's material)"
                 self.error("identity", f"{at}[{i}]", msg)

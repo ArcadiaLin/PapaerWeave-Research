@@ -150,7 +150,7 @@ def test_a_reversed_edge_says_how_to_write_it(writer: Writer) -> None:
     assert "write it the other way, under exp_0001: SUPPORTS: {claim_0001: ...}" in blocked["errors"][0]["msg"]
 
 
-def test_evaluating_a_model_without_identities_warns(writer: Writer) -> None:
+def test_evaluating_a_model_without_identities_blocks(writer: Writer) -> None:
     doc = """graph-doc: v0.2
 create:
   $m:
@@ -165,4 +165,5 @@ confirm:
   $m: {distinct_from: []}
 """
     checked = writer.commit(doc, dry_run=True)
-    assert any("evaluate the Method (method_0003)" in w["msg"] for w in checked.get("warnings", [])), checked
+    assert checked["status"] == "blocked"
+    assert any(e["rule"] == "model" and "evaluates the Method (method_0003)" in e["msg"] for e in checked["errors"]), checked
