@@ -69,6 +69,8 @@ lines holding the numbers, <paper id>::<start>:<end>.
 
 ## Papers covered
 
+Every paper in the store with experiments on this dataset: the tables taken, or why it is left out.
+
 | paper | tables | complete |
 | --- | --- | --- |
 | <paper id> <short name> | Table 3 (<paper id>::<start>:<end>) | yes |

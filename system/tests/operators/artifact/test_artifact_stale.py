@@ -75,13 +75,16 @@ def test_revisions_of_used_records_mark_artifacts(store: Store, writers: dict[st
 def test_staleness_follows_inputs(store: Store, writers: dict[str, Writer], tmp_path: Path) -> None:
     board = "art_0001"
     later = generate(writers["bob"], "row", f"DLinear reaches 0.375 [{ROW}].")
-    assert stale(store, [board, later]) == {board: [], later: []}
+    before = stale(store, [board, later])
+    # 表引用的是论文行；表中论文里使用该数据集的实验是它的隐含输入，上一个测试修订了 exp_0001
+    assert [(r["ref"], r["reason"]) for r in before[board]] == [("exp_0001", "revised")]
+    assert before[later] == [{"ref": ROW, "reason": "stale input"}]
 
     root = tmp_path / "root"  # 改动论文材料：用到它的行范围的产物可能过期
     shutil.copytree(store.material_root, root)
     (root / MATERIAL).write_text("edited\n" * 60, encoding="utf-8")
     edited = stale(dataclasses.replace(store, material_root=root), [board, later])
-    assert {r["reason"] for r in edited[board]} == {"material"} and SOURCE in {r["ref"] for r in edited[board]}
+    assert {r["reason"] for r in edited[board]} == {"material", "revised"} and SOURCE in {r["ref"] for r in edited[board]}
     assert edited[later] == [{"ref": ROW, "reason": "stale input"}]
 
     document = readonly(store, [board])[board]["_document"]

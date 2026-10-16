@@ -14,6 +14,10 @@
 - ``revised``：所用的有据层记录（Content）在产物当前版本形成之后被修订过（改了内容或出边），另带 ``commit`` 指出
   最早的那次提交，可以用 show 查看改了什么。实体与概念的改动（如补别名、描述）不算，否则提示会被噪声淹没；
 - ``stale input``：所用的 Artifact 本身可能过期。
+- ``uncovered``（只对 Leaderboard）：库中有使用该表数据集的 Experiment，它的论文在表中任何地方都没有出现，另带
+  ``paper``。有意不收的论文写进 “Papers covered” 并说明原因，提示即消失：不收也是一个留下记录的决定。表格引用的是
+  论文行而不是实验，所以 Leaderboard 的输入另外推出：表中论文里使用该数据集的 Experiment 也按 ``revised`` 检查
+  （它们的评测关系改了，表中的行可能随之要改）。
 """
 
 from __future__ import annotations
@@ -106,13 +110,39 @@ def stale(store: Store, ids: Iterable[str]) -> dict[str, list[dict[str, str]]]:
                 if visit(ref.head):
                     reasons.append({"ref": ref.text, "reason": "stale input"})
         used = [r.head for r in refs if r.kind != "source" and kinds.get(r.head) not in (None, ARTIFACT)]
+        uncovered: list[dict[str, str]] = []
+        if info["op"] == "Leaderboard":
+            covered = sorted({h for h in heads if kinds.get(h) == "Paper"})
+            inputs, uncovered = _leaderboard_inputs(store, header_of(text).get("dataset"), covered)
+            used += [e for e in inputs if e not in used]
         reasons += [
             {"ref": head, "reason": "revised", "commit": commit} for head, commit in revised(store, art_id, used)
         ]
+        reasons += uncovered
         memo[art_id] = reasons
         return reasons
 
     return {art_id: visit(art_id) for art_id in dict.fromkeys(ids)}
+
+
+def _leaderboard_inputs(store: Store, dataset: Any, covered: list[str]) -> tuple[list[str], list[dict[str, str]]]:
+    """Leaderboard 的隐含输入（表中论文里使用该数据集的 Experiment），以及来自表外论文的这类 Experiment
+    （``uncovered``，每篇论文列一次，带它的实验）。"""
+    dataset_id = str(dataset).split()[0] if dataset else ""
+    if not dataset_id:
+        return [], []
+    rows = store.query(
+        """MATCH (e:Experiment)-[:USES]->(:Dataset {id: $dataset}) MATCH (e)-[:FROM]->(p:Paper)
+           RETURN p.id AS paper, collect(e.id) AS experiments ORDER BY paper""",
+        dataset=dataset_id,
+    )
+    inputs = [e for r in rows if r["paper"] in covered for e in sorted(r["experiments"])]
+    uncovered = [
+        {"ref": r["paper"], "reason": "uncovered", "experiments": ", ".join(sorted(r["experiments"]))}
+        for r in rows
+        if r["paper"] not in covered
+    ]
+    return inputs, uncovered
 
 
 def pinned(store: Store, art_id: str) -> dict[str, str]:

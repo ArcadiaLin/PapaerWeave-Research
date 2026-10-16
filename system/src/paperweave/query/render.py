@@ -57,6 +57,18 @@ def _list(head: str, value: list, depth: int, path: tuple, out: list[str], names
     if not value:
         out.append(_with(head + " []", comment))
         return
+    if any(isinstance(v, Mapping) for v in value):  # 映射的列表：每项写成 "- " 开头的块
+        out.append(_with(head, comment))
+        for n, v in enumerate(value):
+            if not isinstance(v, Mapping):
+                out.append(f"{pad}{INDENT}- {_scalar(v)}")
+                continue
+            block: list[str] = []
+            _mapping(v, depth + 2, (*path, n), block, names, notes)
+            first = block[0][len(INDENT) * (depth + 2) :]
+            out.append(f"{pad}{INDENT}- {first}")
+            out.extend(block[1:])
+        return
     items = [_scalar(v) for v in value]
     flow = f"[{', '.join(items)}]"
     labelled = [names.get(v) for v in value if isinstance(v, str) and v in names]
