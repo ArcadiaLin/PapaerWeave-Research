@@ -479,7 +479,6 @@ def _checked(items: list[Item], others: list[tuple[Item, dict[str, Any]]]) -> di
             entry["warnings"] = item.grouped_warnings()
         entries.append(entry)
     steps = "Nothing was written. To write, call commit again with the same files and message, without dry_run"
-    steps += " and confirm: true"
     if others:
         steps += ", plus reason: why you changed lines written by others"
     return {"status": "checked", "items": entries, "next": steps + "."}
