@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from graph_doc import SECTIONS
+from graph_doc import SECTIONS, DocError, load
 
 from .store.store import ContractError
 
@@ -104,16 +104,21 @@ _TOKEN = re.compile(r"\[(\d+)\]|([^.\[\]]+)")
 
 
 def yaml_syntax(draft: Draft) -> dict[str, str] | None:
-    """YAML 语法错误，位置是 ``<文件>:<行号>``；没有错误时为 ``None``。"""
+    """YAML 语法错误（按 graph-doc 的加载规则，含重复的键），位置是 ``<文件>:<行号>``；没有错误时为 ``None``。"""
     try:
-        yaml.compose(draft.text, Loader=yaml.SafeLoader)
-    except yaml.MarkedYAMLError as exc:
-        mark = exc.problem_mark or exc.context_mark
-        where = f"{draft.path}:{mark.line + 1}" if mark else draft.path
-        return {"rule": "format", "at": where, "msg": f"not YAML: {exc.problem or exc}"}
-    except yaml.YAMLError as exc:
-        return {"rule": "format", "at": draft.path, "msg": f"not YAML: {exc}"}
+        load(draft.text)
+    except DocError as exc:
+        text = str(exc.problems[0]).removeprefix("invalid YAML: ")
+        line = _LINE.match(text)
+        where = f"{draft.path}:{line[1]}" if line else draft.path
+        msg = text[line.end() :] if line else text
+        if msg.startswith("duplicate key"):
+            msg += "; each key appears once in a mapping (a $name is defined once under create)"
+        return {"rule": "format", "at": where, "msg": f"not YAML: {msg}"}
     return None
+
+
+_LINE = re.compile(r"line (\d+): ")
 
 
 def yaml_locator(draft: Draft) -> Callable[[str], str]:

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -58,6 +59,7 @@ from .reader import Reader
 from .review import Deduper
 
 _MISSING = object()
+_ARXIV_VERSION = re.compile(r"(\d{4}\.\d{4,5})v\d+")
 
 
 @dataclass(frozen=True, slots=True)
@@ -403,6 +405,9 @@ class _Translator:
             namespace, sep, rest = identity.partition(":")
             if not sep or not rest or namespace not in NAMESPACES:
                 self.error("identity", f"{at}[{i}]", f"{identity!r}: the namespace is one of {', '.join(NAMESPACES)}")
+            elif namespace == "arxiv" and (bare := _ARXIV_VERSION.fullmatch(rest)):
+                msg = f"write the arXiv id without its version: arxiv:{bare[1]} (the version is the paper's material)"
+                self.error("identity", f"{at}[{i}]", msg)
             elif NAMESPACES[namespace]:
                 others = self.ctx.reader.find("identities", identity, label="Entity") - {node_id} - self.deleted()
                 if others:
@@ -490,7 +495,12 @@ class _Translator:
             return  # 没有论文：由必填检查或边的 paper 规则报告
         material = self.material(paper)
         if material is None:
-            self.error("anchor", at, f"{self.ref(paper)} has no material to anchor in (a stub paper has no text)")
+            self.error(
+                "anchor",
+                at,
+                f"{self.ref(paper)} has no material to anchor in: give the Paper material: <path of the paper's Markdown "
+                "file, as you read it, e.g. papers/2211.14730v2/paper.md> (a stub paper has no text)",
+            )
             return
         total = self.material_lines(material)
         for i, anchor in enumerate(value):

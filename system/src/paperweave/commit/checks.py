@@ -24,11 +24,6 @@ from ..model.schema import (
 from .problems import Problem
 
 # RELATES_TO 的端点恰好符合某个具名类型时提示（data_model.md：写法 / RELATES_TO）
-_NAMED_FOR = {
-    rel_type: spec.ends for rel_type, spec in RELATIONSHIPS.items() if rel_type != "RELATES_TO"
-}
-
-
 def touched(changeset: Changeset) -> set[str]:
     """本次新建、修改的节点，以及增删改过关系的端点；不含删除的节点。"""
     deleted = {n.id for n in changeset.nodes if n.op == "delete"}
@@ -91,15 +86,23 @@ def _check_edge(state: GraphState, key: EdgeKey, ref: Callable[[str], str]) -> l
     for name in sorted(spec.required - props.keys()):
         problems.append(Problem("required-field", f"{at}.{name}", f"{key.type} requires {name}"))
     if key.type == "RELATES_TO":
-        fits = [t for t, ends in _NAMED_FOR.items() if any(src in s and dst in d for s, d in ends)]
-        if fits:
+        if fits := [t for t in _fits(src, dst) if t != "RELATES_TO"]:
             msg = f"a {src} → {dst} relation may be {' or '.join(fits)}; use RELATES_TO only when none of them fits"
             problems.append(Problem("relationship", at, msg, "warning"))
     return problems
 
 
+def _fits(src: str | None, dst: str | None) -> list[str]:
+    """从 src 到 dst 可以用的关系类型（含同 kind 的要求）。"""
+    return [
+        t
+        for t, spec in RELATIONSHIPS.items()
+        if any(src in s and dst in d for s, d in spec.ends) and not (spec.same_kind and src != dst)
+    ]
+
+
 def _alternatives(src: str | None, dst: str | None) -> str:
-    fits = [t for t, spec in RELATIONSHIPS.items() if any(src in s and dst in d for s, d in spec.ends)]
+    fits = _fits(src, dst)
     return f"; types from {src} to {dst}: {', '.join(fits)}" if fits else ""
 
 

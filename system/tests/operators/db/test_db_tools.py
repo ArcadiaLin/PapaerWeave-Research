@@ -129,3 +129,9 @@ def test_edges_on_records_need_anchors(writer: Writer) -> None:
     blocked = writer.commit(doc, dry_run=True)
     assert blocked["status"] == "blocked" and blocked["errors"][0]["rule"] == "revision"
     assert blocked["errors"][0]["at"].startswith("doc.yaml:")
+
+
+def test_an_arxiv_identity_has_no_version(writer: Writer) -> None:
+    doc = "graph-doc: v0.2\ncreate:\n  $p:\n    kind: Paper\n    name: Some paper\n    stub: true\n    identities: [arxiv:2211.14730v2]\n"
+    blocked = writer.commit(doc, dry_run=True)
+    assert blocked["status"] == "blocked" and "arxiv:2211.14730 " in blocked["errors"][0]["msg"]

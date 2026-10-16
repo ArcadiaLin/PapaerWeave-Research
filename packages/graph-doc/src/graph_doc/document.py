@@ -102,6 +102,10 @@ def load(text: str) -> Any:
     """按本模块的 YAML 规则（1.2 核心标量、禁止重复键）加载文本，不做 graph-doc 检查。"""
     try:
         return yaml.load(text, Loader=_Loader)  # _Loader 继承 SafeLoader，不构造任意对象
+    except yaml.MarkedYAMLError as exc:
+        mark = exc.problem_mark or exc.context_mark
+        where = f"line {mark.line + 1}: " if mark is not None else ""
+        raise DocError([f"invalid YAML: {where}{exc.problem or exc}"]) from exc
     except yaml.YAMLError as exc:
         raise DocError([f"invalid YAML: {exc}"]) from exc
 
