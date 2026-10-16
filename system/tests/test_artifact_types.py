@@ -208,8 +208,8 @@ def test_leaderboard_notes() -> None:
         (14, "material_0bb2"),
         (15, "material_0bb2"),
     ]
-    [cell] = notes["cells_with_several_values"]
-    assert cell["cell"] == "method_0001 · 24 · MSE" and cell["kind"] == "different papers"
+    [(cell, values)] = notes["cells_with_several_values"].items()
+    assert cell == "method_0001 · 24 · MSE" and values.startswith("different papers: ")
 
 
 def test_contract_only_types() -> None:

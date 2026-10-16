@@ -265,8 +265,9 @@ def _within(written: str, value: float, numbers: list[float]) -> bool:
     return any(abs(value - n) <= tolerance for n in numbers)
 
 
-def _several(rows: list[Any], metrics: list[str]) -> list[dict[str, Any]]:
-    """同一格（方法、变体、预测长度、指标）上的几个值。"""
+def _several(rows: list[Any], metrics: list[str]) -> dict[str, str]:
+    """同一格（方法、变体、预测长度、指标）上的几个值，一格一行：``格 → "<different papers | same paper>: 值 (论文,
+    L=lookback, line 行号); …"``。表大时这一项最长，所以不展开成嵌套的映射。"""
     cells: dict[tuple[str, str, str], list[Any]] = {}
     for row in rows:
         key = (
@@ -275,7 +276,7 @@ def _several(rows: list[Any], metrics: list[str]) -> list[dict[str, Any]]:
             row.cells.get("pred_len", ""),
         )
         cells.setdefault(key, []).append(row)
-    out = []
+    out: dict[str, str] = {}
     for (method, variant, horizon), group in cells.items():
         for metric in metrics:
             values = [
@@ -295,7 +296,8 @@ def _several(rows: list[Any], metrics: list[str]) -> list[dict[str, Any]]:
                 by_paper.setdefault(v["paper"], set()).add(_number(v["value"]))
             same = any(len(vs) > 1 for vs in by_paper.values())
             cell = " · ".join(p for p in (method, variant, horizon, metric) if p)
-            out.append({"cell": cell, "kind": "same paper" if same else "different papers", "values": values})
+            listed = "; ".join(f"{v['value']} ({v['paper']}, L={v['lookback']}, line {v['at']})" for v in values)
+            out[cell] = f"{'same paper' if same else 'different papers'}: {listed}"
     return out
 
 
