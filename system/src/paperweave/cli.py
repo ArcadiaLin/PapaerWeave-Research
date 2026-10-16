@@ -26,7 +26,7 @@ from graph_doc import GraphDocError, load
 from .draft import Workdir
 from .operators import Context
 from .operators.base import rejected
-from .store import Store, UnversionedDatabaseError, check_versioned, open_graph
+from .store import Store, UnversionedDatabaseError, check_versioned, open_graph, setup_database
 from .tools import call
 
 
@@ -65,6 +65,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     store = Store(driver, graph, DATA, database=NEO4J_DB, embed=None if args.no_embed else embed)
     try:
         check_versioned(driver, database=NEO4J_DB)
+        setup_database(graph, driver, database=NEO4J_DB)
         try:
             request, root = request_of(text, path, args)
         except GraphDocError as exc:

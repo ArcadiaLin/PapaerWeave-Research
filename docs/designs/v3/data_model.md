@@ -1,6 +1,6 @@
 # 数据模型 V3
 
-> **状态：** 草案（2026-10-16），待用户审阅；未实现。V3 依据冒烟与先导运行（smoke-p3-1、pilot3-multi、pilot3-single）中写者与读者的实际用法修订 [Graph Model V2](../v2/graph_model_v2.md)，基础设计不变：图存轻度提炼、原文锚点与关联，不转录原文；有据层与解释层分开；产物是有版本的文档。本文只覆盖数据模型，工具见 [工具](./tools.md)；其余 V2 文档暂不迁移，与本文冲突处以本文为准。
+> **状态：** 已实现（2026-10-16 夜，`system/`，提交 `01a2c44` 起；实现中的决定见文末），待用户审阅。V3 依据冒烟与先导运行（smoke-p3-1、pilot3-multi、pilot3-single）中写者与读者的实际用法修订 [Graph Model V2](../v2/graph_model_v2.md)，基础设计不变：图存轻度提炼、原文锚点与关联，不转录原文；有据层与解释层分开；产物是有版本的文档。本文只覆盖数据模型，工具见 [工具](./tools.md)；其余 V2 文档暂不迁移，与本文冲突处以本文为准。
 >
 > 标 **〔待确认〕** 的是本稿提出、尚未与用户确认的改动。
 
@@ -261,3 +261,21 @@
 - `SUPPORTED_BY`（66）：并入 `SUPPORTS`，方向改为"依据 → 主张"
 - `EVALUATED_ON`（0）：Benchmark 并入 Dataset，改用 `USES`
 - `DERIVED_FROM`（0）、`HAS_PART`（4）、`ADDRESSES`（2）、`OVERLAPS_WITH`（0）：没有机制用到，需要时用 `RELATES_TO`
+
+## 实现中的决定（2026-10-16 夜）
+
+实现时自行决定、尚未与用户确认的细节，均标〔待确认〕。登记表在 `system/src/paperweave/model/schema.py`（`KIND_SPECS`、`RELATIONSHIPS`），工具说明、空白模板与错误提示都由它生成。
+
+- 〔待确认〕**公共 Label `Searchable`**：全部证据节点与产物都带，全文与向量各一个索引覆盖全部（替代按类别分通道）。
+- `extra` 存为键排序的 JSON 字符串；`set` 中按键合并，键写 `null` 删除。边上的 `extra` 相同。
+- Content 的 `paper` 只存成 `FROM` 边（带 `material_ref`）；`set` 改 `paper` 即删旧 `FROM`、建新 `FROM`，并按新论文重查锚点。`FROM` 不能直接写或删。
+- `anchor` 存成 `["120:135", …]`；章节在读取时按 Markdown 标题现算，不存。
+- 边的锚点论文：起点是 Content 取它的 `paper`，起点是 Paper 取自身，其他起点在边上写 `paper`。带锚点的边记 `material_ref`。
+- 所有新建的节点与边都记 `formed_by`、`formed_at`。
+- 〔待确认〕**动词与现状不符时整批不写**：`create` 写到已存在的边，属性不同报 `exists`（给出现值），相同视为无改动；`set` 写到不存在的节点或边报错并提示改用 `create`。
+- 〔待确认〕**补全桩自动去掉 `stub`**：`set` 给桩写了 `description` 且没写 `stub` 时，系统清除它。
+- 〔待确认〕**有据层补边只要锚点**：给已有 Content 加出边时，新边自带 `anchor`，或在 `confirm.<id>.revise.anchor` 中给出；不要求理由。改字段、改或删出边要 `reason` 与 `anchor`；删节点要 `reason`。Entity、Concept 的改动不要求理由。
+- 端点检查在翻译阶段与字段错误一起报出，并列出这对端点之间可用的关系类型。`RELATES_TO` 的端点恰好符合某个具名类型时给提示（不阻塞）。
+- Content 的查重只有 Experiment 的 `<论文 id>::<主表图>`。
+- 写者身份只来自服务端登录（`PAPERWEAVE_USER`），graph-doc 中没有 `by`；没有登录身份时拒绝写入。
+- 〔待确认〕**新 Entity / Concept 的查重**：名称与别名（不分大小写）、外部标识的精确命中全部列出，另加全文与向量 RRF 的前 3 个近邻，没有阈值。库里有同 kind 节点时，每个新节点都要判断一次（改用已有 id，或 `confirm.$x.distinct_from`）。这一负担是否可承受，在 RPC 实验中观察。

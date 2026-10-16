@@ -14,6 +14,11 @@ from .base import ArtifactType, cited_paragraphs
 
 class Generate(ArtifactType):
     name = "Generate"
+    template = (
+        "---\ntype: Generate\ntitle: <short title>\nabs: <one sentence on what this is>\n---\n"
+        "<Your text. Cite what each statement rests on in brackets: a node [exp_0003], paper lines "
+        "[paper_0001::120:135], or an artifact row [art_0002#<row key>].>\n"
+    )
 
     def stats(self, doc: Parsed) -> dict[str, Any]:
         found = cited_paragraphs(doc)

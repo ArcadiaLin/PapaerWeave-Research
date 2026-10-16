@@ -41,7 +41,7 @@ from ..operators import Context
 from ..operators.base import Operator, params_of, rejected
 from ..operators.db.read_evidence import read_evidence
 from ..query.overview import overview
-from ..store import Store, UnversionedDatabaseError, check_versioned, open_graph
+from ..store import Store, UnversionedDatabaseError, check_versioned, open_graph, setup_database
 from ..tools import TOOLS
 from .spec import Spec, load
 
@@ -152,6 +152,7 @@ def main() -> int:
         driver.close()
         return 2
     graph = open_graph(driver, database=NEO4J_DB, file_root=DATA)
+    setup_database(graph, driver, database=NEO4J_DB)  # 空库也有 main 分支与索引：读取工具不必区分“没有索引”与“没有结果”
     store = Store(driver, graph, DATA, database=NEO4J_DB, embed=None if no_embed else embed)
     def sync() -> int:
         return sync_derived(driver, NEO4J_DB, None if no_embed else embed)

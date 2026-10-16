@@ -6,7 +6,8 @@
   （:mod:`paperweave.artifact.checkout`）。
 - ``ids`` 中的证据节点：写成一份 graph-doc（``set`` 下是 ``get`` 给出的节点，带注释），改其中的值即为修改；
   加边写进 ``create``，删边写进 ``delete``。
-- ``new`` 中的 kind：一份空白模板（:mod:`paperweave.model.templates`），每个 kind 一个 ``$`` 节点。
+- ``new`` 中的 kind：一份空白模板（:mod:`paperweave.model.templates`），每个 kind 一个 ``$`` 节点；产物类型给出
+  该类型的空白文档（类型契约中的 ``template``）。
 
 只写写者的工作目录，不改动库。
 """
@@ -18,6 +19,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from ...artifact.checkout import fetch
+from ...artifact.types import TYPES
 from ...model.schema import ARTIFACT, ARTIFACT_TYPES, KIND_SPECS
 from ...model.templates import templates
 from ...query.read import get_view
@@ -64,9 +66,13 @@ def execute(ctx: Context, request: Mapping[str, Any]) -> dict[str, Any]:
         arts_new = [k for k in unknown if k in ARTIFACT_TYPES]
         if bad := [k for k in unknown if k not in ARTIFACT_TYPES]:
             raise ContractError([{"at": "new", "msg": f"unknown kind {', '.join(bad)}; one of {', '.join(KIND_SPECS)}"}])
-        if arts_new:
-            for k in arts_new:
-                missing.append({"id": k, "msg": f"no blank {k} template; write the document as its skill describes, then commit it"})
+        for k in arts_new:
+            if not TYPES[k].template:
+                missing.append({"id": k, "msg": f"no blank {k} template; write the document with a type: {k} header"})
+                continue
+            path = f"artifacts/new-{k.lower()}-{stamp}.md"
+            _write(ctx, path, TYPES[k].template)
+            files.append({"kind": "artifact", "path": path, "template": k})
         kinds_new = [k for k in new if k in KIND_SPECS]
         if kinds_new:
             path = f"{EDITS}/new-{'-'.join(k.lower() for k in kinds_new)}-{stamp}.yaml"

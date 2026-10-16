@@ -97,6 +97,7 @@ class ArtifactType:
     name: str = ""
     nested: bool = False  # type、id、base 写在 metadata 下（Skill）
     identity_fields: tuple[str, ...] = ()  # 算身份键的头部字段；没有身份键的类型为空
+    template: str = ""  # checkout new 给出的空白文档；空时不给模板
 
     @cached_property
     def version(self) -> str:

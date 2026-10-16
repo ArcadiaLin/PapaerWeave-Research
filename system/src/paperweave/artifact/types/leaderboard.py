@@ -48,6 +48,33 @@ _SOURCE = re.compile(r"[a-z]+_[0-9a-f]{4,}::(?:[^:()\[\]|]+::)?\d+(?:\s*[:–-]\
 _SPLIT = re.compile(r"\s*;\s*|\s*,\s+(?=[a-z]+_[0-9a-f]{4,}::)")
 
 
+TEMPLATE = """---
+type: Leaderboard
+title: <dataset> <setting> <task>
+abs: <one sentence on what the table holds>
+task: <task id>                   # <task name>
+dataset: <dataset id>             # <dataset name>
+setting: {variate: multivariate}
+metrics: {MSE: lower, MAE: lower}
+---
+## Results
+
+One row per (method, variant, paper, lookback, pred_len). method and paper cells start with the id; role is
+target or baseline; origin is run (the paper ran it) or cited (copied from another paper); source is the paper
+lines holding the numbers, <paper id>::<start>:<end>.
+
+| method | variant | paper | role | origin | lookback | pred_len | MSE | MAE | source |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| <method id> <name> |  | <paper id> <short name> | target | run | 336 | 96 | 0.370 | 0.400 | <paper id>::<start>:<end> |
+
+## Papers covered
+
+| paper | tables | complete |
+| --- | --- | --- |
+| <paper id> <short name> | Table 3 (<paper id>::<start>:<end>) | yes |
+"""
+
+
 def row_key(cells: Mapping[str, str]) -> str:
     """结果表的行键：各字段以 ``+`` 相连，方法与论文取开头的 id，空字段留空。"""
     parts = [leading_id(cells.get(c, "")) if c in ID_COLUMNS else normalize(cells.get(c, "")) for c in ROW_KEY]
@@ -72,6 +99,7 @@ def _papers(table: Table) -> bool:
 
 class Leaderboard(ArtifactType):
     name = "Leaderboard"
+    template = TEMPLATE
     identity_fields = ("task", "dataset", "setting")
 
     def key(self, header: Mapping[str, Any]) -> str | None:
