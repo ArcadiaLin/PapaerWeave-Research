@@ -4,7 +4,8 @@
 stderr 与 ``PAPERWEAVE_MCP_LOG``）。规则都是确定的，修不了时原样交给算子，由算子照常报错：
 
 - 声明为对象或数组、收到字符串：去掉 Markdown 代码块围栏后按 JSON 解析；解析失败时补齐末尾缺少的引号、``]``
-  与 ``}`` 再试一次（模型输出长参数时常少写最后的括号）；解析结果的类型须是声明的类型；
+  与 ``}`` 再试一次（模型输出长参数时常少写最后的括号）；仍不成时按 YAML 行内写法解析（``[{rel: USES}]``，键不加
+  引号；与 graph-doc 同一套 1.2 规则）；解析结果的类型须是声明的类型；
 - 声明为 integer、number 或 boolean、收到字符串：按字面转换（``"10"``、``"0.5"``、``"true"``）；
 - 枚举：大小写不同的字符串换成枚举中的写法；T/F/U 判断收到 ``true`` / ``false`` 时换成 ``T`` / ``F``；
 - ``anyOf``：按值的类型进入相应的分支；字符串以 ``[`` 或 ``{`` 开头且某个分支是数组或对象时按 JSON 解析；
@@ -19,6 +20,8 @@ import json
 import re
 from collections.abc import Mapping
 from typing import Any
+
+from graph_doc import DocError, load
 
 _FENCE = re.compile(r"```[A-Za-z]*\s*\n?(?P<body>.*?)\n?```", re.S)
 _CLOSE = {"[": "]", "{": "}"}
@@ -94,6 +97,12 @@ def _json(text: str, wanted: set[str]) -> Any:
             continue
         if ("object" in wanted and isinstance(parsed, dict)) or ("array" in wanted and isinstance(parsed, list)):
             return parsed
+    try:
+        parsed = load(body)  # YAML 行内写法：键不加引号
+    except DocError:
+        return None
+    if ("object" in wanted and isinstance(parsed, dict)) or ("array" in wanted and isinstance(parsed, list)):
+        return parsed
     return None
 
 

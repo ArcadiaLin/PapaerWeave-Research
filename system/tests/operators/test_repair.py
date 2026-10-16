@@ -103,3 +103,9 @@ def test_a_comma_separated_string_becomes_a_list_of_strings() -> None:
     fixed, notes = repair(schema, {"kind": "Task, Issue,Model"})
     assert fixed["kind"] == ["Task", "Issue", "Model"] and notes
     assert repair(schema, {"kind": "Method"})[0]["kind"] == ["Method"]
+
+
+def test_yaml_flow_text_is_parsed_when_json_fails() -> None:
+    schema = {"properties": {"path": {"type": "array", "items": {"type": "object"}}}}
+    fixed, notes = repair(schema, {"path": '[{rel: ["ABOUT", "SUPPORTS"], "dir": "in"}, {rel: "FROM"}]'})
+    assert fixed["path"] == [{"rel": ["ABOUT", "SUPPORTS"], "dir": "in"}, {"rel": "FROM"}] and notes
