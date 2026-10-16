@@ -50,7 +50,9 @@
   - `message` 是提交说明，也是产物的 `update_abstract`；改动他人写的产物行时要 `reason`。
   - 〔待确认〕默认直接写入（V2 的 CheckIn 默认只检查），`dry_run: true` 只检查。
   - 提交后补算检索用的派生字段（`search_text`、`embedding`），失败只提示，下次提交重算。
-  - 涉及 Experiment 时返回 `related_artifacts`：其评测数据集上的 Leaderboard。
+  - 涉及 Experiment 时返回 `related_artifacts`：其评测数据集上的 Leaderboard，以及还没有 Leaderboard 的数据集。
+- 产物的 `_stale`（`get`、`search` 中给出，读取时计算）：V2 的各项原因之外，Leaderboard 另有隐含输入。表中论文里使用表头数据集的 Experiment 被修订时报 `revised`；库中有使用该数据集、但论文不在表中的 Experiment 时报 `uncovered`。有意不收的论文写进 “Papers covered” 并说明原因，提示即消失。RPC 第 9 轮中，下一位写者正是据此把漏掉的论文补进了表。
+- 参数修复（不提示给 agent，只记日志）：列表参数收到逗号分隔的字符串时切开；对象或数组参数收到 YAML 行内写法（键不加引号）时按 graph-doc 的 YAML 规则解析。
 - `log`、`show`、`diff`、`as_of`：与 V2 相同，视图换成 V3 的 `get` 形状；由别的对象决定的只读字段（入边计数等）不计入变化。
 
 ## 会话开始时的总览
@@ -75,3 +77,4 @@
 - `search` 的向量一路是否设阈值：写入时的查重已设（0.84，见数据模型的实现决定），检索还没有，小库上 `search` 几乎总能返回 `topn` 条。
 - `get` 的大小上限：ETTh1 这类节点有上百条入边，现在只给计数；出边多的节点（如综述论文的 `CITES`）尚未截断。
 - 检索用派生字段每次提交全量重算文本，库大时要改为增量。
+- 读产物文档：现在读者用 `checkout`（会在工作目录留下文件并收到编辑提示），或者用 `read_evidence <art_id>::<起>:<止>`。是否给 `get` 加读文档的开关，待定。
