@@ -1,4 +1,4 @@
-"""CheckIn：按类型契约检入共同产物（docs/designs/v2/operators.md §4.1、§5.4、§5.5）。
+"""产物的检入：commit 中的产物文档按类型契约检入（docs/designs/v2/operators.md §4.1、§5.4、§5.5；V3 中由 commit 调用）。
 
     check_in(store, drafts, update_abstract, *, confirm, reason, at, session, formed_by, ...)
       -> {status: checked, items, next}            省略 confirm：只校验，不写入
@@ -8,7 +8,7 @@
 
 **每份文档**（写者工作目录中的文件，:mod:`paperweave.draft`）：
 
-1. 解析头部，按 ``type`` 取类型契约（:mod:`paperweave.artifact.types`）；论文表单经 ``Commit``，不在这里；
+1. 解析头部，按 ``type`` 取类型契约（:mod:`paperweave.artifact.types`）；论文表单写成 graph-doc 经 commit，不在这里；
 2. 头部带 ``id`` 与 ``base`` 时是更新：``base`` 须是该产物最新版本的提交，否则 ``conflict``，让写者重新取出、
    合并后再交；不带时是新建；
 3. 类型自己的校验；身份键已有另一份产物时拒绝（``identity``），退回已有的那份；
@@ -27,7 +27,7 @@
 
 **写入**（一个提交）：每份文档写到材料根目录的 ``artifacts/<标题>.v<版本>.md``；新建的产物分配 id、写节点；每份
 产物登记新版本的 Material 与 ``MATERIAL_OF``，上一版本的 Material 记上 ``superseded_by``，按新版本重写 ``USED``
-边，更新 ``title``、``abs``、``op_version``、``key``。提交的 ``source`` 为 ``operator:CheckIn``，``author`` 为
+边，更新 ``title``、``abs``、``op_version``、``key``。提交的 ``source`` 为 ``commit:artifact``，``author`` 为
 编辑者，``message`` 为 ``update_abstract``，``meta`` 记各产物的 id、版本与动作、会话与 ``reason``。提交后补算
 向量，失败只在 ``warnings`` 中提示。
 
@@ -48,7 +48,7 @@ from graph_vc import Changeset, ConflictError, EdgeChange, FileRef, NodeChange
 
 from ..draft import Draft
 from ..model.refs import parse_ref
-from ..model.schema import ARTIFACT, LOCATOR
+from ..model.schema import ARTIFACT, LOCATOR, SEARCHABLE
 from ..query.materials import load_lines, materials
 from ..store.database import setup_database
 from ..store.store import ContractError, Store
@@ -71,7 +71,7 @@ from .stale import document_text, documents
 from .types import COMMIT_TYPES, TYPES, ArtifactType, Mention
 from .versions import Changes, Version, blame, compare, history, load
 
-SOURCE = "operator:CheckIn"
+SOURCE = "commit:artifact"
 PREFIX = "art"
 
 
@@ -134,7 +134,7 @@ def _spans(lines: list[int]) -> str:
 
 
 class Problems:
-    """校验中的错误：``{rule, at, msg}``，与 Commit 阻塞项的形状相同。"""
+    """校验中的错误：``{rule, at, msg}``，与 graph-doc 阻塞项的形状相同。"""
 
     def __init__(self) -> None:
         self.items: list[dict[str, str]] = []
@@ -208,7 +208,7 @@ def _prepare(store: Store, draft: Draft, me: str, problems: Problems) -> Item:
         problems.add("format", f"{draft.path}:1", f"the header names the type: type: one of {accepted}")
         return item
     if name in COMMIT_TYPES:
-        problems.add("format", f"{draft.path}:1", f"a {name} is checked in with Commit (as a graph-doc), not CheckIn")
+        problems.add("format", f"{draft.path}:1", f"a {name} is written as a graph-doc (graph-doc: v0.2), not as an artifact document")
         return item
     kind = TYPES.get(str(name))
     if kind is None:
@@ -226,7 +226,7 @@ def _prepare(store: Store, draft: Draft, me: str, problems: Problems) -> Item:
     kind.check(given, lambda rule, line, msg: problems.add(rule, f"{draft.path}:{line}", msg))
 
     if (item.art_id is None) != (item.base is None):
-        msg = "id and base come together from FetchArtifact; do not edit or remove them"
+        msg = "id and base come together from checkout; do not edit or remove them"
         problems.add("conflict", f"{draft.path}:1", msg)
         return item
     if item.art_id is not None:
@@ -237,7 +237,7 @@ def _prepare(store: Store, draft: Draft, me: str, problems: Problems) -> Item:
         if found and found[0]["id"] != item.art_id:
             msg = (
                 f"{found[0]['id']} ({found[0]['title']}) already has this identity; "
-                "call FetchArtifact on it and edit that one"
+                "checkout that one and edit it"
             )
             problems.add("identity", f"{draft.path}:1", msg)
     item.used = _resolve(store, item, kind.mentions(given), problems)
@@ -297,7 +297,7 @@ def _base(store: Store, item: Item, problems: Problems) -> None:
     if item.base != latest.commit:
         msg = (
             f"base {item.base} is not the latest version of {item.art_id} (v{latest.number}, {latest.commit} by "
-            f"{latest.author}); call FetchArtifact again, redo your edits on it, then check in"
+            f"{latest.author}); checkout again, redo your edits on it, then commit"
         )
         problems.add("conflict", where, msg)
 
@@ -478,7 +478,7 @@ def _checked(items: list[Item], others: list[tuple[Item, dict[str, Any]]]) -> di
                 entry["stats"] = stats
             entry["warnings"] = item.grouped_warnings()
         entries.append(entry)
-    steps = "Nothing was written. To write, call CheckIn again with the same artifact_doc and update_abstract"
+    steps = "Nothing was written. To write, call commit again with the same files and message, without dry_run"
     steps += " and confirm: true"
     if others:
         steps += ", plus reason: why you changed lines written by others"
@@ -525,7 +525,8 @@ def _write(
         if item.key is not None:
             props["key"] = item.key
         if item.action == "create":
-            nodes.append(NodeChange.create(art_id, [ARTIFACT], props | {"formed_by": formed_by, "formed_at": at}))
+            labels = [ARTIFACT, SEARCHABLE]
+            nodes.append(NodeChange.create(art_id, labels, props | {"formed_by": formed_by, "formed_at": at}))
         else:
             node = state.nodes[art_id]
             before, after = _delta(node.props, {k: v for k, v in node.props.items() if k != "key"} | props)
@@ -572,7 +573,7 @@ def _write(
             meta=meta,
         )
     except ConflictError as exc:  # 校验之后有人检入了同一份产物，或所引的对象被改动
-        msg = f"the store changed while checking in ({exc}); call FetchArtifact again and redo your edits"
+        msg = f"the store changed while checking in ({exc}); checkout again and redo your edits"
         raise ContractError([{"rule": "conflict", "at": items[0].draft.path, "msg": msg}], status="conflict") from exc
 
     warnings: list[dict[str, str]] = []

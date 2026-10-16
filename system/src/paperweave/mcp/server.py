@@ -1,29 +1,24 @@
-"""PaperWeave 的 MCP 服务（stdio）：把 :data:`paperweave.tools.TOOLS`（算子与版本记录的读取接口）作为 MCP 工具提供给
-通用 Agent。
+"""PaperWeave 的 MCP 服务（stdio）：把 :data:`paperweave.tools.TOOLS` 作为 MCP 工具提供给通用 Agent。
 
     python -m paperweave.mcp       # 由 MCP 客户端启动；实验目录的 .pi/mcp.json 由 python -m paperweave.workspace 生成
 
-每个算子与读取接口是一个工具：工具名就是它的名称，工具按 ``server.yml`` 装配（:mod:`paperweave.mcp.spec`），
-调用经 ``Operator.call``，与命令行入口（:mod:`paperweave.cli`）的结果相同。结果以 YAML 文本返回；``status`` 为
-``rejected``、``blocked`` 或 ``conflict`` 时标为 ``isError``，内容照样交给模型。
+每个工具按 ``server.yml`` 装配（:mod:`paperweave.mcp.spec`），调用经 ``Operator.call``，与命令行入口
+（:mod:`paperweave.cli`）的结果相同。读取工具返回带注释的 YAML，其余以 YAML 文本返回；``status`` 为 ``rejected``、
+``blocked`` 或 ``conflict`` 时标为 ``isError``，内容照样交给模型。启动时按当前库生成总览，附在 ``search`` 的说明末尾
+（:func:`paperweave.query.overview.overview`）：服务每个连接启动一次，总览是会话开始时的快照。
 
-**调用环境。** MCP 调用不带客户端的会话与模型，所以 CheckIn 记下的 ``session`` 由服务进程启动时生成（一个客户端
-会话对应一个服务进程）。写入者的身份由连接配置给出，相当于登录：``PAPERWEAVE_USER`` 是编辑者，记为提交的作者与
-Artifact 的 ``formed_by``；Commit 的 ``by`` 可以省略（取登录身份），写了就必须相同。``PAPERWEAVE_AGENT`` 是所用的
-Agent 与模型，记入提交的 ``meta.agent``。写入者无法自己声明身份。
+**调用环境。** 会话由服务进程启动时生成（一个客户端会话对应一个服务进程）。写入者的身份由连接配置给出，相当于登录：
+``PAPERWEAVE_USER`` 记为提交的作者与产物的 ``formed_by``，写入者无法自己声明。``PAPERWEAVE_AGENT`` 是所用的 Agent
+与模型，记入提交的 ``meta.agent``。
 
-环境变量：``PAPERWEAVE_NEO4J_URI`` 等连接参数（:mod:`paperweave.config`）；``PAPERWEAVE_USER`` 登录身份，写入时记为
-编辑者；``PAPERWEAVE_AGENT`` 所用的 Agent 与模型；
-``PAPERWEAVE_ENABLE_COMMIT=1`` 时才列出 ``Commit``（它改动知识本身）；``PAPERWEAVE_READ_ONLY=1`` 时只列出不写入的
-工具，``PAPERWEAVE_HIDE_TOOLS`` 中的工具不列出；
-``PAPERWEAVE_EVIDENCE_SCOPE=artifacts`` 时 ReadEvidence 只读 Artifact 的文档，不读论文原文（:func:`scoped`）；
-``PAPERWEAVE_NO_EMBED=1`` 时关闭查询向量，写入后也不补算；
-``PAPERWEAVE_MCP_LOG`` 给出日志文件（追加写）；``PAPERWEAVE_WORKDIR`` 是写者的工作目录，草稿文件（``doc_file``、
-``artifact_doc``）只从这里读，FetchArtifact 也取到这里，不设时取服务进程的当前目录；``PAPERWEAVE_WORKDIR_ALIAS``
-是写者看到的同一目录（如沙箱中的 ``/work``，见 :mod:`paperweave.draft`）。库没有版本记录时服务不启动。
+环境变量：``PAPERWEAVE_NEO4J_URI`` 等连接参数（:mod:`paperweave.config`）；``PAPERWEAVE_USER``；``PAPERWEAVE_AGENT``；
+``PAPERWEAVE_READ_ONLY=1`` 时只列出不写入的工具，``PAPERWEAVE_HIDE_TOOLS`` 中逗号分隔的工具不列出；
+``PAPERWEAVE_EVIDENCE_SCOPE=artifacts`` 时 read_evidence 只读产物文档，不读论文原文（:func:`scoped`）；
+``PAPERWEAVE_NO_EMBED=1`` 时关闭查询向量，写入后也不补算；``PAPERWEAVE_MCP_LOG`` 给出日志文件（追加写）；
+``PAPERWEAVE_WORKDIR`` 是写者的工作目录，commit 的文件只从这里读，checkout 也写到这里，不设时取服务进程的当前目录；
+``PAPERWEAVE_WORKDIR_ALIAS`` 是写者看到的同一目录（见 :mod:`paperweave.draft`）。库没有版本记录时服务不启动。
 
 **日志。** 每次调用记一行：会话、工具、结果状态，以及执行前对参数的兜底修复（:mod:`paperweave.operators.repair`）。
-修复不告诉模型，只记在这里；日志写到 stderr，给了 ``PAPERWEAVE_MCP_LOG`` 时也写入该文件。
 """
 
 from __future__ import annotations
@@ -45,6 +40,7 @@ from ..draft import Workdir
 from ..operators import Context
 from ..operators.base import Operator, params_of, rejected
 from ..operators.db.read_evidence import read_evidence
+from ..query.overview import overview
 from ..store import Store, UnversionedDatabaseError, check_versioned, open_graph
 from ..tools import TOOLS
 from .spec import Spec, load
@@ -53,29 +49,26 @@ log = logging.getLogger("paperweave.mcp")
 
 
 def enabled(spec: Spec) -> dict[str, types.Tool]:
-    """列出的工具：``Commit`` 只在 ``PAPERWEAVE_ENABLE_COMMIT=1`` 时列出；``PAPERWEAVE_READ_ONLY=1`` 时只列出不写入的工具
-    （读者：查找、读取与历史，不能写 Artifact，也不能提交）；``PAPERWEAVE_HIDE_TOOLS`` 中逗号分隔的工具不列出。"""
-    commit = os.environ.get("PAPERWEAVE_ENABLE_COMMIT") == "1"
+    """列出的工具：``PAPERWEAVE_READ_ONLY=1`` 时只列出不写入的工具；``PAPERWEAVE_HIDE_TOOLS`` 中的工具不列出。"""
     read_only = os.environ.get("PAPERWEAVE_READ_ONLY") == "1"
     hidden = set(filter(None, os.environ.get("PAPERWEAVE_HIDE_TOOLS", "").split(",")))
     return {
         name: t
         for name, t in spec.tools.items()
-        if (name != "Commit" or commit) and not (read_only and TOOLS[name].writes) and name not in hidden
+        if not (read_only and TOOLS[name].writes) and name not in hidden
     }
 
 
 def scoped(tools: dict[str, types.Tool]) -> tuple[dict[str, types.Tool], dict[str, Operator]]:
-    """``PAPERWEAVE_EVIDENCE_SCOPE=artifacts`` 时把 ReadEvidence 换成只读产物文档的版本，说明中补一句。T1 中只读库的读者
-    这样设置：库的内容都能读，论文原文不能读（产物存在集中式的库中，ReadEvidence 是读产物文档的途径）。"""
+    """``PAPERWEAVE_EVIDENCE_SCOPE=artifacts`` 时把 read_evidence 换成只读产物文档的版本，说明中补一句。"""
     ops = dict(TOOLS)
-    if os.environ.get("PAPERWEAVE_EVIDENCE_SCOPE") != "artifacts" or "ReadEvidence" not in tools:
+    if os.environ.get("PAPERWEAVE_EVIDENCE_SCOPE") != "artifacts" or "read_evidence" not in tools:
         return tools, ops
-    base = TOOLS["ReadEvidence"]
-    ops["ReadEvidence"] = replace(base, execute=_artifacts_only(base))
+    base = TOOLS["read_evidence"]
+    ops["read_evidence"] = replace(base, execute=_artifacts_only(base))
     note = " In this session only artifact documents can be read; source papers are not available."
-    tool = tools["ReadEvidence"]
-    return {**tools, "ReadEvidence": tool.model_copy(update={"description": (tool.description or "") + note})}, ops
+    tool = tools["read_evidence"]
+    return {**tools, "read_evidence": tool.model_copy(update={"description": (tool.description or "") + note})}, ops
 
 
 def _artifacts_only(base: Operator):
@@ -83,6 +76,20 @@ def _artifacts_only(base: Operator):
         return read_evidence(ctx.store, **params_of(base.name, base.parameters, request), artifacts_only=True)
 
     return execute
+
+
+def with_overview(spec: Spec, store: Store) -> Spec:
+    """``search`` 的说明末尾附上库的总览；生成失败时只记日志。"""
+    if "search" not in spec.tools:
+        return spec
+    try:
+        text = overview(store)
+    except Exception as exc:  # noqa: BLE001 —— 总览只是提示
+        log.warning("overview failed: %s", exc)
+        return spec
+    tool = spec.tools["search"]
+    tools = {**spec.tools, "search": tool.model_copy(update={"description": f"{tool.description}\n\n{text}"})}
+    return replace(spec, tools=tools)
 
 
 def serve(
@@ -126,8 +133,9 @@ def serve(
 
 def main() -> int:
     from ..config import DATA, NEO4J_DB, NEO4J_URI
-    from ..store.embedding import embed, sync_embeddings
-    from ..store.graph import driver
+    from ..store.derived import sync as sync_derived
+    from ..store.embedding import embed
+    from ..store.graph import connect
 
     _logging(os.environ.get("PAPERWEAVE_MCP_LOG"))
     spec = load()
@@ -136,6 +144,7 @@ def main() -> int:
     formed_by = os.environ.get("PAPERWEAVE_USER") or None
     agent = os.environ.get("PAPERWEAVE_AGENT") or None
     session = f"mcp-{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{secrets.token_hex(3)}"
+    driver = connect()
     try:
         check_versioned(driver, database=NEO4J_DB)
     except UnversionedDatabaseError as exc:
@@ -144,7 +153,10 @@ def main() -> int:
         return 2
     graph = open_graph(driver, database=NEO4J_DB, file_root=DATA)
     store = Store(driver, graph, DATA, database=NEO4J_DB, embed=None if no_embed else embed)
-    sync = None if no_embed else sync_embeddings
+    def sync() -> int:
+        return sync_derived(driver, NEO4J_DB, None if no_embed else embed)
+
+    spec = with_overview(spec, store)
     workdir = Workdir.from_env()
     server = serve(store, session=session, formed_by=formed_by, sync=sync, spec=spec, agent=agent, workdir=workdir)
     log.info(
@@ -181,4 +193,4 @@ def _logging(path: str | None) -> None:
     root.setLevel(logging.INFO)
 
 
-__all__ = ["enabled", "main", "serve"]
+__all__ = ["enabled", "main", "serve", "with_overview"]

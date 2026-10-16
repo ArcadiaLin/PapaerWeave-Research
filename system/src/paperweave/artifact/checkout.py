@@ -1,4 +1,4 @@
-"""FetchArtifact：把共同产物的文档取到写者的工作目录（docs/designs/v2/operators.md §3.6、§5.6）。
+"""产物的取出：checkout 把共同产物的文档取到写者的工作目录（docs/designs/v2/operators.md §3.6、§5.6）。
 
     fetch(store, ids, *, workdir, me, at=None)
       -> {items: [{artifact, type, path, version, base, hint, ...}], missing: [{artifact, msg}], next}
@@ -12,7 +12,7 @@
   编辑以来别人改了哪些行”（``me`` 是调用者）。行号是取出的文件中的行号。
 - ``notes`` 是类型给出的、读取时现算的附注（如 Leaderboard 每位编辑者写的行数、所引论文已有新版本的行、同一格
   的多个值），不写进文档。
-- 旧版 Agent 算子的产物写入后不可修改，不能取出；用 ``ReadEvidence`` 阅读。
+- 旧版 Agent 算子的产物写入后不可修改，不能取出；用 ``read_evidence`` 阅读。
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ def fetch(
                 {
                     "rule": "format",
                     "at": "artifact",
-                    "msg": "FetchArtifact writes into your working directory, which is not available here",
+                    "msg": "checkout writes into your working directory, which is not available here",
                 }
             ]
         )
@@ -68,7 +68,7 @@ def fetch(
             continue
         kind = TYPES.get(ops.get(art_id) or "")
         if kind is None:
-            msg = f"a {ops.get(art_id)} artifact from the retired operators cannot be edited; read it with ReadEvidence"
+            msg = f"a {ops.get(art_id)} artifact from the retired operators cannot be edited; read it with read_evidence"
             missing.append({"artifact": art_id, "msg": msg})
             continue
         versions = history(store, art_id)
@@ -86,7 +86,7 @@ def fetch(
             continue
         items.append(_one(store, kind, art_id, shown, docs, versions[-1], workdir, me, taken))  # type: ignore[arg-type]
     steps = (
-        "Edit the files with your own tools, then call CheckIn with artifact_doc (the paths) and update_abstract "
+        "Edit the files with your own tools, then call commit with files (the paths) and message "
         "(what you changed and why). Do not edit the id and base lines."
     )
     return {"items": items, "missing": missing, "next": steps}
@@ -125,7 +125,7 @@ def _one(
     if target.number != latest.number:
         out["read_only"] = (
             f"this is v{target.number}; the latest is v{latest.number} ({latest.commit}). "
-            "CheckIn accepts only edits based on the latest version"
+            "commit accepts only edits based on the latest version"
         )
     lines = line_map(text, doc.text)
     out["hint"] = _hint(kind, versions, docs, me, lines)

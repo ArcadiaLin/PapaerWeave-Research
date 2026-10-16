@@ -41,24 +41,17 @@ def rejected(request: dict[str, Any], ctx: Context | None = None) -> list[tuple[
     return [(e["rule"], e["at"]) for e in out.details["errors"]]
 
 
-CHECKIN = {"artifact_doc": ["artifacts/a.md"], "update_abstract": "x"}
-
-
 @pytest.mark.parametrize(
     ("request_", "ctx", "found"),
     [
         ({"op": "Rank"}, None, [("format", "op")]),
-        ({"op": "Search", "type": "Entity", "colour": "red"}, None, [("format", "colour")]),
-        ({"op": "Traverse"}, None, [("format", "start")]),
-        ({"op": "Commit", "doc": "graph-doc: v0.1"}, None, [("format", "source")]),
-        # 会话与形成者由调用环境给出：缺了拒绝，写在请求中也拒绝
-        ({"op": "CheckIn", **CHECKIN}, None, [("format", "session"), ("format", "formed_by")]),
-        ({"op": "CheckIn", **CHECKIN}, Context(NO_STORE, AT, session="s"), [("format", "formed_by")]),
-        (
-            {"op": "CheckIn", **CHECKIN, "session": "s", "formed_by": "m"},
-            None,
-            [("format", "formed_by"), ("format", "session")],
-        ),
+        ({"op": "search", "query": "x", "colour": "red"}, None, [("format", "colour")]),
+        ({"op": "traverse"}, None, [("format", "start")]),
+        ({"op": "commit", "files": ["a.yaml"]}, None, [("format", "message")]),
+        # 会话与形成者由调用环境给出：写在请求中拒绝
+        ({"op": "commit", "files": ["a.yaml"], "message": "x", "formed_by": "m"}, None, [("format", "formed_by")]),
+        # 没有工作目录时不读文件
+        ({"op": "commit", "files": ["a.yaml"], "message": "x"}, Context(NO_STORE, AT, formed_by="m"), [("format", "files[0]")]),
     ],
 )
 def test_failures_have_one_shape(request_: dict[str, Any], ctx: Context | None, found: list[tuple[str, str]]) -> None:
@@ -66,8 +59,8 @@ def test_failures_have_one_shape(request_: dict[str, Any], ctx: Context | None, 
 
 
 def test_op_in_the_request_must_name_the_operator() -> None:
-    out = OPERATORS["Search"].call(Context(NO_STORE, AT), {"op": "Traverse", "type": "Entity"})
+    out = OPERATORS["search"].call(Context(NO_STORE, AT), {"op": "traverse", "query": "x"})
     assert out.details == {
         "status": "rejected",
-        "errors": [{"rule": "format", "at": "op", "msg": "this operator is Search"}],
+        "errors": [{"rule": "format", "at": "op", "msg": "this operator is search"}],
     }

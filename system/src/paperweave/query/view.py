@@ -1,179 +1,258 @@
-"""读视图：把库中状态渲染成 graph-doc（docs/experiments/e09/operators/commit.md §6 R）。
+"""读取投影：把库中状态写成 graph-doc 同形的节点（docs/designs/v3/tools.md）。
 
-读写同形：视图中的节点原样交回 Commit 应当是 ``noop``。为此每个节点带上它**全部**的模型出边
-（graph-doc 中一个关系键列出的是该类型出边的完整集合，只列一部分交回时会删掉其余的边），
-系统维护的内容按写入时的拼写还原：
+**读写同形。** ``get`` 返回的节点就是 ``set`` 下的一个节点：原样贴进 ``set`` 没有改动，改其中几个值就是修改。
+为此系统维护的内容按写入时的拼写还原：Label → ``kind``，NameKey → ``alias``，``FROM`` → ``paper``，Material →
+``material``（路径），``extra`` 的 JSON → 映射；系统字段与检索用的派生字段不出现。
 
-- Label → ``kind``；指向它的 NameKey → ``aliases``（不含与 ``name`` 规范化后相同的键）；
-- Paper 的 Material → ``material``（路径）与只读的 ``_material``；
-- 边上的 ``material_ref`` 等系统属性不出现，``FROM`` 的材料以只读的 ``_material`` 给出；
-- 自然键（``exp_key``、``content_key``）与检索用的派生属性不出现。
+**只读字段**（``_`` 开头，写入时忽略）：``_formed_by``、``_formed_at``、``_edges_in``（各类入边的条数）、Claim 的
+``_supported_by`` 与 ``_opposed_by``、``_used_by``（用到它的产物）。检索结果中的描述摘录叫 ``_excerpt``，不叫
+``description``：误贴回 ``set`` 也不会把描述改成截断的半句。
 
-入边不出现在节点上；需要时经 Traverse 沿入边走到对方节点，对方节点的出边里就有这条边。
+**两种投影。** :func:`full` 给出节点的全部字段与全部出边（``get``）。:func:`compact` 按 kind 只给辨认它所需的部分
+（``search``、``traverse``）：有名称的节点给名称与入边计数；Experiment 给每类参与关系的前几个；Claim 给支持与反对它的
+证据；产物给类型、标题与摘要。截掉的条数在 ``_more`` 中。
 
-Artifact 只经 ``CheckIn`` 写入（库中可能还有已下线的旧版 Agent 算子写的，带 ``_params``），视图中的字段全部
-只读（以 ``_`` 开头）：``_op``、``_title``、``_abs``、形成信息、``_material`` 与 ``_document``（文档）、``_stale``
-（可能过期的原因，见 :mod:`paperweave.artifact.stale`）、``_USED``（用到的对象）。原样交回 Commit 时被忽略。
+**注释。** id 的名称、锚点的章节写在行末注释里（:mod:`paperweave.query.render`），不进数据。
 """
 
 from __future__ import annotations
 
 import json
-from collections import defaultdict
-from collections.abc import Iterable, Mapping
+from collections import Counter, defaultdict
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, field
 from typing import Any
 
-from graph_vc import EdgeKey, GraphState
+from graph_vc import EdgeKey, GraphState, NodeState
 
 from ..model.namekey import normalize
 from ..model.schema import (
     ARTIFACT,
-    NAMED,
+    CONTENT,
+    DERIVED_FIELDS,
+    FROM,
     RELATIONSHIPS,
-    STANCE_RELS,
     SYSTEM_FIELDS,
     SYSTEM_REL_PROPS,
-    TRAVERSABLE,
+    USED,
     kind_of,
 )
-from ..yamlfmt import dump
+from .render import render
 
-VERSION = "v0.1"
+EXCERPT = 280  # 摘录的字数上限
+PARTICIPANTS = 4  # 紧凑投影中每类关系最多列出的终点
+USED_BY = 3
+_ORDER = ("kind", "name", "alias", "identities", "year", "material", "paper", "anchor", "figures", "description", "extra", "stub")
+_HIDDEN_EDGE = SYSTEM_REL_PROPS | DERIVED_FIELDS | {"search_text"}
 
-# 属性的显示顺序；其余属性（开放 kind 的额外字段）按字母序排在后面
-_PROP_ORDER = (
-    "stub",
-    "name",
-    "aliases",
-    "identifiers",
-    "year",
-    "material",
-    "definition",
-    "description",
-    "text",
-    "anchors",
-    "stated_by",
-    "note",
-)
+Sections = Callable[[str, list[str]], list[str]]  # (材料 id, 锚点) → 章节
 
 
-# ── 只读字段：由库中状态算出，写入时也用来核对交回的只读字段，保证读写一致 ──────────────
+@dataclass
+class View:
+    """一组投影与渲染它们所需的注释。``data`` 按给出的顺序。"""
+
+    data: dict[str, Any] = field(default_factory=dict)
+    names: dict[str, str] = field(default_factory=dict)
+    notes: dict[tuple, str] = field(default_factory=dict)
+
+    def text(self, header: Iterable[str] = ()) -> str:
+        lines = "".join(f"# {line}\n" for line in header)
+        return lines + (render(self.data, self.names, self.notes) if self.data else "")
 
 
-def material_of(node_id: str, state: GraphState) -> str | None:
-    """节点（Paper 或 Artifact）当前的材料 id：经 ``MATERIAL_OF`` 指向它、且没有被新版本取代（``superseded_by``）的
-    Material。"""
-    owners = sorted(
-        k.src
-        for k in state.edges
-        if k.dst == node_id
-        and k.type == "MATERIAL_OF"
-        and not (k.src in state.nodes and state.nodes[k.src].props.get("superseded_by"))
-    )
-    return owners[0] if owners else None
+def label(node_id: str, state: GraphState) -> str:
+    """注释中的名称：有名称的用名称，产物用标题，其余是“kind: 描述的开头”。"""
+    node = state.nodes.get(node_id)
+    if node is None:
+        return node_id
+    props = node.props
+    if props.get("name"):
+        return str(props["name"])
+    if ARTIFACT in node.labels:
+        return f"{props.get('op', 'Artifact')}: {props.get('title', '')}"
+    kind = kind_of(node.labels) or "?"
+    words = str(props.get("description", "")).split()
+    return f"{kind}: {' '.join(words[:10])}{' …' if len(words) > 10 else ''}"
 
 
-def node_readonly(node_id: str, state: GraphState) -> dict[str, Any]:
-    """节点的只读字段：``_material``（有材料的节点）、``_formed_by``、``_formed_at``（Agent 形成的记录）。"""
+def excerpt(text: Any, limit: int = EXCERPT) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[: limit - 1].rsplit(" ", 1)[0] + " …"
+
+
+# ── 全量投影（get）────────────────────────────────────────────────────
+
+
+def full(node_id: str, state: GraphState, view: View, sections: Sections | None = None) -> dict[str, Any]:
     node = state.nodes[node_id]
-    view: dict[str, Any] = {}
-    material = material_of(node_id, state)
-    if material is not None:
-        view["_material"] = material
-    for key in ("formed_by", "formed_at"):
-        if key in node.props:
-            view[f"_{key}"] = node.props[key]
-    return view
-
-
-def edge_readonly(rel_type: str, props: dict[str, Any]) -> dict[str, Any]:
-    """关系的只读字段：``FROM`` 的 ``_material``，Agent 判断的正反关系的 ``_formed_by``、``_formed_at``。"""
-    view: dict[str, Any] = {}
-    if rel_type == "FROM" and "material_ref" in props:
-        view["_material"] = props["material_ref"]
-    if rel_type in STANCE_RELS:
-        for key in ("formed_by", "formed_at"):
-            if key in props:
-                view[f"_{key}"] = props[key]
-    return view
-
-
-# ── 读视图 ──────────────────────────────────────────────────────────────
-
-
-def render(
-    state: GraphState,
-    ids: Iterable[str],
-    meta: dict[str, Any],
-    extra: Mapping[str, Mapping[str, Any]] | None = None,
-) -> dict[str, Any]:
-    """``ids`` 中节点的读视图。``state`` 须包含这些节点的全部关系及关系另一端的节点（``local_state``）；
-    ``extra`` 是需要另外读取的只读字段（Artifact 的 ``_document`` 与 ``_stale``，有据层记录的 ``_revised``），
-    按节点 id 给出。"""
-    out_edges = _out_edges(state)
-    extra = extra or {}
-    nodes = {}
-    for node_id in dict.fromkeys(ids):
-        if ARTIFACT in state.nodes[node_id].labels:
-            nodes[node_id] = artifact_view(node_id, state, extra.get(node_id))
-        else:
-            nodes[node_id] = node_view(node_id, state, out_edges.get(node_id, []))
-            nodes[node_id].update(extra.get(node_id) or {})
-    return {"graph-doc": VERSION, "meta": meta, "nodes": nodes}
-
-
-def artifact_view(node_id: str, state: GraphState, extra: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    props = state.nodes[node_id].props
-    view: dict[str, Any] = {f"_{k}": props[k] for k in ("op", "title", "abs") if k in props}
-    if isinstance(props.get("params"), str):
-        view["_params"] = json.loads(props["params"])
-    view.update((f"_{k}", props[k]) for k in ("formed_by", "formed_at", "session") if k in props)
-    material = material_of(node_id, state)
-    if material is not None:
-        view["_material"] = material
-    view.update(extra or {})
-    used = sorted((k for k in state.edges if k.src == node_id and k.type == "USED"), key=_order)
-    if used:
-        view["_USED"] = [edge_view(k, state.edges[k]) for k in used]
-    return view
-
-
-def node_view(node_id: str, state: GraphState, out_edges: list[EdgeKey] | None = None) -> dict[str, Any]:
-    node = state.nodes[node_id]
+    if ARTIFACT in node.labels:
+        return artifact(node_id, state, view, full_abs=True)
     kind = kind_of(node.labels)
     if kind is None:
-        raise ValueError(f"{node_id} is not an object of the graph model")
-    props = {k: v for k, v in node.props.items() if k not in SYSTEM_FIELDS}
-    if kind in NAMED:
-        props["aliases"] = aliases_of(node_id, state)
-    material = material_of(node_id, state)
-    if material is not None:
-        props["material"] = state.nodes[material].props["path"]
-
-    view: dict[str, Any] = {"kind": kind}
-    view.update((k, props.pop(k)) for k in _PROP_ORDER if k in props)
-    view.update(sorted(props.items()))
-    view.update(node_readonly(node_id, state))
-
-    if out_edges is None:
-        out_edges = [k for k in state.edges if k.src == node_id]
-    by_type: dict[str, list[EdgeKey]] = defaultdict(list)
-    for key in out_edges:
-        if key.type in RELATIONSHIPS:
-            by_type[key.type].append(key)
-    for rel_type in RELATIONSHIPS:  # 按图模型中的顺序
-        if rel_type in by_type:
-            view[rel_type] = [edge_view(key, state.edges[key]) for key in sorted(by_type[rel_type], key=_order)]
-    return view
+        raise ValueError(f"{node_id} is not an evidence node")
+    out = _fields(node_id, node, kind, state, view, sections)
+    for rel_type in RELATIONSHIPS:
+        edges = _out(state, node_id, rel_type)
+        if edges:
+            out[rel_type] = {}
+            for key in edges:
+                out[rel_type][key.dst] = _edge_props(key, state, view, sections, node_id)
+                view.names[key.dst] = label(key.dst, state)
+    out.update(_readonly(node_id, node, kind, state, view, limit=None))
+    return out
 
 
-def edge_view(key: EdgeKey, props: dict[str, Any]) -> str | dict[str, Any]:
-    """没有属性的边写成终点 id，否则写成 ``{to, <属性>…, <只读字段>…}``。"""
-    shown = {k: v for k, v in props.items() if k not in SYSTEM_REL_PROPS}
-    shown.update(edge_readonly(key.type, props))
-    if key.type == "USED" and "material_ref" in props:
-        shown["_material"] = props["material_ref"]
-    return {"to": key.dst, **shown} if shown else key.dst
+def _fields(
+    node_id: str, node: NodeState, kind: str, state: GraphState, view: View, sections: Sections | None
+) -> dict[str, Any]:
+    props = {k: v for k, v in node.props.items() if k not in SYSTEM_FIELDS and k != "search_text"}
+    if "extra" in props:
+        props["extra"] = json.loads(props["extra"]) if isinstance(props["extra"], str) else props["extra"]
+    alias = aliases_of(node_id, state)
+    if alias:
+        props["alias"] = alias
+    material = current_material(node_id, state)
+    if material is not None and material in state.nodes:
+        props["material"] = state.nodes[material].props.get("path")
+    if kind in CONTENT:
+        source = _paper_edge(node_id, state)
+        if source is not None:
+            props["paper"] = source.dst
+            view.names[source.dst] = label(source.dst, state)
+            anchors = props.get("anchor") or []
+            ref = state.edges[source].get("material_ref")
+            if sections and anchors and isinstance(ref, str):
+                found = sections(ref, anchors)
+                if found:
+                    view.notes[(node_id, "anchor")] = "; ".join(found)
+    out: dict[str, Any] = {"kind": kind}
+    out.update((k, props.pop(k)) for k in _ORDER if k in props)
+    out.update(sorted(props.items()))
+    return out
+
+
+def _edge_props(
+    key: EdgeKey, state: GraphState, view: View, sections: Sections | None, src: str
+) -> dict[str, Any] | None:
+    props = {k: v for k, v in state.edges[key].items() if k not in _HIDDEN_EDGE}
+    if isinstance(props.get("extra"), str):
+        props["extra"] = json.loads(props["extra"])
+    if "paper" in props:
+        view.names[props["paper"]] = label(props["paper"], state)
+    ref = state.edges[key].get("material_ref")
+    if sections and props.get("anchor") and isinstance(ref, str):
+        found = sections(ref, props["anchor"])
+        if found:
+            view.notes[(src, key.type, key.dst, "anchor")] = "; ".join(found)
+    return props or None
+
+
+def _readonly(
+    node_id: str, node: NodeState, kind: str, state: GraphState, view: View, limit: int | None
+) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key in ("formed_by", "formed_at"):
+        if key in node.props and limit is None:
+            out[f"_{key}"] = node.props[key]
+    incoming = [k for k in state.edges if k.dst == node_id and k.type in RELATIONSHIPS]
+    if kind == "Claim":
+        for rel_type, field_name in (("SUPPORTS", "_supported_by"), ("OPPOSES", "_opposed_by")):
+            ids = sorted(k.src for k in incoming if k.type == rel_type)
+            if ids:
+                out[field_name] = ids[:limit] if limit else ids
+                view.names.update((i, label(i, state)) for i in out[field_name])
+                if limit and len(ids) > limit:
+                    out.setdefault("_more", {})[field_name] = len(ids) - limit
+        incoming = [k for k in incoming if k.type not in ("SUPPORTS", "OPPOSES")]
+    counts = Counter(k.type for k in incoming)
+    if counts:
+        out["_edges_in"] = dict(sorted(counts.items()))
+    used = sorted({k.src for k in state.edges if k.dst == node_id and k.type == USED})
+    if used:
+        shown = used[:USED_BY] if limit else used
+        out["_used_by"] = shown
+        view.names.update((i, label(i, state)) for i in shown)
+        if len(used) > len(shown):
+            out.setdefault("_more", {})["_used_by"] = len(used) - len(shown)
+    return out
+
+
+# ── 紧凑投影（search、traverse）──────────────────────────────────────
+
+
+def compact(node_id: str, state: GraphState, view: View, sections: Sections | None = None) -> dict[str, Any]:
+    node = state.nodes[node_id]
+    if ARTIFACT in node.labels:
+        return artifact(node_id, state, view)
+    kind = kind_of(node.labels)
+    if kind is None:
+        raise ValueError(f"{node_id} is not an evidence node")
+    out: dict[str, Any] = {"kind": kind}
+    props = node.props
+    view.names[node_id] = label(node_id, state)
+    if kind in CONTENT:
+        source = _paper_edge(node_id, state)
+        if source is not None:
+            out["paper"] = source.dst
+            view.names[source.dst] = label(source.dst, state)
+        if props.get("anchor"):
+            out["anchor"] = props["anchor"]
+            ref = state.edges[source].get("material_ref") if source is not None else None
+            if sections and isinstance(ref, str):
+                found = sections(ref, props["anchor"])
+                if found:
+                    view.notes[(node_id, "anchor")] = "; ".join(found)
+    else:
+        out["name"] = props.get("name")
+        alias = aliases_of(node_id, state)
+        if alias:
+            out["alias"] = alias
+        if kind == "Paper":
+            out.update((k, props[k]) for k in ("identities", "year") if k in props)
+        if props.get("stub"):
+            out["stub"] = True
+    if props.get("description"):
+        out["_excerpt"] = excerpt(props["description"])
+    shown = {"Experiment": ("EVALUATES", "USES", "ON_TASK"), "Contribution": ("ABOUT",), "Claim": ("ABOUT",)}
+    for rel_type in shown.get(kind, ()):
+        edges = _out(state, node_id, rel_type)
+        if not edges:
+            continue
+        out[rel_type] = {}
+        for key in edges[:PARTICIPANTS]:
+            props_ = {k: v for k, v in state.edges[key].items() if k in ("role", "result")}
+            out[rel_type][key.dst] = props_ or None
+            view.names[key.dst] = label(key.dst, state)
+        if len(edges) > PARTICIPANTS:
+            out.setdefault("_more", {})[rel_type] = len(edges) - PARTICIPANTS
+    out.update(_readonly(node_id, node, kind, state, view, limit=PARTICIPANTS))
+    return out
+
+
+def artifact(node_id: str, state: GraphState, view: View, *, full_abs: bool = False) -> dict[str, Any]:
+    props = state.nodes[node_id].props
+    view.names[node_id] = label(node_id, state)
+    out: dict[str, Any] = {"_type": props.get("op"), "_title": props.get("title")}
+    if props.get("abs"):
+        out["_abs" if full_abs else "_excerpt"] = props["abs"] if full_abs else excerpt(props["abs"])
+    for key in ("formed_by", "formed_at"):
+        if key in props and full_abs:
+            out[f"_{key}"] = props[key]
+    used = [k for k in state.edges if k.src == node_id and k.type == USED]
+    if used:
+        out["_uses"] = len(used)
+    return out
+
+
+def edge_hit(key: EdgeKey, state: GraphState, view: View, sections: Sections | None = None) -> dict[str, Any]:
+    """一条命中的关系：``{<关系类型>: {<终点>: <边属性>}}``，挂在起点的投影下。"""
+    view.names[key.src] = label(key.src, state)
+    view.names[key.dst] = label(key.dst, state)
+    return {key.type: {key.dst: _edge_props(key, state, view, sections, key.src)}}
+
+
+# ── 共用 ──────────────────────────────────────────────────────────────
 
 
 def aliases_of(node_id: str, state: GraphState) -> list[str]:
@@ -184,42 +263,53 @@ def aliases_of(node_id: str, state: GraphState) -> list[str]:
     return [raw for raw in raws if isinstance(raw, str) and normalize(raw) != normalize(name or "")]
 
 
-def source_refs_of(node_id: str, state: GraphState) -> list[str]:
-    """节点出边上的来源引用（按图模型中的关系顺序）：``FROM``、``USED`` 的每个定位拼上材料 id，以及边上的
-    ``source_refs``。"""
-    refs: list[str] = []
-    rank = {rel_type: i for i, rel_type in enumerate(TRAVERSABLE)}
-    edges = [k for k in state.edges if k.src == node_id and k.type in TRAVERSABLE]
-    for key in sorted(edges, key=lambda k: (rank[k.type], k.dst)):
-        props = state.edges[key]
-        material = props.get("material_ref")
-        if key.type in ("FROM", "USED") and isinstance(material, str):
-            refs += [f"{material}::{locator}" for locator in props.get("locators") or []]
-        refs += list(props.get("source_refs") or [])
-    return refs
+def current_material(node_id: str, state: GraphState) -> str | None:
+    """Paper 或产物当前的材料：经 ``MATERIAL_OF`` 指向它、没有被新版本取代的 Material。"""
+    owners = sorted(
+        k.src
+        for k in state.edges
+        if k.dst == node_id
+        and k.type == "MATERIAL_OF"
+        and not (k.src in state.nodes and state.nodes[k.src].props.get("superseded_by"))
+    )
+    return owners[0] if owners else None
 
 
-def _order(key: EdgeKey) -> tuple[str, str, str]:
-    return key.src, key.type, key.dst
+def _paper_edge(node_id: str, state: GraphState) -> EdgeKey | None:
+    edges = sorted(k for k in state.edges if k.src == node_id and k.type == FROM)
+    return edges[0] if edges else None
 
 
-def _out_edges(state: GraphState) -> dict[str, list[EdgeKey]]:
+def _out(state: GraphState, node_id: str, rel_type: str) -> list[EdgeKey]:
+    return sorted((k for k in state.edges if k.src == node_id and k.type == rel_type), key=lambda k: k.dst)
+
+
+def by_source(keys: Iterable[EdgeKey]) -> dict[str, list[EdgeKey]]:
     out: dict[str, list[EdgeKey]] = defaultdict(list)
-    for key in state.edges:
+    for key in keys:
         out[key.src].append(key)
     return out
 
 
+def merge_into(target: dict[str, Any], addition: Mapping[str, Any]) -> None:
+    """把一条命中的关系并进起点的投影：同类关系的终点合在一起。"""
+    for rel_type, edges in addition.items():
+        target.setdefault(rel_type, {})
+        if isinstance(target[rel_type], dict):
+            target[rel_type].update(edges)
+
+
 __all__ = [
-    "VERSION",
+    "EXCERPT",
+    "View",
     "aliases_of",
-    "artifact_view",
-    "dump",
-    "edge_readonly",
-    "edge_view",
-    "material_of",
-    "node_readonly",
-    "node_view",
-    "render",
-    "source_refs_of",
+    "artifact",
+    "by_source",
+    "compact",
+    "current_material",
+    "edge_hit",
+    "excerpt",
+    "full",
+    "label",
+    "merge_into",
 ]

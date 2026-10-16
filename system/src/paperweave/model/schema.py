@@ -77,8 +77,34 @@ DERIVED_FIELDS = frozenset({"embedding", "embedding_key", "search_text"})  # 不
 
 NAMESPACES = {"arxiv": True, "doi": True, "s2": True, "url": False}  # 命名空间 → 是否全库唯一
 
+# 字段的一句话说明：模板与工具说明用
+FIELD_GLOSS = {
+    "name": "the main name",
+    "alias": "other names it goes by, a list",
+    "identities": "external identities <namespace>:<value>, namespaces arxiv, doi, s2, url",
+    "description": "what it is, in your own words, readable on its own; no numbers",
+    "extra": "other details as key: value lines (venue, authors, cited_as, caveat ...)",
+    "stub": "true when only mentioned, not yet described (name only)",
+    "year": "publication year",
+    "material": "the paper's Markdown file, relative to the material root",
+    "paper": "the id of the paper it comes from",
+    "anchor": "the paper's line ranges it rests on, like [120:135, 210:214]",
+    "figures": "tables and figures it covers, main one first, like [S4.T3, A1.T8]",
+}
+EDGE_GLOSS = {
+    "anchor": "the paper's line ranges this edge rests on",
+    "description": "what the relation is, in a sentence",
+    "extra": "other details as key: value lines",
+    "paper": "the paper the anchor lines are in (only when the start node is not a paper or paper content)",
+    "role": "EVALUATES: target | baseline; USES: evaluation_data | training_data | analysis_input | tooling | retrieval_corpus",
+    "result": "own (the authors ran it) | cited (copied from another paper) | unstated",
+    "printed_as": "the name as printed in the paper, like ECL",
+}
+
 # 原文锚点：论文 Markdown 的行号范围 <起始行>:<结束行>，行号从 1 起
 ANCHOR = re.compile(r"(?P<start>\d+):(?P<end>\d+)")
+# 来源引用 <论文或产物 id>::[<章节>::]<start>:<end> 中 :: 之后的定位部分；章节可省略，只作提示
+LOCATOR = re.compile(r"(?:(?P<section>.+)::)?(?P<start>\d+):(?P<end>\d+)")
 
 # ── 关系 ──────────────────────────────────────────────────────────────
 

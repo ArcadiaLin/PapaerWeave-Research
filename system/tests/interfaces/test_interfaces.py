@@ -166,7 +166,7 @@ def small(monkeypatch: pytest.MonkeyPatch) -> int:
 
 
 def test_log_lists_commits_newest_first_with_object_ids_only(history: History) -> None:
-    out = ask(history, "Log")
+    out = ask(history, "log")
     assert [c["id"] for c in out["commits"]] == ["commit_000004", "commit_000003", "commit_000002", "commit_000001"]
     first = out["commits"][-1]
     assert first["counts"] == {"nodes": {"create": 4}, "edges": {"create": 3}}
@@ -186,33 +186,33 @@ def test_log_lists_commits_newest_first_with_object_ids_only(history: History) -
     ],
 )
 def test_log_filters(history: History, params: dict[str, Any], ids: list[str]) -> None:
-    assert [c["id"] for c in ask(history, "Log", **params)["commits"]] == ids
+    assert [c["id"] for c in ask(history, "log", **params)["commits"]] == ids
 
 
 def test_log_pages_stay_at_the_pinned_commit(history: History) -> None:
-    first = ask(history, "Log", budget=2)
+    first = ask(history, "log", budget=2)
     assert first["meta"]["continuation"] == "2@commit_000004"
     history.add(Changeset(nodes=(NodeChange.create("task_0002", T, {"name": "Imputation"}),)), source="later")
-    rest = ask(history, "Log", budget=2, continuation=first["meta"]["continuation"])
+    rest = ask(history, "log", budget=2, continuation=first["meta"]["continuation"])
     assert [c["id"] for c in rest["commits"]] == ["commit_000002", "commit_000001"]
     assert rest["meta"]["at"] == "commit_000004" and rest["meta"]["continuation"] is None
-    assert ask(history, "Log")["meta"]["at"] == "commit_000005"  # 新的请求才看到新提交
+    assert ask(history, "log")["meta"]["at"] == "commit_000005"  # 新的请求才看到新提交
 
 
 # ── Show ─────────────────────────────────────────────────────────────
 
 
 def test_show_summary(history: History) -> None:
-    out = ask(history, "Show", commit="commit_000001")["commit"]
+    out = ask(history, "show", commit="commit_000001")["commit"]
     assert out["parent"] is None and out["source"] == "seed"
     assert out["confirm"] == {"$dlinear": {"distinct_from": ["method_0002"]}}
     assert out["ids"] == ["$dlinear -> method_0001"] and out["dedup"] is False
     assert out["input"] == {"bytes": len(build().records[0].input.encode()), "lines": 5}
-    assert ask(history, "Show", commit="main")["commit"]["id"] == "commit_000004"
+    assert ask(history, "show", commit="main")["commit"]["id"] == "commit_000004"
 
 
 def test_show_changes_spell_aliases_and_edges_as_the_read_view(history: History) -> None:
-    out = ask(history, "Show", commit="commit_000002", part="changes")
+    out = ask(history, "show", commit="commit_000002", part="changes")
     assert out["changes"] == [
         {
             "id": "exp_0001",
@@ -226,13 +226,13 @@ def test_show_changes_spell_aliases_and_edges_as_the_read_view(history: History)
             "id": "method_0001",
             "kind": "Method",
             "op": "update",
-            "fields": {"aliases": [[], ["D-Linear"]], "definition": ["A linear model.", "Linear."]},
+            "fields": {"definition": ["A linear model.", "Linear."], "alias": [None, ["D-Linear"]]},
         },
     ]
 
 
 def test_show_input_is_paged_by_lines_and_reassembles(history: History) -> None:
-    parts = pages(history, "Show", "input", commit="commit_000002", part="input")
+    parts = pages(history, "show", "input", commit="commit_000002", part="input")
     assert len(parts) == 2
     assert "".join(p["input"] for p in parts) == history.records[1].input
     assert all(p["input"].endswith("\n") for p in parts)
@@ -243,11 +243,11 @@ def test_show_input_is_paged_by_lines_and_reassembles(history: History) -> None:
 
 
 def test_diff_is_the_net_difference(history: History) -> None:
-    out = ask(history, "Diff", **{"from": "commit_000001"})
+    out = ask(history, "diff", **{"from": "commit_000001"})
     by_id = {c["id"]: c for c in out["changes"]}
     assert out["summary"]["commits"] == 3
     assert out["summary"]["counts"] == {"Experiment": {"create": 1, "delete": 1}, "Method": {"update": 1}}
-    assert by_id["method_0001"]["fields"] == {"aliases": [[], ["D-Linear"]]}  # 定义改了又改回，不出现
+    assert by_id["method_0001"]["fields"] == {"alias": [None, ["D-Linear"]]}  # 定义改了又改回，不出现
     assert by_id["exp_0001"]["op"] == "delete" and "kind" not in by_id["exp_0001"]["fields"]
     assert by_id["exp_0001"]["edges"]["removed"] == [
         {"rel": "EVALUATES", "to": "method_0001", "role": "target"},
@@ -259,33 +259,32 @@ def test_diff_is_the_net_difference(history: History) -> None:
 
 def test_diff_of_a_parent_and_its_commit_is_show_changes(history: History) -> None:
     for record in history.records[1:]:
-        diff = ask(history, "Diff", **{"from": record.parent, "to": record.id})["changes"]
-        assert diff == ask(history, "Show", commit=record.id, part="changes")["changes"]
+        diff = ask(history, "diff", **{"from": record.parent, "to": record.id})["changes"]
+        assert diff == ask(history, "show", commit=record.id, part="changes")["changes"]
 
 
 def test_diff_rejects_a_from_that_is_not_an_ancestor(history: History) -> None:
-    out = ask(history, "Diff", **{"from": "commit_000003", "to": "commit_000001"})
+    out = ask(history, "diff", **{"from": "commit_000003", "to": "commit_000001"})
     assert out["status"] == "rejected" and out["errors"][0]["at"] == "from"
-    assert ask(history, "Diff", **{"from": "main"})["changes"] == []
+    assert ask(history, "diff", **{"from": "main"})["changes"] == []
 
 
 # ── AsOf ─────────────────────────────────────────────────────────────
 
 
 def test_as_of_reads_the_old_state(history: History) -> None:
-    out = ask(history, "AsOf", at="commit_000001", ids=["method_0001", "exp_0001", "exp_0002"])
-    assert (
-        out["nodes"]["method_0001"]["aliases"] == [] and out["nodes"]["method_0001"]["definition"] == "A linear model."
-    )
-    assert out["nodes"]["exp_0001"]["EVALUATES"] == [{"to": "method_0001", "role": "target"}]
+    out = ask(history, "as_of", at="commit_000001", ids=["method_0001", "exp_0001", "exp_0002"])
+    assert "alias" not in out["nodes"]["method_0001"]
+    assert out["nodes"]["method_0001"]["definition"] == "A linear model."
+    assert out["nodes"]["exp_0001"]["EVALUATES"] == {"method_0001": {"role": "target"}}
     assert out["meta"]["missing"] == [{"ref": "exp_0002", "missing_in": "commit_000001"}]
-    now = ask(history, "AsOf", at="main", ids=["exp_0001", "method_0001"])
+    now = ask(history, "as_of", at="main", ids=["exp_0001", "method_0001"])
     assert now["meta"]["missing"] == [{"ref": "exp_0001", "missing_in": "commit_000004"}]
-    assert now["nodes"]["method_0001"]["aliases"] == ["D-Linear"]
+    assert now["nodes"]["method_0001"]["alias"] == ["D-Linear"]
 
 
 def test_as_of_rejects_system_nodes(history: History) -> None:
-    out = ask(history, "AsOf", at="main", ids=["d-linear|Method|global"])
+    out = ask(history, "as_of", at="main", ids=["d-linear|Method|global"])
     assert out["status"] == "rejected" and out["errors"][0]["at"] == "ids"
 
 
@@ -294,19 +293,19 @@ def test_as_of_rejects_system_nodes(history: History) -> None:
 
 def test_pages_hold_whole_objects_and_cover_all(history: History, small: int) -> None:
     ids = ["task_0001", "method_0001", "exp_0002"]
-    parts = pages(history, "AsOf", "nodes", at="main", ids=ids)
+    parts = pages(history, "as_of", "nodes", at="main", ids=ids)
     assert len(parts) > 1
     assert [i for p in parts for i in p["nodes"]] == ids
     assert {p["meta"]["at"] for p in parts} == {"commit_000004"}
 
 
 def test_an_object_that_does_not_fit_is_cut_and_read_back_in_chunks(history: History, small: int) -> None:
-    out = ask(history, "AsOf", at="main", ids=["exp_0002"])
+    out = ask(history, "as_of", at="main", ids=["exp_0002"])
     node = out["nodes"]["exp_0002"]
     assert node["_cut"] == {"text": {"bytes": len(LONG.encode("utf-8"))}} and node["text"].endswith("…")
     chunks, offset = [], 0
     while offset is not None:
-        part = ask(history, "AsOf", at="main", ids=["exp_0002"], field="text", offset=offset)
+        part = ask(history, "as_of", at="main", ids=["exp_0002"], field="text", offset=offset)
         assert part["bytes"] == len(LONG.encode("utf-8"))
         chunks.append(part["value"])
         offset = part["meta"]["next_offset"]
@@ -314,14 +313,14 @@ def test_an_object_that_does_not_fit_is_cut_and_read_back_in_chunks(history: His
 
 
 def test_a_cut_change_is_read_back_by_its_path(history: History, small: int) -> None:
-    out = ask(history, "Show", commit="commit_000003", part="changes", node=["exp_0002"])
+    out = ask(history, "show", commit="commit_000003", part="changes", node=["exp_0002"])
     entry = out["changes"][0]
     assert "fields.text.1" in entry["_cut"]
     chunks, offset = [], 0
     while offset is not None:
         part = ask(
             history,
-            "Show",
+            "show",
             commit="commit_000003",
             part="changes",
             node=["exp_0002"],
@@ -334,15 +333,15 @@ def test_a_cut_change_is_read_back_by_its_path(history: History, small: int) -> 
 
 
 def test_continuations_are_checked(history: History) -> None:
-    out = ask(history, "Log", continuation="next please")
+    out = ask(history, "log", continuation="next please")
     assert out["status"] == "rejected" and out["errors"][0]["at"] == "continuation"
-    out = ask(history, "Show", commit="commit_000002", part="changes", continuation="1@commit_000003")
+    out = ask(history, "show", commit="commit_000002", part="changes", continuation="1@commit_000003")
     assert out["status"] == "rejected" and "commit=commit_000003" in out["errors"][0]["msg"]
 
 
 def test_results_are_yaml_for_the_agent(history: History) -> None:
     store: Any = Store(None, history, Path("."))  # type: ignore[arg-type]
-    out = call(Context(store, AT), {"op": "Diff", "from": "commit_000001"})
+    out = call(Context(store, AT), {"op": "diff", "from": "commit_000001"})
     assert yaml.safe_load(out.text) == out.details
 
 
@@ -362,10 +361,10 @@ def test_read_evidence_at_resolves_materials_of_that_commit(history: History, tm
     history.add(Changeset(nodes=(lost,), edges=(disowned,)), source="x")
     store: Any = Store(None, history, tmp_path)  # type: ignore[arg-type]
     refs = ["paper_0001::1 Intro::2:3", "material_0001::1 Intro::4:4"]
-    then = call(Context(store, AT), {"op": "ReadEvidence", "source_refs": refs, "at": with_material}).details
+    then = call(Context(store, AT), {"op": "read_evidence", "source_refs": refs, "at": with_material}).details
     assert [i["state"] for i in then["items"]] == ["available", "available"]
     assert then["items"][0]["text"] == "2| line 2\n3| line 3\n" and then["coverage"]["at"] == with_material
-    now = call(Context(store, AT), {"op": "ReadEvidence", "source_refs": refs, "at": "main"}).details
+    now = call(Context(store, AT), {"op": "read_evidence", "source_refs": refs, "at": "main"}).details
     assert now["missing"] == refs  # 材料节点已删除：只能按旧提交读到
 
 

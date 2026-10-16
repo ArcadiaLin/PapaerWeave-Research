@@ -50,13 +50,22 @@ class Context:
 
 
 @dataclass(frozen=True, slots=True)
+class Rendered:
+    """算子自己写好了给 LLM 读的文本（如带注释的读取投影）：``details`` 是同一结果的结构化形式。"""
+
+    details: dict[str, Any]
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
 class Result:
-    """一次调用的结果：``details`` 是结构化结果，``text`` 是给 LLM 读的 YAML。``status`` 为
-    ``rejected``、``blocked`` 或 ``conflict`` 时是错误结果。``repairs`` 是执行前对参数的兜底修复，只给入口记日志，
-    不在 ``text`` 中。"""
+    """一次调用的结果：``details`` 是结构化结果，``text`` 是给 LLM 读的 YAML（算子给出 :class:`Rendered` 时用它的
+    文本）。``status`` 为 ``rejected``、``blocked`` 或 ``conflict`` 时是错误结果。``repairs`` 是执行前对参数的兜底修复，
+    只给入口记日志，不在 ``text`` 中。"""
 
     details: dict[str, Any]
     repairs: tuple[str, ...] = ()
+    rendered: str | None = None
 
     @property
     def is_error(self) -> bool:
@@ -64,7 +73,7 @@ class Result:
 
     @property
     def text(self) -> str:
-        return dump(self.details)
+        return self.rendered if self.rendered is not None else dump(self.details)
 
 
 MAX_ERRORS = 30  # 返回的错误条数上限：一份草稿可能每行都错，整份列出会占满写者的上下文
@@ -81,7 +90,7 @@ def rejected(errors: list[dict[str, str]], *, status: str = "rejected") -> Resul
     return Result({"status": status, "errors": items})
 
 
-Execute = Callable[[Context, Mapping[str, Any]], dict[str, Any]]
+Execute = Callable[[Context, Mapping[str, Any]], "dict[str, Any] | Rendered"]
 CONTEXT_KEYS = ("op", "session", "formed_by")  # 写入请求中不由参数给出的键：工具名与调用环境
 
 
@@ -103,7 +112,8 @@ class Operator:
         if isinstance(request, Mapping):
             request, repairs = repair(self.parameters, request)
         try:
-            result = Result(self.execute(ctx, request))
+            out = self.execute(ctx, request)
+            result = Result(out.details, rendered=out.text) if isinstance(out, Rendered) else Result(out)
         except ContractError as exc:
             result = rejected(exc.errors, status=exc.status)
         return replace(result, repairs=tuple(repairs))
@@ -124,8 +134,6 @@ def one_or_many(item: Mapping[str, Any]) -> dict[str, Any]:
 
 STRING = {"type": "string"}
 STRINGS = {"type": "array", "items": STRING}
-TEXT = schema({"text": STRING}, ["text"])  # 不是库中对象时直接写出的文字
-TERMS = schema({"identifier": STRING, "mention": STRING, "text": STRING})  # 查找用的标识符、提及与描述
 
 
 def params_of(op: str, parameters: Mapping[str, Any], request: Mapping[str, Any]) -> dict[str, Any]:
@@ -151,11 +159,11 @@ def db_operator(
     *,
     name: str,
     parameters: dict[str, Any],
-    run: Callable[..., dict[str, Any]],
+    run: Callable[..., Any],
 ) -> Operator:
     """只读的中间件算子：核对参数后调用 ``run(store, **params)``。"""
 
-    def execute(ctx: Context, request: Mapping[str, Any]) -> dict[str, Any]:
+    def execute(ctx: Context, request: Mapping[str, Any]) -> Any:
         return run(ctx.store, **params_of(name, parameters, request))
 
     return Operator(name, "db", parameters, execute)
@@ -175,12 +183,11 @@ __all__ = [
     "CONTEXT_KEYS",
     "STRING",
     "STRINGS",
-    "TERMS",
-    "TEXT",
     "Context",
     "Execute",
     "Family",
     "Operator",
+    "Rendered",
     "Result",
     "db_operator",
     "interface",

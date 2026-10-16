@@ -1,0 +1,126 @@
+"""检索用的派生字段：每次提交后补算，不受版本管理（``schema.DERIVED_FIELDS``）。
+
+- 节点的 ``search_text``（全文索引 ``node_texts``）：名称、别名、描述，以及邻居的名称——检索 "PatchTST ETTh1"
+  能命中用到二者的 Experiment，即使它的描述里没写这两个名字。产物是标题与摘要。
+- 节点的 ``embedding``（向量索引 ``node_vectors``）：名称、别名与描述；Content 是描述；产物是标题与摘要。
+- 带 ``description`` 的边的 ``search_text``（``edge_texts``）与 ``embedding``（``edge_vectors``）：两端的名称、
+  关系类型与描述。没有描述的边不进索引。
+
+邻居改名、加边、产物检入都会改变 ``search_text``，所以每次全量重算文本（库小，一次查询），只写回变了的文本，只为
+向量文本变了的对象补算向量。
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from typing import Any
+
+from neo4j import Driver, RoutingControl
+
+from ..model.schema import FROM, INDEXED_RELS, SEARCHABLE
+from .embedding import embedding_key
+
+Embed = Callable[[list[str]], list[list[float]]]
+NEIGHBOR_NAMES = 40  # search_text 中邻居名称的上限：ETTh1 这类节点有上百个邻居，名称只取一部分
+
+
+def node_texts(driver: Driver, database: str | None) -> list[dict[str, Any]]:
+    """每个可检索节点的检索文本与向量文本。"""
+    rows = _read(
+        driver,
+        database,
+        f"""MATCH (n:{SEARCHABLE})
+            OPTIONAL MATCH (k:NameKey)-[:NAMES]->(n) WHERE k.raw <> n.name
+            WITH n, collect(DISTINCT k.raw) AS alias
+            OPTIONAL MATCH (n)-[r]-(m:{SEARCHABLE}) WHERE type(r) <> 'USED'
+            WITH n, alias, collect(DISTINCT coalesce(m.name, m.title))[..{NEIGHBOR_NAMES}] AS near
+            OPTIONAL MATCH (n)-[:{FROM}]->(p:Paper)
+            RETURN n.id AS id, n.name AS name, n.title AS title, n.abs AS abs, n.description AS description,
+                   alias, near, p.name AS paper, n.search_text AS search_text, n.embedding_key AS key""",
+    )
+    out = []
+    for r in rows:
+        head = [r["name"] or r["title"] or ""]
+        if r["alias"]:
+            head.append("also: " + ", ".join(sorted(r["alias"])))
+        body = r["description"] or r["abs"] or ""
+        near = sorted({n for n in r["near"] if n and n != r["name"]})
+        search_text = "\n".join(filter(None, [*head, body, "related: " + "; ".join(near) if near else ""]))
+        vector_text = "\n".join(filter(None, [*head, body]))
+        out.append({**r, "stored": r["search_text"], "search_text": search_text, "vector_text": vector_text})
+    return out
+
+
+def edge_texts(driver: Driver, database: str | None) -> list[dict[str, Any]]:
+    rows = _read(
+        driver,
+        database,
+        f"""MATCH (a)-[r:{'|'.join(INDEXED_RELS)}]->(b) WHERE r.description IS NOT NULL
+            RETURN elementId(r) AS eid, a.id AS src, type(r) AS type, b.id AS dst,
+                   coalesce(a.name, a.title, left(a.description, 80)) AS a_name,
+                   coalesce(b.name, b.title, left(b.description, 80)) AS b_name,
+                   r.description AS description, r.search_text AS search_text, r.embedding_key AS key""",
+    )
+    for r in rows:
+        r["stored"] = r["search_text"]
+        r["search_text"] = f"{r['a_name']} {r['type']} {r['b_name']}\n{r['description']}"
+        r["vector_text"] = r["search_text"]
+    return rows
+
+
+def sync(driver: Driver, database: str | None, embed: Embed | None) -> int:
+    """补算全部派生字段；``embed`` 为 ``None`` 时只算检索文本。返回补算了向量的对象与边的个数。"""
+    nodes = node_texts(driver, database)
+    edges = edge_texts(driver, database)
+    _write(
+        driver,
+        database,
+        "UNWIND $rows AS row MATCH (n {id: row.id}) SET n.search_text = row.text",
+        [{"id": n["id"], "text": n["search_text"]} for n in nodes if n["search_text"] != n["stored"]],
+    )
+    _write(
+        driver,
+        database,
+        "UNWIND $rows AS row MATCH ()-[r]->() WHERE elementId(r) = row.eid SET r.search_text = row.text",
+        [{"eid": e["eid"], "text": e["search_text"]} for e in edges if e["search_text"] != e["stored"]],
+    )
+    if embed is None:
+        return 0
+    todo_nodes = [n for n in nodes if n["vector_text"] and n["key"] != embedding_key(n["vector_text"])]
+    todo_edges = [e for e in edges if e["key"] != embedding_key(e["vector_text"])]
+    vectors = embed([t["vector_text"] for t in todo_nodes + todo_edges]) if todo_nodes or todo_edges else []
+    node_rows = [
+        {"id": n["id"], "v": v, "key": embedding_key(n["vector_text"])} for n, v in zip(todo_nodes, vectors, strict=False)
+    ]
+    edge_rows = [
+        {"eid": e["eid"], "v": v, "key": embedding_key(e["vector_text"])}
+        for e, v in zip(todo_edges, vectors[len(todo_nodes) :], strict=False)
+    ]
+    _write(
+        driver,
+        database,
+        """UNWIND $rows AS row MATCH (n {id: row.id})
+           CALL db.create.setNodeVectorProperty(n, 'embedding', row.v) SET n.embedding_key = row.key""",
+        node_rows,
+    )
+    _write(
+        driver,
+        database,
+        """UNWIND $rows AS row MATCH ()-[r]->() WHERE elementId(r) = row.eid
+           CALL db.create.setRelationshipVectorProperty(r, 'embedding', row.v) SET r.embedding_key = row.key""",
+        edge_rows,
+    )
+    return len(node_rows) + len(edge_rows)
+
+
+def _read(driver: Driver, database: str | None, cypher: str) -> list[dict[str, Any]]:
+    records = driver.execute_query(cypher, database_=database, routing_=RoutingControl.READ).records
+    return [r.data() for r in records]
+
+
+def _write(driver: Driver, database: str | None, cypher: str, rows: list[dict[str, Any]]) -> None:
+    for i in range(0, len(rows), 200):
+        driver.execute_query(cypher, {"rows": rows[i : i + 200]}, database_=database)
+
+
+__all__ = ["edge_texts", "node_texts", "sync"]

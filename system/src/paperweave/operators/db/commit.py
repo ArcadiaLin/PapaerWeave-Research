@@ -1,146 +1,163 @@
-"""Commit：提交一份 graph-doc（docs/experiments/e09/operators/commit.md）。
+"""commit：提交工作目录中的文件——graph-doc（改证据节点与关系）与产物文档（新建或修改共同产物）走同一个工具。
 
-    Commit(doc | doc_file, source?, apply?: true, message?, base?, dedup?: true)
-      -> graph-plan（dry_run、有阻塞项或没有变化）| graph-result（提交后）
+    commit(files, message, reason?, dry_run?: false)
+      -> {status: ready | committed | noop | blocked | conflict, ...}
 
-``doc`` 是 graph-doc 文本；``doc_file`` 是写者工作目录中的 graph-doc 草稿（:mod:`paperweave.draft`），二者给一个。
-用草稿时，阻塞项与提示的位置换算成 ``<文件>:<行号> (<位置>)``，提交的 ``meta.draft`` 记草稿的路径与哈希。
-``apply`` 默认提交：先做 dry_run，有阻塞项时返回 graph-plan、不写入，没有时直接提交；``apply: false`` 只做
-dry_run。命令行入口（:mod:`paperweave.cli`）总是显式给出 ``apply``，仍须加 ``--apply`` 才提交。
+- ``files``：写者工作目录中的文件（:mod:`paperweave.draft` 的路径规则）。以 ``graph-doc:`` 开头的 YAML 是 graph-doc
+  （一次至多一份：``$`` 名只在一份文件内有效），其余按产物文档的头部取类型（:mod:`paperweave.artifact`）。
+- 先对全部文件做一遍检查；任何一份有阻塞项时什么都不写，阻塞项的位置换算成 ``<文件>:<行号>``。都通过时依次写入：
+  graph-doc 一个提交、产物文档一个提交。``dry_run: true`` 只检查。
+- ``message`` 是提交说明，产物文档的 ``update_abstract`` 也用它；改动或删除了他人写的产物行时要给 ``reason``。
+- 写入身份与来源由调用环境给出（登录身份、会话），不是参数。提交后补算检索用的派生字段，失败只提示。
 
-``source`` 省略时记为调用所在的会话（``session:<id>``）；没有会话时必须给出。写入管线在 :mod:`paperweave.commit`：
-解析 → 翻译 → 求差 → 写入后检查 →（apply 时）分配 id 并经 graph-vc 提交。查重（Resolve）与向量补算用 ``PAPERWEAVE_NEO4J_URI`` 所指的同一个库。没有版本记录的旧库一律拒绝。
-``status`` 为 ``blocked`` 或 ``conflict`` 时是错误结果，``errors`` 列出阻塞项或冲突。
+写入管线在 :mod:`paperweave.commit`（graph-doc）与 :mod:`paperweave.artifact.checkin`（产物）。
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from typing import Any
 
-import httpx
-from neo4j import Driver
-
-from graph_vc import ConflictError, VersionedGraph
+from graph_doc import GraphDocError, load
+from graph_vc import ConflictError
 
 from ... import draft
+from ...artifact.checkin import check_in
 from ...artifact.related import related
 from ...commit.reader import Neo4jReader
 from ...commit.report import conflict, plan, result
-from ...commit.review import ResolveDeduper
 from ...commit.submit import apply, prepare
 from ...commit.translate import Context as CommitContext
+from ...query.dedup import SearchDeduper
 from ...store import ContractError
 from ...store.database import check_versioned, setup_database
-from ...yamlfmt import dump
-from ..base import STRING, Context, Operator, params_of, schema
+from ..base import STRING, STRINGS, Context, Operator, params_of, schema
+
+PARAMETERS = schema(
+    {"files": STRINGS, "message": STRING, "reason": STRING, "dry_run": {"type": "boolean"}},
+    ["files", "message"],
+)
 
 
-def run(
-    text: str,
-    *,
-    graph: VersionedGraph,
-    driver: Driver,
-    ctx: CommitContext,
-    commit: bool,
-    message: str = "",
-    base: str | None = None,
-    database: str | None = None,
-    embed: Callable[[], int] | None = None,
-    meta: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """dry_run 或提交一份 graph-doc，返回 graph-plan 或 graph-result。
+def execute(ctx: Context, request: Mapping[str, Any]) -> dict[str, Any]:
+    params = params_of("commit", PARAMETERS, request)
+    message = params["message"]
+    if not isinstance(message, str) or not message.strip():
+        raise ContractError([{"rule": "format", "at": "message", "msg": "one line: what this commit does"}])
+    given = params["files"]
+    paths = [given] if isinstance(given, str) else given
+    if not isinstance(paths, list) or not paths or not all(isinstance(p, str) for p in paths):
+        raise ContractError([{"rule": "format", "at": "files", "msg": "a list of file paths in your working directory"}])
+    if ctx.workdir is None:
+        raise ContractError([{"rule": "format", "at": "files[0]", "msg": "no working directory to read files from here"}])
+    files = [draft.read(ctx.workdir, p, f"files[{i}]", ctx.store.material_root) for i, p in enumerate(paths)]
+    docs = [f for f in files if _is_graph_doc(f.text)]
+    artifacts = [f for f in files if f not in docs]
+    if len(docs) > 1:
+        msg = "one graph-doc per commit ($ names are local to a file); merge them, or commit them one by one"
+        raise ContractError([{"rule": "format", "at": "files", "msg": msg}])
+    for doc in docs:
+        if syntax := draft.yaml_syntax(doc):
+            raise ContractError([syntax])
+    if not ctx.formed_by:
+        raise ContractError([{"rule": "identity", "at": "", "msg": "the server was started without a user"}])
 
-    提交后调用 ``embed`` 补算向量。向量是提交之后补算的派生属性，补算失败（如向量服务不可用）
-    不影响已完成的提交，只在结果中提示；之后可以用 ``make embed`` 再补。
+    store = ctx.store
+    check_versioned(store.driver, database=store.database)
+    setup_database(store.graph, store.driver, database=store.database)  # 空库第一次提交前建立版本记录与索引；可重复
+    graph_ctx = CommitContext(
+        reader=Neo4jReader(store.graph, store.driver, database=store.database),
+        source=f"session:{ctx.session}" if ctx.session else "cli",
+        at=ctx.at,
+        material_root=store.material_root,
+        user=ctx.formed_by,
+        deduper=SearchDeduper(store),
+        agent=ctx.agent,
+    )
+    art_args = {
+        "at": ctx.at,
+        "session": str(ctx.session),
+        "formed_by": str(ctx.formed_by),
+        "agent": ctx.agent,
+        "sync": ctx.sync,
+    }
 
-    Raises:
-        UnversionedDatabaseError: 库中有数据但没有版本记录。
-    """
-    check_versioned(driver, database=database)
-    if not commit:
-        return plan(prepare(text, ctx), ctx.reader)
-    setup_database(graph, driver, database=database)
-    try:
-        prepared, record = apply(text, graph, ctx, message=message, base=base, meta=meta)
-    except ConflictError as exc:
-        return conflict(exc)
-    if record is None:
-        return plan(prepared, ctx.reader)
-    out = result(prepared, record)
-    if embed is not None:
+    # 1. 全部检查
+    out: dict[str, Any] = {}
+    blocked = False
+    doc = docs[0] if docs else None
+    if doc is not None:
+        checked = draft.locate_doc(plan(prepare(doc.text, graph_ctx), graph_ctx.reader), doc)
+        out["graph_doc"] = {"file": doc.path, **checked}
+        blocked |= checked["status"] == "blocked"
+    if artifacts:
         try:
-            embed()
-        except (httpx.HTTPError, ValueError) as exc:
-            warning = {"rule": "embedding", "at": record.id, "msg": f"embeddings not synced ({exc}); run make embed"}
-            out.setdefault("warnings", []).append(warning)
+            out["artifacts"] = check_in(
+                store, artifacts, message, confirm=False, reason=params.get("reason"), **art_args
+            )
+        except ContractError as exc:
+            out["artifacts"] = {"status": exc.status, "errors": exc.errors}
+            blocked = True
+    if blocked:
+        return _summary(out, "blocked")
+    if all(part.get("status") in ("noop", "unchanged") for part in (out.get("graph_doc"), out.get("artifacts")) if part):
+        return _summary(out, "noop")
+    if params.get("dry_run") is True:
+        return _summary(out, "ready")
+
+    # 2. 写入
+    if doc is not None and out["graph_doc"]["status"] == "ready":
+        try:
+            prepared, record = apply(doc.text, store.graph, graph_ctx, message=message, meta={"draft": doc.meta()})
+        except ConflictError as exc:
+            out["graph_doc"] = {"file": doc.path, **conflict(exc)}
+            return _summary(out, "conflict")
+        if record is None:
+            out["graph_doc"] = {"file": doc.path, **draft.locate_doc(plan(prepared, graph_ctx.reader), doc)}
+            return _summary(out, "blocked")
+        names = _names(prepared)
+        out["graph_doc"] = {"file": doc.path, **draft.locate_doc(result(prepared, record, names), doc)}
+        if shared := related(store, record.id):
+            out["graph_doc"]["related_artifacts"] = shared
+    if artifacts:
+        try:
+            out["artifacts"] = check_in(store, artifacts, message, confirm=True, reason=params.get("reason"), **art_args)
+        except ContractError as exc:
+            out["artifacts"] = {"status": exc.status, "errors": exc.errors}
+            return _summary(out, exc.status)
+    if ctx.sync is not None and doc is not None and out["graph_doc"].get("status") == "committed":
+        try:
+            ctx.sync()
+        except Exception as exc:  # noqa: BLE001 —— 派生字段补算失败不影响已完成的提交
+            out.setdefault("warnings", []).append(f"search index not updated ({exc}); it is retried on the next commit")
+    statuses = {part.get("status") for part in (out.get("graph_doc"), out.get("artifacts")) if part}
+    return _summary(out, "committed" if statuses & {"committed"} else "noop")
+
+
+def _is_graph_doc(text: str) -> bool:
+    try:
+        data = load(text)
+    except GraphDocError:
+        return text.lstrip().startswith("graph-doc:")
+    return isinstance(data, dict) and "graph-doc" in data
+
+
+def _names(prepared: Any) -> dict[str, str]:
+    """``$`` 名 → 新节点的名称（提交结果中 ``$名 → id (名称)``）。"""
+    doc = prepared.document
+    out = {}
+    for ref in prepared.ids:
+        node = doc.create.get(ref) if doc is not None else None
+        name = node.props.get("name") if node is not None else None
+        if isinstance(name, str):
+            out[ref] = name
     return out
 
 
-PARAMETERS = schema(
-    {
-        "doc": STRING,
-        "doc_file": STRING,
-        "source": {"type": "string"},
-        "apply": {"type": "boolean"},
-        "message": {"type": "string"},
-        "base": {"type": "string"},
-        "dedup": {"type": "boolean"},
-    },
-    (),
-)
+def _summary(out: dict[str, Any], status: str) -> dict[str, Any]:
+    return {"status": status, **out}
 
 
-def execute(call: Context, request: Mapping[str, Any]) -> dict[str, Any]:
-    params = params_of("Commit", PARAMETERS, request)
-    if ("doc" in params) == ("doc_file" in params):
-        raise ContractError([{"rule": "format", "at": "doc", "msg": "give either doc (the YAML text) or doc_file"}])
-    file = None
-    if "doc_file" in params:
-        file = draft.read(call.workdir, params["doc_file"], "doc_file", call.store.material_root)
-        if syntax := draft.yaml_syntax(file):
-            raise ContractError([syntax])
-        text = file.text
-    else:
-        doc = params["doc"]
-        text = doc if isinstance(doc, str) else dump(doc)
-    source = params.get("source") or (f"session:{call.session}" if call.session else None)
-    if source is None:
-        raise ContractError([{"rule": "format", "at": "source", "msg": "give source: where this knowledge comes from"}])
-    store = call.store
-    ctx = CommitContext(
-        reader=Neo4jReader(store.graph, store.driver, database=store.database),
-        source=source,
-        at=call.at,
-        material_root=store.material_root,
-        deduper=ResolveDeduper() if params.get("dedup", True) else None,
-        user=call.formed_by,
-        agent=call.agent,
-    )
-    out = run(
-        text,
-        graph=store.graph,
-        driver=store.driver,
-        ctx=ctx,
-        commit=bool(params.get("apply", True)),
-        message=params.get("message", ""),
-        base=params.get("base"),
-        database=store.database,
-        embed=call.sync,
-        meta={"draft": file.meta()} if file else None,
-    )
-    if out.get("status") == "committed" and (shared := related(store, out["commit"])):
-        out["related_artifacts"] = shared
-    return draft.locate_doc(out, file) if file else out
+COMMIT = Operator(name="commit", family="db", parameters=PARAMETERS, execute=execute, writes=True)
 
-
-COMMIT = Operator(
-    name="Commit",
-    family="db",
-    parameters=PARAMETERS,
-    execute=execute,
-    writes=True,
-)
-
-
-__all__ = ["COMMIT", "PARAMETERS", "execute", "run"]
+__all__ = ["COMMIT", "PARAMETERS", "execute"]

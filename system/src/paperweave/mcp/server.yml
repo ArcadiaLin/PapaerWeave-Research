@@ -1,236 +1,190 @@
 # PaperWeave 的 MCP 暴露：给模型看的全部文字。服务启动时按本文件装配，结构（参数的类型与必填项）来自
-# paperweave.tools（算子与版本记录的读取接口），这里只写文字。
+# paperweave.tools，这里只写文字。
 #
 #   server        serverInfo：name 与 version
 #   instructions  应该怎样使用这个服务（第一行同时是服务的一句话介绍）
-#   tools.<算子>  title；description：这个操作是什么、何时使用；parameters：参数路径 -> 参数说明
+#   tools.<工具>  title；description：这个工具是什么、何时使用；parameters：参数路径 -> 参数说明
 #
-# 参数路径用 . 连接属性名，[] 表示数组的元素，例如 query.text。每个顶层参数都必须有说明；
-# 写了不存在的工具或路径时服务不启动。
+# 参数路径用 . 连接属性名，[] 表示数组的元素。每个顶层参数都必须有说明；写了不存在的工具或路径时服务不启动。
+# 说明中的 {{kinds}} 与 {{relations}} 在装配时换成数据模型登记表生成的词表（paperweave.model.templates.vocabulary），
+# search 的说明末尾另由服务在启动时附上库的总览（paperweave.query.overview）。
 #
-# pi 以 direct 方式列出工具时，模型看不到 instructions（只有 codemode 的 describeNamespace() 返回它），
-# 所以用法全部写在各工具的说明里；引用写法与 kind 在用到的工具中重复给出。
+# pi 以 direct 方式列出工具时，模型看不到 instructions，所以用法全部写在各工具的说明里。
 
 server:
   name: PaperWeave
-  version: 0.2.0
+  version: 0.3.0
 
 instructions: |
-  PaperWeave is a knowledge store built from CS papers, with the artifacts earlier sessions produced while using it.
-  Find with Search and Resolve, follow relations with Traverse, read source lines with ReadEvidence. Shared artifacts (such as Leaderboards, generated answers and skills) are versioned documents that sessions edit together: check one out with FetchArtifact, edit it in your working directory, and check it in with CheckIn. Commit, when listed, changes the stored knowledge itself. Every write is kept as a commit: Log, Show, Diff and AsOf read that history. Each tool's description says how to use it.
+  PaperWeave is a shared knowledge store built from CS papers by many sessions, with the artifacts they produced.
+  Find with search, read whole nodes with get, follow relations with traverse, read paper lines with read_evidence. To write, put a file in your working directory (checkout gives you a blank template or the current nodes) and pass it to commit. Every write is a commit: log, show, diff and as_of read that history.
 
 tools:
-  Search:
+  search:
     title: Search
     description: |-
-      Find stored objects of one type by text and structural conditions. Types and their kinds:
-      - Entity: Paper, Dataset, Code, Model, Benchmark, Tool
-      - Concept: Method, Task, Issue, Proposition
-      - Content (records taken from papers): Claim, Experiment, Contribution, Observation
-      - Artifact: shared artifacts that sessions check in and edit; no kinds, filter with where.op, or find the one with a given identity with where.key
+      Find nodes, artifacts and described relations in the store with one query: a name, an identifier (arxiv:2205.13504, or the bare arXiv id) or descriptive words. Exact name, alias, identifier and id matches come first (marked _match), then results ranked by full-text and semantic similarity. A relation hit (such as a CITES or RELATES_TO edge whose description matches) is listed under its start node.
 
-      Results are ranked and carry no relations: id, kind, name or title, and the opening part of the searched text (description, definition, text and note, or abs); Content results also give their paper and source_refs, Artifact results their document path. To see an object's full fields and relations, call Traverse with start [id] and an empty path; to read the source lines, pass source_refs to ReadEvidence. An artifact's document lives in the store: check it out with FetchArtifact to read or edit it, or read some lines with ReadEvidence as <artifact id>::document::<start>:<end> (a range past the end reports the document's line count).
+      Results are YAML: each id with a short view (kind, name or description, paper, anchor, key edges); comments after # give the names of ids and the paper sections of anchors. Fields starting with _ are read-only. Use get for all fields and edges of a node, traverse to follow relations exhaustively (search ranks, it does not enumerate), and read_evidence to read the paper lines of an anchor.
 
-      The whole result is kept under 16 KB: the space is shared evenly between results, and a text cut short ends with … followed by <field>_bytes, its full length. Fewer results per page give longer excerpts.
-
-      To use a name from the question (a method, dataset or task) in where, first turn it into an id with Resolve.
+      Kinds:
+      {{kinds}}
+      Artifacts (shared documents sessions edit together): Leaderboard, CompareSettings, Verify, Summarize, Generate, Skill. At most 3 artifacts are mixed into a search unless kind names an artifact type.
     parameters:
-      type: "One of Entity, Concept, Content, Artifact. A kind such as Experiment or Method is not a type: write type: Content, kinds: [Experiment]."
-      query: "{text?, mention?, identifier?}: text is matched by full text and vectors; mention matches names (Entity, Concept); identifier is exact (arxiv:2205.13504, doi:..., url:...; Entity only). Omit to list everything that meets where, in id order."
-      kinds: List of kinds of this type, such as [Experiment]; omit for all kinds. Not for Artifact.
-      where: >-
-        Structural conditions, all of which must hold; a list of ids in one condition means any of them.
-        Values are ids (or lists of ids), not objects. Example for type Content, kinds [Experiment]:
-        {evaluates: <method id>, role: target, uses: <dataset id>}. Entity: part_of, for_task (Dataset, Benchmark), stub. Concept: broader, stub.
-        Content: about, from (paper id), formed_by; Contribution: stated_by (paper | agent); Claim: supported_by;
-        Experiment: evaluates (with role: target | baseline), uses (evaluation data), on_task, evaluated_on.
-        Artifact: op (Leaderboard, CompareSettings, Verify, Summarize, Generate, Skill), used (an object id), formed_by, session, key (find the one shared artifact with an identity:
-        {type: Leaderboard, task: <id>, dataset: <id>, setting: {variate: ...}}, {type: Skill, name: <name>},
-        {type: Verify, claim: <id>}, {type: CompareSettings, items: [<ref>, <ref>]}).
-      expand: "Widen id conditions in where: {narrower: depth} also accepts narrower Concepts, {parts: depth} also accepts parts of an Entity; depth 1-3."
-      scope: List of paper ids; only Content from these papers. Omit to search the whole store.
-      budget: Number of results in this page, 1-100 (default 10).
-      continuation: meta.continuation of the previous page, to get the next page; keep the other parameters unchanged.
+      query: A name, identifier, id or descriptive words.
+      kind: Only these kinds, families (Entity, Concept, Content), artifact types, or relation types; omit for everything.
+      paper: Only Content from these papers (paper ids).
+      topn: Number of results, 1-50 (default 10).
 
-  Resolve:
-    title: Resolve
-    description: >-
-      Turn a name, identifier or description into the id of a stored Entity or Concept of one kind, before using
-      it in Search where, Traverse start or Commit. Matching runs in order: exact identifier, exact name (including
-      aliases), then semantic candidates. Each entry of refs is {id, kind, name, aliases?, about?}, where about is the
-      start of its description or definition. status: resolved (refs is the match), ambiguous (several exact
-      matches), candidates (only similar objects, refs in rank order; not an identity: compare names and about, read
-      them with Traverse, empty path, when unsure), none, or
-      unprocessed (a matching channel failed, see failed; not the same as none). similar lists near objects found
-      besides the match (write mode, or an ambiguous read). None does not prove the object is absent from the
-      papers.
+  get:
+    title: Get
+    description: |-
+      Read nodes by id: all fields and outgoing edges, in the same YAML shape you write under set (fields) and create (edges) in a graph-doc. Comments after # give the names of ids and the paper sections of anchors; fields starting with _ are read-only (_edges_in counts incoming edges by type: follow them with traverse dir in; _supported_by, _opposed_by and _used_by list who points here). An artifact shows its type, title and abstract, and _stale when something it used changed since; checkout it to read or edit the document.
     parameters:
-      query: "{mention?, identifier?, text?}: mention is the name as written; identifier like arxiv:2205.13504; text a description."
-      kind: One kind, such as Method, Dataset, Task or Paper.
-      scope: global (the only scope for now).
-      mode: read (default) stops at an exact match; write also lists semantic near-duplicates, as Commit's duplicate check does.
+      ids: Node or artifact ids, at most 20.
 
-  Traverse:
+  traverse:
     title: Traverse
     description: |-
-      Read objects with their full fields and relations, or follow relations from known ids. An empty path returns the start objects themselves, each with all its outgoing relations (edge properties such as role, description and source locators included). A non-empty path walks hop by hop and returns the paths (meta.bindings), the end objects (meta.items) and every object on the paths.
+      Follow relations from known ids, hop by hop, and list every node reached (exhaustive, unlike search). Each hop is {rel, dir, kind}: rel is a relation type or a list of them, dir is out (default, start → end as written below), in or both, kind keeps only end nodes of these kinds. Each reached node comes with a short view and _via: the nodes of the previous step it was reached from and the edge properties. An empty path returns the start nodes' short views.
 
-      Relations, written from the start node (out) to the end node:
-      - FROM: Content -> its Paper (with locators); ABOUT: Content -> what it is about
-      - EVALUATES: Experiment -> Method/Model/Code/Tool (role target | baseline); USES: Experiment -> Dataset etc. (role); ON_TASK: Experiment -> Task; EVALUATED_ON: Experiment -> Benchmark
-      - SUPPORTED_BY: Claim -> Experiment/Observation; SUPPORTS, OPPOSES: Claim -> Claim
-      - CITES: Paper -> Paper; PART_OF, DERIVED_FROM: Entity -> Entity; IMPLEMENTS: Code/Model -> Method; FOR_TASK: Dataset/Benchmark -> Task
-      - BROADER, HAS_PART, OVERLAPS_WITH: between Concepts; ADDRESSES: Method -> Task
-      - USED: Artifact -> what it used; walk USED with dir in from an object to find the artifacts that used it.
-      Example: the experiments that evaluate a method: start [<method id>], path [{rel: EVALUATES, dir: in}].
-
-      Fields starting with _ are read-only. An artifact's _stale lists why it may be out of date: something it used was revised or removed, or a paper material it read changed or was superseded by a newer version of the paper. A record's _revised gives its latest revision (commit, by, reason, anchor); Show that commit for the old values.
-
-      Objects come back whole and are never cut. A page holds at most budget paths and at most 16 KB: when the objects do not fit, the last paths move to the next page, so meta.coverage.returned can be below budget; meta.continuation is then set, and meta.size gives the limit and the size used.
+      Relations (start → end):
+      {{relations}}
+      - FROM: Content → Paper (system: the paper a record comes from)
+      - USED: Artifact → what it used (system); walk USED with dir in from a node to find the artifacts that used it.
+      Example, the experiments that evaluate a method and the datasets they use: start [<method id>], path [{rel: EVALUATES, dir: in}, {rel: USES}].
     parameters:
-      start: List of ids to start from (from Search, Resolve or an earlier Traverse).
-      path: "0-3 hops; each hop is {rel, dir: out | in | both, kinds?, where?, edge?, depth?}. kinds and where (as in Search) restrict the hop's end objects, edge restricts edge properties such as {role: target}, depth 1-3 repeats BROADER, PART_OF, HAS_PART or DERIVED_FROM. An empty path reads the start objects."
-      budget: Number of paths in this page (default 50).
-      continuation: meta.continuation of the previous page, to get the next page; keep the other parameters unchanged.
+      start: Ids to start from.
+      path: "0-3 hops, each {rel, dir?, kind?}."
+      path[].rel: A relation type, or a list of them.
+      path[].dir: out (default), in or both.
+      path[].kind: Keep only end nodes of these kinds, families or artifact types.
+      limit: Most nodes to list, 1-100 (default 30); the total is always given.
 
-  ReadEvidence:
+  read_evidence:
     title: Read evidence
     description: >-
-      Read the source lines behind a record: pass the source_refs given by Search or Traverse, written
-      <material id>::<section>::<start>:<end> (the start may also be the paper or artifact id). Works for paper
-      materials and artifact documents; artifact documents are read only this way. Each item is available (text with line numbers), missing or error.
-      Read only the lines you need; cite the same references (or narrower line ranges within them) in your artifacts.
+      Read source lines: the lines of a paper (the anchor of a record) or of an artifact document. Write each
+      reference as <paper or artifact id>::<start>:<end>, such as paper_0003::120:135; a section in between
+      (paper_0003::4.2 Results::120:135) is accepted and ignored. Each item is available (text with line numbers
+      and the section it is in), missing or error; at most 400 lines per reference. Read only the lines you need.
     parameters:
-      source_refs: List of source references, copied as given.
-      at: Optional commit id (or main). Resolve the references as of that commit, for materials named in an AsOf view; without it they are resolved in the current store.
+      source_refs: List of references <id>::<start>:<end>.
+      at: Optional commit id. Resolve the references as of that commit; without it, the current paper version is read.
 
-  Commit:
+  checkout:
+    title: Checkout
+    description: |-
+      Put what you want to write into your working directory, as files to edit with your own tools and then pass to commit. Nothing in the store changes.
+      - new: [<kind>, ...] gives a blank graph-doc template with one $node per kind, its fields and the relations it can have, with a comment on each; delete what you do not use.
+      - ids of nodes give a graph-doc with those nodes under set, as get shows them: change values to edit them.
+      - ids of artifacts check out their current documents (artifacts/<title>.md; a Skill goes to .agents/skills/<name>/SKILL.md) with id and base header lines (do not edit those two lines), plus a hint: version, last editors, and what others changed since your last edit.
+    parameters:
+      ids: Node or artifact ids to edit.
+      new: Kinds to create, for a blank template, such as [Experiment, Method].
+
+  commit:
     title: Commit
     description: |-
-      Change the stored knowledge: create, edit or delete objects and their relations by submitting a graph-doc, a YAML text describing the wanted state of some nodes. Artifacts cannot be written here; use FetchArtifact and CheckIn.
+      Write to the store: pass files from your working directory. A graph-doc (a YAML file starting with graph-doc: v0.2) creates, changes or deletes nodes and relations; an artifact document (Markdown with a type header) creates or updates a shared artifact. All files are checked first; if anything blocks, nothing is written. status ready (with dry_run) or committed; blocked lists errors with at (file:line and the place in the doc), msg and often fix: edit those lines and commit again.
 
-      Write the graph-doc to a YAML file in your working directory with your file tools and pass its path as doc_file (a short doc may instead go inline as doc). The graph-doc holds only graph-doc, by, confirm and nodes; message, source, base, apply and dedup are separate parameters of this tool, not keys of the doc.
-        graph-doc: v0.1
-        by: <your sign-in identity>                    # optional: the server fills it in; if written, it must match
-        confirm: {$ref: {distinct_from: [ids]}, id: {revise: {reason: ..., anchor: ...}}}   # optional, see below
-        nodes:
-          $new-name: {kind: ..., <fields>, <RELATIONS>}   # $ names a new node; the reply maps it to an id
-          exp_0004: {note: ..., ABOUT: [...]}             # an existing id edits that node
-          obs_0002: null                                  # null deletes the node and all its edges
+      A graph-doc has up to four sections:
+        graph-doc: v0.2
+        create:                              # new nodes, and new edges from any node
+          $dlinear:                          # $name: a new node; the reply maps it to an id
+            kind: Method
+            name: DLinear
+            description: |
+              A one-layer linear model on decomposed trend and remainder ...
+          $exp:
+            kind: Experiment
+            paper: paper_0003
+            anchor: [120:135, 141:150]       # paper lines, read with read_evidence
+            figures: [S4.T2]
+            description: |
+              Long-horizon forecasting on six benchmarks against Transformer baselines ...
+            EVALUATES:                       # UPPERCASE keys are relations: {target: properties}
+              $dlinear: {role: target, result: own}
+              method_0004: {role: baseline, result: cited}
+            USES:
+              dataset_0002: {role: evaluation_data, printed_as: ETTh1}
+          method_0004:                       # an existing id under create: new edges only
+            RELATES_TO:
+              $dlinear: {description: "..."}
+        set:                                 # change fields of existing nodes; null clears a field
+          method_0004: {alias: [Informer]}
+        delete:
+          claim_0007: null                   # the whole node and its edges
+          exp_0002: {USES: [dataset_0005]}   # only these edges
+        confirm:
+          $dlinear: {distinct_from: [method_0011]}
+          exp_0002: {revise: {reason: "...", anchor: [88:90]}}
 
-      Field spelling decides meaning: lowercase keys are properties; UPPERCASE keys are outgoing relations; keys starting with _ are read-only (copy them back unchanged or leave them out). A property you omit stays as it is, null clears it. A relation key lists the complete set of that relation type: edges you leave out of the list are deleted, so to add one edge, read the node with Traverse (empty path) and send back the whole list plus the new edge; omitting the key leaves the relation untouched. A list item is an id or $ref, or {to: ref, <edge properties>}. Refer to existing objects only by id (use Resolve for names), never invent ids.
+      Rules:
+      - Refer to existing nodes by id only (find them with search). A $name is valid only inside its file.
+      - Writing a node that already exists blocks with exists; an edge that already exists with the same properties is skipped. To change, use set (fields) or delete (edges); to replace an edge's properties, write it under set.
+      - New Entities and Concepts are checked for duplicates: a dedup error lists stored candidates. If one is the same thing, use its id instead of your $name; if none is, add confirm: {$name: {distinct_from: [the candidate ids]}}.
+      - Content (Experiment, Claim, Contribution) records what a paper says. New edges on an existing record need anchor (on the edge, or in confirm revise); changing its fields or edges needs confirm: {id: {revise: {reason, anchor}}}; deleting it needs reason. The old version stays in the history.
+      - Fields starting with _ and # comments are ignored, so a node pasted from get can go under set unchanged.
+      - Quote short text containing ": " or starting with a special character; put long text in a | block.
 
-      What each Content kind is for:
-      - Claim: a statement a paper makes, FROM that one paper (with locators), SUPPORTED_BY its experiments or observations.
-      - Experiment: an experiment a paper reports (one table or figure setting), FROM that paper.
-      - Contribution: what a paper contributes; stated_by paper when the paper says so, agent when it is your assessment.
-      - Observation: your own finding, such as a comparison across papers or a judgment about comparability. It is ABOUT the objects it concerns and comes FROM the artifacts (such as a Leaderboard, with the document lines) or paper lines it rests on. Do not record your conclusions as a Claim of some paper.
-
-      Kinds and fields (* required unless stub: true):
-      - Paper: name*, description*, identifiers [arxiv:..., doi:..., url:...], year, material (path of the paper's Markdown file, relative to the store's material root, as other papers' material shows; giving a new file for a paper that has one records a newer version of the paper: references to the old version stay valid, and artifacts that read it are marked stale), aliases, note
-      - Dataset, Code, Model, Benchmark, Tool: name*, description*, identifiers, aliases, note
-      - Method, Task: name*, definition*, aliases, note. A named object not yet described can be a stub: {kind, name, stub: true}
-      - Issue: text*, description, note. Proposition: text*, note
-      - Claim: text*, note; needs FROM. Experiment: text*, anchors* (table or figure ids such as [S5.T3]), note; needs FROM and EVALUATES
-      - Contribution: text*, stated_by* (paper | agent), note; needs FROM and ABOUT. Observation: text*, note; needs ABOUT
-      Relations: FROM {to: paper, locators: ["<section>::<start>:<end>"]} (an Observation may come FROM an artifact); ABOUT; EVALUATES {to, role: target | baseline}; USES {to, role: evaluation_data | training_data | analysis_input | tooling | retrieval_corpus}; ON_TASK; EVALUATED_ON; SUPPORTED_BY; SUPPORTS / OPPOSES {to, stated_by, description} between Claims; CITES; PART_OF; DERIVED_FROM; IMPLEMENTS; FOR_TASK; BROADER; HAS_PART; ADDRESSES; OVERLAPS_WITH (endpoints as in Traverse). Any edge may also carry description and source_refs.
-
-      Workflow: write the file, then call Commit with doc_file. The call checks the doc and commits it when nothing blocks it; the graph-result gives the commit id and the id of every $ref, and related_artifacts lists the shared Leaderboards on the evaluation datasets of the Experiments this commit touched (with their latest version and editor; FetchArtifact to read one) and the datasets that have none yet. status blocked means nothing was written: errors lists each problem with at (file:line and the place in the doc), msg and often fix; edit those lines of the file and call again with the same arguments. A dedup error lists stored candidates for a new Entity or Concept: if one is the same object, replace your $ref by its id everywhere (your fields then edit it); if none is, add confirm: {$ref: {distinct_from: [candidate ids]}}. Records of what a paper says (Experiment, Claim, Contribution stated_by paper) are kept faithful to the paper: to change or delete one, give confirm: {id: {revise: {reason: why, anchor: "<section>::<start>:<end>" of the paper lines supporting the change}}} (a deletion needs only reason); the old version stays in the history. Interpretations (Observation, Contribution stated_by agent, SUPPORTS / OPPOSES stated_by agent) keep their author: anyone may add relations to them (such as another ABOUT), but only the writer who formed one may change its text, remove its relations or delete it; to disagree, write your own. status noop means nothing would change. To preview without writing, pass apply: false.
+      {{kinds}}
+      Relations (start → end; * marks required properties):
+      {{relations}}
+      Any edge may also carry anchor (paper lines), description and extra; an edge whose start is not a paper or Content gives paper when it has an anchor.
     parameters:
-      doc: The graph-doc as YAML text, for a short doc; give doc or doc_file, not both.
-      doc_file: Path of a YAML file in your working directory holding the graph-doc (see the description for its form).
-      source: Optional. A short label of where this knowledge comes from, such as the paper; recorded in the commit and on new names. Left out, the session is recorded.
-      apply: Default true, which commits when nothing blocks; false only previews (a dry run).
-      message: One line saying what this commit does.
-      base: The commit (meta.snapshot) at which you read the nodes you are changing; recorded only.
-      dedup: Check new Entities and Concepts against stored ones (default true); leave it on.
+      files: Paths of files in your working directory; at most one graph-doc.
+      message: One line saying what this commit does; for artifact documents, also what you changed and why.
+      reason: Why you changed or deleted artifact lines written by others; required when the check lists such lines.
+      dry_run: true only checks and shows what would change.
 
-  FetchArtifact:
-    title: Fetch artifact
-    description: |-
-      Check out shared artifacts into your working directory to read and edit them; check them back in with CheckIn. Documents go to artifacts/<title>.md, skills to .agents/skills/<name>/SKILL.md. The header gets two lines, id and base (base is the commit of the version you got); do not edit them. A file already at that path is replaced (overwritten says so).
-
-      Each item gives path, version, base and hint: the version, the last edit (editor, commit, message, reason), all editors, and what others changed since your last edit (lines in the fetched file). Some types add notes computed when read, such as rows citing a paper that has a newer version. missing lists ids that could not be fetched and why. With at, you get the version as of that commit, for reading only: CheckIn accepts only edits based on the latest version.
-    parameters:
-      artifact: List of artifact ids.
-      at: Optional commit id (or main). Fetch the versions as of that commit, for reading only.
-
-  CheckIn:
-    title: Check in artifact
-    description: |-
-      Check in shared artifact documents from your working directory: a document fetched with FetchArtifact (its header keeps id and base) updates that artifact; a document without them creates a new one. The header names the type (type: Leaderboard | CompareSettings | Verify | Summarize | Generate; a Skill keeps type under metadata). Documents are stored as written; each check-in makes a new version, and earlier versions stay readable.
-
-      Without confirm the call only checks: each item gives the action (create, update, noop when the document equals the latest version, existing when the same document was already checked in), the changes against the version you fetched, others (the changed or deleted lines last written by someone else) and warnings (lines that pass but may be wrong, such as a number not found in the cited lines; the same warning on many lines is given once, with all its lines in at and their count). Nothing is written. Call again with confirm: true to write; if others is not empty, also give reason. Several documents are checked in together or not at all.
-
-      status rejected means nothing was written: errors lists each problem with at (file:line) and msg; edit those lines and call again. rule identity means an artifact with the same identity already exists (its id is in msg): fetch that one and edit it. status conflict means someone checked in a newer version after you fetched it, or the id or base lines were edited: fetch again, redo your edits on the new version, and check in.
-    parameters:
-      artifact_doc: List of paths of the documents in your working directory.
-      update_abstract: What you changed and why, in one or two sentences; recorded as the commit message and shown to later editors.
-      confirm: true to write; leave it out to only check.
-      reason: Why you changed or deleted lines written by others; required when others is not empty.
-
-  Log:
+  log:
     title: Log
     description: |-
-      List the writes to the store, newest first. Every change to the store is a commit: a Commit call, each CheckIn of shared artifacts, and the initial paper ingestion. Each entry gives the commit id, time, writer (by), source, message, counts of created, updated and deleted nodes and edges, and the ids it touched (first 20, with touched_total when there are more). Log does not give contents; use Show for those.
-
-      This reads history, not the current knowledge: use it to see who wrote or changed an object and when, then Show or Diff to see how. The branch is pinned on the first call: meta.at is the commit the listing starts from, and later pages stay at that commit even if new writes arrive.
+      List the writes to the store, newest first. Every change is a commit. Each entry gives the commit id, time, writer (by), source, message, counts of created, updated and deleted nodes and edges, and the ids it touched (first 20). Log does not give contents; use show for those. The branch is pinned on the first call; later pages stay at that commit.
 
       A page holds at most budget commits and at most 16 KB; meta.continuation is then set.
     parameters:
       branch: Branch to list (default main, the shared store).
-      node: Only commits that created, changed or deleted these objects or their relations; a list of ids.
-      by: Only commits by this writer (the by of an entry, such as a model name).
-      source: Only commits whose source starts with this text, e.g. "operator:CheckIn" for check-ins of shared artifacts.
+      node: Only commits that created, changed or deleted these nodes or their relations; a list of ids.
+      by: Only commits by this writer.
+      source: Only commits whose source starts with this text.
       since: Only commits after this commit id (not including it), or at or after this ISO time such as 2026-10-06T14:00.
-      until: Only commits up to and including this commit id, or up to this ISO time; a date alone such as 2026-10-06 includes that whole day.
+      until: Only commits up to and including this commit id, or up to this ISO time; a date alone includes that whole day.
       budget: Number of commits in this page (default 50).
-      continuation: meta.continuation of the previous page, to get the next page; keep the other parameters unchanged.
+      continuation: meta.continuation of the previous page; keep the other parameters unchanged.
 
-  Show:
+  show:
     title: Show
     description: |-
-      Show one commit: what it changed and what it was based on. Three parts:
-      - summary (default): header (id, seq, parent, branch, at, by, source, message, base), counts, touched and removed ids, the identity confirmations (confirm) and new-id mapping (ids) of a Commit, the artifact of an operator call, and the size of the input.
-      - input: the text that was submitted, verbatim: the graph-doc of a Commit, or the parameters of an operator call. Paged by lines.
-      - changes: what changed, one entry per object: {id, kind, op, fields, edges}. op is create, update, delete, or edges (only its outgoing relations changed). fields gives [before, after] for each changed field; edges lists added, removed and changed outgoing relations. Aliases and material show as the aliases and material fields. Paged by object.
-
-      Results are at most 16 KB. When one object alone does not fit, its long texts and lists are shortened (ending with …) and its _cut lists each shortened path with its full size; read the full value with node: <id>, field: <path from _cut>, offset (0, then meta.next_offset).
+      Show one commit: what it changed and what it was based on. part summary (default): header (id, parent, at, by, source, message), counts, touched and removed ids, confirmations and revisions, new-id mapping. part input: the text that was submitted, verbatim. part changes: one entry per node {id, kind, op, fields: {field: [before, after]}, edges}. Results are at most 16 KB; a value too long is shortened and listed in _cut: read it with node, field and offset.
     parameters:
-      commit: The commit id, such as commit_000027 (from Log, or meta.coverage.snapshot of Search and Traverse); main means the latest commit.
+      commit: The commit id (from log); main means the latest commit.
       part: summary, input or changes (default summary).
-      node: With part changes, only these objects; a list of ids. Exactly one id when field is given.
-      field: With part changes, a path listed in an entry's _cut, to read that value in full.
-      offset: With field, where to continue reading (bytes of a text, items of a list); 0 or the previous meta.next_offset.
-      continuation: meta.continuation of the previous page, to get the next page; keep the other parameters unchanged.
+      node: With part changes, only these nodes; exactly one id when field is given.
+      field: With part changes, a path listed in _cut, to read that value in full.
+      offset: With field, where to continue reading; 0 or the previous meta.next_offset.
+      continuation: meta.continuation of the previous page; keep the other parameters unchanged.
 
-  Diff:
+  diff:
     title: Diff
     description: |-
-      What changed between two states of the store: the net difference from commit `from` to commit `to`. A field changed and then changed back does not appear; to see each step, use Log and Show. `from` must be `to` or an earlier commit on the same branch.
-
-      Use it to check what changed since a state you or an artifact relied on, e.g. from an artifact's commit (Log with node: [<artifact id>]) or a snapshot from Search or Traverse, to main.
-
-      The result starts with a summary (number of commits in between, counts by kind and op, the first 20 changed ids), then one entry per changed object, as in Show part changes: {id, kind, op, fields: {field: [before, after]}, edges: {added, removed, changed}}. Paged by object; at most 16 KB. When one object alone does not fit, its long texts and lists are shortened and its _cut lists each shortened path; read the full value with node: <id>, field: <path from _cut>, offset.
+      The net difference between two commits on the same branch, from `from` to `to`: a summary, then one entry per changed node {id, kind, op, fields, edges}. A field changed and changed back does not appear; use log and show for each step. At most 16 KB per page.
     parameters:
       from: The earlier commit id.
       to: The later commit id; main (default) means the latest commit.
-      node: Only these objects; a list of ids. Exactly one id when field is given.
-      field: A path listed in an entry's _cut, to read that value in full.
-      offset: With field, where to continue reading (bytes of a text, items of a list); 0 or the previous meta.next_offset.
-      continuation: meta.continuation of the previous page, to get the next page; keep the other parameters unchanged.
+      node: Only these nodes; exactly one id when field is given.
+      field: A path listed in _cut, to read that value in full.
+      offset: With field, where to continue reading; 0 or the previous meta.next_offset.
+      continuation: meta.continuation of the previous page; keep the other parameters unchanged.
 
-  AsOf:
-    title: AsOf
+  as_of:
+    title: As of
     description: |-
-      Read objects as they were right after a past commit: the same view as Traverse with an empty path (all fields, outgoing relations, aliases, and an artifact's _op, _params, _document and _USED), but from that past state. This is history, not the current knowledge: do not hand an AsOf view to Commit, which would undo later changes.
-
-      Use it to see what an answer or an artifact was based on, e.g. the inputs of an artifact as they were at its commit. To read the source lines of an AsOf view, call ReadEvidence with the same at. Objects that did not exist then, or had been deleted, are listed in meta.missing. AsOf reads by id only; to see a neighbour as it was, give its id in another AsOf call. _stale is not given: it compares with the current state, which Diff does.
-
-      Paged by object; at most 16 KB. When one object alone does not fit, its long texts and lists are shortened (ending with …) and its _cut lists each shortened path with its full size; read the full value with ids: [<id>], field: <path from _cut>, offset.
+      Read nodes as they were right after a past commit, by id. This is history: do not paste it into a graph-doc, which would undo later changes. Nodes that did not exist then are listed in meta.missing. At most 16 KB per page; a value too long is shortened and listed in _cut.
     parameters:
-      at: The commit id, such as commit_000027 (from Log, or meta.coverage.snapshot of Search and Traverse); main means the latest commit.
-      ids: The objects to read; a list of ids. Exactly one id when field is given.
-      field: A path listed in the object's _cut, to read that value in full.
-      offset: With field, where to continue reading (bytes of a text, items of a list); 0 or the previous meta.next_offset.
-      continuation: meta.continuation of the previous page, to get the next page; keep the other parameters unchanged.
+      at: The commit id; main means the latest commit.
+      ids: The nodes to read.
+      field: A path listed in _cut, to read that value in full (with exactly one id).
+      offset: With field, where to continue reading; 0 or the previous meta.next_offset.
+      continuation: meta.continuation of the previous page; keep the other parameters unchanged.

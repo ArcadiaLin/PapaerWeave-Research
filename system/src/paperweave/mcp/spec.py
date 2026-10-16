@@ -22,6 +22,7 @@ from typing import Any
 import mcp.types as types
 import yaml
 
+from ..model.templates import vocabulary
 from ..operators import Operator
 from ..tools import TOOLS
 
@@ -58,6 +59,7 @@ def load(path: Path = SPEC, operators: Mapping[str, Operator] = TOOLS) -> Spec:
     """
     text = path.read_text(encoding="utf-8")
     doc = yaml.safe_load(text)
+    words = vocabulary()
     problems: list[str] = []
     if not isinstance(doc, dict):
         raise SpecError(["not a mapping"])
@@ -82,7 +84,7 @@ def load(path: Path = SPEC, operators: Mapping[str, Operator] = TOOLS) -> Spec:
         built[name] = types.Tool(
             name=name,
             title=entry["title"],
-            description=entry["description"].strip(),
+            description=_fill(entry["description"].strip(), words),
             inputSchema=schema,
             annotations=annotations(op, entry["title"]),
         )
@@ -97,8 +99,21 @@ def load(path: Path = SPEC, operators: Mapping[str, Operator] = TOOLS) -> Spec:
     )
 
 
+def _fill(text: str, words: Mapping[str, str]) -> str:
+    """把说明中的 ``{{名}}`` 换成词表；占位符所在行的缩进加到词表的每一行。"""
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("{{") and stripped.endswith("}}") and stripped[2:-2] in words:
+            indent = line[: len(line) - len(line.lstrip())]
+            lines += [indent + w for w in words[stripped[2:-2]].splitlines()]
+        else:
+            lines.append(line)
+    return "\n".join(lines)
+
+
 def annotations(op: Operator, title: str) -> types.ToolAnnotations:
-    """MCP 的行为提示：读取算子与读取接口只读；CheckIn 只追加版本，相同内容重交不再写入；Commit 可修改与删除。"""
+    """MCP 的行为提示：读取工具只读；commit 可修改与删除。"""
     if not op.writes:
         return types.ToolAnnotations(title=title, readOnlyHint=True, openWorldHint=False)
     appends = not op.destructive

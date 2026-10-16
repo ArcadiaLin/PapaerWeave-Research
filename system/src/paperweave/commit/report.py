@@ -150,7 +150,7 @@ def _problem(problem: Problem, described: dict[str, dict[str, Any]]) -> dict[str
     if problem.candidates:
         out["candidates"] = [
             {
-                "ref": c,
+                "id": c,
                 **described.get(c, {}),
                 **({"channels": list(problem.evidence[c])} if c in problem.evidence else {}),
             }

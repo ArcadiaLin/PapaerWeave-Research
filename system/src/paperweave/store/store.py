@@ -71,6 +71,12 @@ class Store:
         return None, {"snapshot": "the store changed during this read; repeat the call to get a pinned snapshot"}
 
 
+def brief(exc: BaseException) -> str:
+    """异常的一行说明：Neo4j 的异常取 ``message``，不带状态码等附加信息。"""
+    text = getattr(exc, "message", None) or str(exc) or type(exc).__name__
+    return str(text).splitlines()[0][:160]
+
+
 def _kind(labels: frozenset[str]) -> str | None:
     return kind_of(labels) or (ARTIFACT if ARTIFACT in labels else None)
 

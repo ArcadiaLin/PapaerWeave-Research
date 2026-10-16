@@ -58,26 +58,27 @@ def test_source_materials_and_large_files_are_refused(tmp_path: Path) -> None:
         read(None, "big.yml", "doc_file", tmp_path)
 
 
-DOC = """graph-doc: v0.1
-nodes:
+DOC = """graph-doc: v0.2
+create:
   $exp:
     kind: Experiment
-    text: A run.
-    FROM:
-      - to: paper_0001
-        locators: ["5.2::10:12"]
+    description: A run.
+    EVALUATES:
+      method_0003:
+        role: target
+set:
   method_0003:
-    note: x
+    description: x
 """
 
 
 def test_doc_positions_become_file_lines() -> None:
     locate = yaml_locator(Draft("d.yml", DOC))
-    assert locate("nodes.$exp.FROM[0].locators") == "d.yml:8 (nodes.$exp.FROM[0].locators)"
-    assert locate("nodes.$exp.FROM[0]") == "d.yml:7 (nodes.$exp.FROM[0])"
-    assert locate("$exp") == "d.yml:3 ($exp)"  # 只写节点引用时在 nodes 下找
-    assert locate("method_0003.note") == "d.yml:10 (method_0003.note)"
-    assert locate("nodes.$exp.EVALUATES") == "d.yml:3 (nodes.$exp.EVALUATES)"  # 找到哪一级就给哪一级
+    assert locate("create.$exp.EVALUATES.method_0003.role") == "d.yml:8 (create.$exp.EVALUATES.method_0003.role)"
+    assert locate("create.$exp.EVALUATES") == "d.yml:6 (create.$exp.EVALUATES)"
+    assert locate("$exp") == "d.yml:3 ($exp)"  # 只写节点时在各节下找
+    assert locate("method_0003.description") == "d.yml:11 (method_0003.description)"  # 取找得最深的一处
+    assert locate("create.$exp.USES") == "d.yml:3 (create.$exp.USES)"  # 找到哪一级就给哪一级
     assert locate("exp_0001-[EVALUATES]->x") == "d.yml (exp_0001-[EVALUATES]->x)"
     assert yaml_syntax(Draft("d.yml", DOC)) is None
     assert yaml_syntax(Draft("d.yml", "nodes:\n  $a: {kind: Task\n  $b: 1\n"))["at"].startswith("d.yml:")

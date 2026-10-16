@@ -1,6 +1,6 @@
 """Artifact 文档的格式（docs/designs/v2/operators.md §4.1、§5.3）。
 
-**共同产物**（经 ``CheckIn`` 检入、有版本的文档，:mod:`paperweave.artifact.checkin`）：头部是 YAML，正文是写者的 Markdown，
+**共同产物**（经 ``commit`` 检入、有版本的文档，:mod:`paperweave.artifact.checkin`）：头部是 YAML，正文是写者的 Markdown，
 按原样保存。头部的 ``type`` 给出类型；取出时多两行 ``id`` 与 ``base``（:func:`add_checkout`），检入时去掉
 （:func:`strip_checkout`）。Skill 用 Agent Skills 格式，顶层字段固定，``type``、``id``、``base`` 写在 ``metadata``
 下。每个版本的文档存为 ``artifacts/<标题>.v<版本>.md``（:func:`version_file_name`）。表格按 :func:`tables` 解析，

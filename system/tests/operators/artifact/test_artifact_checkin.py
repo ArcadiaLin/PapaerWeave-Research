@@ -1,4 +1,4 @@
-"""CheckIn 与 FetchArtifact：检出、编辑、检入，版本链与编辑提示（operators.md §3.6、§4.1、§5）。
+"""产物的 checkout 与 commit：检出、编辑、检入，版本链与编辑提示（operators.md §3.6、§4.1、§5）。
 
 模块内的测试按顺序共享写入的产物：art_0001 是 Leaderboard，之后各测试在它上面接着做。
 """
@@ -15,7 +15,7 @@ from paperweave.artifact.stale import stale
 from paperweave.artifact.versions import history
 from paperweave.draft import Draft
 from paperweave.operators.db.search import search
-from paperweave.store import ContractError, Store
+from paperweave.store import Store
 
 PATH = "artifacts/ETTh1 multivariate long-term forecasting.md"
 ROW = "| method_0001 Transformer |  | paper_0001 DLinear | baseline | 96 | 96 | 0.865 |"
@@ -174,16 +174,11 @@ def test_paper_forms_go_through_commit(writers: dict[str, Writer]) -> None:
     claude = writers["claude"]
     claude.write("form.md", "---\ntype: paper-form\ntitle: X\nabs: Y\n---\n")
     result = claude.check_in("form.md")
-    assert rules(result) == [("format", "form.md:1")] and "Commit" in result["errors"][0]["msg"]
+    assert rules(result) == [("format", "form.md:1")] and "graph-doc" in result["errors"][0]["msg"]
 
 
-def test_fetch_at_an_older_commit(store: Store, writers: dict[str, Writer]) -> None:
-    v1 = history(store, "art_0001")[0]
-    item = writers["alice"].fetch("art_0001", at=v1.commit)["items"][0]
-    assert item["version"] == 1 and "read_only" in item
-    assert writers["alice"].fetch("art_0001", "exp_0001")["missing"] == [
-        {"artifact": "exp_0001", "msg": "not an artifact in the store"}
-    ]
+def test_checkout_reports_what_is_missing(writers: dict[str, Writer]) -> None:
+    assert writers["alice"].fetch("art_0001", "art_9999")["missing"] == [{"artifact": "art_9999", "msg": "not in the store"}]
 
 
 def test_skill_round_trip(store: Store, writers: dict[str, Writer]) -> None:
@@ -246,7 +241,7 @@ def test_paper_new_version_supersedes_rows(store: Store, writers: dict[str, Writ
     file = store.material_root / v2
     file.parent.mkdir(parents=True, exist_ok=True)
     file.write_text("".join(f"line {i} (v2)\n" for i in range(1, 61)), encoding="utf-8")
-    new = commit_doc(store, f"graph-doc: v0.1\nby: maintainer\nnodes:\n  paper_0001:\n    material: {v2}\n")
+    new = commit_doc(store, f"graph-doc: v0.2\nset:\n  paper_0001:\n    material: {v2}\n")
     assert new["status"] == "committed", new
 
     reasons = stale(store, ["art_0001"])["art_0001"]
@@ -256,53 +251,32 @@ def test_paper_new_version_supersedes_rows(store: Store, writers: dict[str, Writ
     assert [s["at"] for s in item["notes"]["superseded_sources"]] == [16, 17]
 
 
-def test_search_by_identity(store: Store) -> None:
-    def ids(key: Any) -> list[str]:
-        return [r["id"] for r in search(store, "Artifact", where={"key": key})["results"]]
-
-    board = {
-        "type": "Leaderboard",
-        "task": "task_0001",
-        "dataset": "dataset_0001",
-        "setting": {"variate": "multivariate"},
-    }
-    assert ids(board) == ["art_0001"]
-    assert ids({**board, "task": "task_0001  Long-term forecasting", "setting": {"variate": "Multivariate"}}) == [
-        "art_0001"
-    ]
-    assert ids([board, {**board, "dataset": "dataset_0009"}]) == ["art_0001"]
-    assert ids({**board, "setting": {"variate": "univariate"}}) == []
-
-    for wrong, where in [
-        ({"type": "Generate"}, "has no identity"),
-        ({"type": "Leaderboard", "task": "task_0001"}, "also needs"),
-        ({**board, "metric": "MSE"}, "not ['metric']"),
-        ("art_0001", "a mapping"),
-    ]:
-        with pytest.raises(ContractError) as exc:
-            search(store, "Artifact", where={"key": wrong})
-        assert where in exc.value.errors[0]["msg"] and exc.value.errors[0]["at"] == "where.key"
+def test_search_finds_artifacts(store: Store) -> None:
+    found = search(store, "ETTh1 multivariate forecasting", kind=["Leaderboard"]).details["results"]
+    assert list(found) == ["art_0001"]
+    mixed = search(store, "ETTh1").details["results"]
+    assert "art_0001" in mixed and "dataset_0001" in mixed
 
 
-NEW_EXPERIMENT = """graph-doc: v0.1
-by: alice
-nodes:
+NEW_EXPERIMENT = """graph-doc: v0.2
+create:
   $ili:
     kind: Dataset
     name: ILI
     description: Weekly influenza-like illness ratios.
   $exp:
     kind: Experiment
-    anchors: [S5.T3]
-    text: DLinear on ETTh1 and ILI with a longer look-back window.
-    FROM:
-      - {to: paper_0001, locators: ["5.2 Comparison::20:30"]}
+    paper: paper_0001
+    anchor: [20:30]
+    figures: [S5.T3]
+    description: DLinear on ETTh1 and ILI with a longer look-back window.
     EVALUATES:
-      - {to: method_0002, role: target}
+      method_0002: {role: target}
     USES:
-      - {to: dataset_0001, role: evaluation_data}
-      - {to: $ili, role: evaluation_data}
-    ON_TASK: [task_0001]
+      dataset_0001: {role: evaluation_data}
+      $ili: {role: evaluation_data}
+    ON_TASK:
+      task_0001:
 """
 
 
@@ -314,9 +288,10 @@ def test_commit_lists_related_leaderboards(writers: dict[str, Writer]) -> None:
     assert shared["experiments"] == [done["ids"]["$exp"]]
     [board] = shared["leaderboards"]
     assert board["artifact"] == "art_0001" and board["version"] == 4 and board["last_edited_by"] == "claude"
-    assert shared["no_leaderboard_yet"] == [{"dataset": done["ids"]["$ili"], "name": "ILI"}]
+    ili = done["ids"]["$ili"].split()[0]  # "dataset_0002 (ILI)"
+    assert shared["no_leaderboard_yet"] == [{"dataset": ili, "name": "ILI"}]
 
-    note = f"graph-doc: v0.1\nby: alice\nnodes:\n  {done['ids']['$ili']}:\n    description: Weekly ILI ratios (US).\n"
+    note = f"graph-doc: v0.2\nset:\n  {ili}:\n    description: Weekly ILI ratios (US).\n"
     plain = alice.commit(note)
     assert plain["status"] == "committed" and "related_artifacts" not in plain  # 没有触及 Experiment
 

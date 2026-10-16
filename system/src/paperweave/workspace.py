@@ -1,7 +1,7 @@
-"""生成一个实验目录：通用 Agent（默认配置的 pi）在这里启动，经 MCP 使用 PaperWeave 的算子。
+"""生成一个实验目录：通用 Agent（默认配置的 pi）在这里启动，经 MCP 使用 PaperWeave 的工具。
 
     python -m paperweave.workspace <目录> [--user <登录身份>] [--agent pi/provider/model] [--neo4j-uri bolt://...]
-                            [--data <材料根目录>] [--enable-commit] [--no-embed]
+                            [--data <材料根目录>] [--no-embed]
 
 目录里只有三样：``.pi/mcp.json`` 登记 ``PaperWeave`` 服务（``python -m paperweave.mcp``，工具直接列给模型；服务的
 调用日志写到 ``.pi/paperweave.log``）；``.pi/settings.json`` 把 pi 的会话存到 ``.pi/sessions/``，一次实验的记录都在
@@ -49,14 +49,13 @@ def mcp_config(
     user: str,
     agent: str | None,
     neo4j_uri: str,
-    enable_commit: bool,
     no_embed: bool,
     log: Path | None = None,
     data: Path | None = None,
     workdir: Path | None = None,
 ) -> dict[str, Any]:
     """``.pi/mcp.json`` 的内容。stdio 服务只拿到这里写出的环境变量，连接参数因此都写明。服务在仓库中运行，
-    ``workdir``（写者的工作目录）因此也写明，草稿文件只从那里读。"""
+    ``workdir``（写者的工作目录）因此也写明，commit 的文件只从那里读，checkout 也写到那里。"""
     env = {"PAPERWEAVE_NEO4J_URI": neo4j_uri, "PAPERWEAVE_USER": user}
     if workdir is not None:
         env["PAPERWEAVE_WORKDIR"] = str(workdir)
@@ -66,8 +65,6 @@ def mcp_config(
         env["PAPERWEAVE_DATA"] = str(data)
     if log is not None:
         env["PAPERWEAVE_MCP_LOG"] = str(log)
-    if enable_commit:
-        env["PAPERWEAVE_ENABLE_COMMIT"] = "1"
     if no_embed:
         env["PAPERWEAVE_NO_EMBED"] = "1"
     server = {
@@ -99,7 +96,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         user=user,
         agent=agent,
         neo4j_uri=args.neo4j_uri,
-        enable_commit=args.enable_commit,
         no_embed=args.no_embed,
         log=target / ".pi/paperweave.log",
         workdir=target,
@@ -124,7 +120,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--agent", help="所用的 Agent 与模型 pi/provider/model；默认取 pi 的默认模型")
     parser.add_argument("--neo4j-uri", default=NEO4J_URI, help=f"服务连接的库（默认 {NEO4J_URI}）")
     parser.add_argument("--data", help="材料根目录（论文材料与产物文档）；默认 data/raw/e09-paper-knowledge")
-    parser.add_argument("--enable-commit", action="store_true", help="列出 Commit（改动知识本身）")
     parser.add_argument("--no-embed", action="store_true", help="关闭查询向量，写入后也不补算")
     return parser
 

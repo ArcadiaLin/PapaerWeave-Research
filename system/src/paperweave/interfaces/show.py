@@ -18,9 +18,8 @@ import yaml
 from graph_vc import CommitRecord
 
 from ..operators.base import STRING, STRINGS, interface, schema
-from ..query.capacity import chunk, field_view, finish, fit, paged, size
+from ..query.capacity import LIMIT, chunk, field_view, finish, fit, paged, size
 from ..query.changes import changes, object_ids, preview
-from ..query.excerpts import LIMIT
 from ..query.versions import Pinned, continue_at, id_list, pin, resume
 from ..store.store import ContractError, Store
 from .log import counts
@@ -155,7 +154,7 @@ def _changes(
 
 
 SHOW = interface(
-    name="Show",
+    name="show",
     parameters=schema(
         {
             "commit": STRING,

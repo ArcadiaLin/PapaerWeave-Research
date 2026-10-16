@@ -13,11 +13,9 @@ from __future__ import annotations
 from typing import Any
 
 from ..operators.base import STRING, STRINGS, interface, schema
-from ..query.capacity import field_view, paged
+from ..query.capacity import LIMIT, field_view, paged
 from ..query.changes import is_object, old_view
-from ..query.excerpts import LIMIT
 from ..query.versions import continue_at, id_list, pin, resume
-from ..query.view import VERSION
 from ..store.store import ContractError, Store
 
 
@@ -59,13 +57,13 @@ def as_of(
             "continuation": continue_at(end, pinned.commit) if end < len(present) else None,
             "size": {"limit": LIMIT, "used": LIMIT},
         }
-        return {"graph-doc": VERSION, "meta": meta, "nodes": {i: old_view(i, state) for i in page[:count]}}
+        return {"meta": meta, "nodes": {i: old_view(i, state) for i in page[:count]}}
 
     return paged(view, len(page), "nodes")
 
 
 AS_OF = interface(
-    name="AsOf",
+    name="as_of",
     parameters=schema(
         {
             "at": STRING,

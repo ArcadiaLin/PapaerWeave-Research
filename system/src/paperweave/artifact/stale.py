@@ -11,9 +11,8 @@
   或所引的产物有了新版本。共同产物按原样保存，引用常以节点 id 开头（如 ``paper_0001::5.2::10:12``、
   ``art_0003#<行键>``），它们按 ``USED`` 边上记下的 ``material_ref``（写入时所读的版本，:func:`pinned`）判断；
   旧版产物的文档已写成材料 id，直接判断；
-- ``revised``：所用的有据层或解释层记录在产物当前版本形成之后被修订过（改了内容、标签或出边），另带 ``commit`` 指出
-  最早的那次提交，可以用 Show 查看改了什么。增删改出边时，agent 的正反关系不算；别人给解释层记录新增出边也不算。
-  实体与概念的改动（如补别名、描述）不算，否则提示会被噪声淹没；
+- ``revised``：所用的有据层记录（Content）在产物当前版本形成之后被修订过（改了内容或出边），另带 ``commit`` 指出
+  最早的那次提交，可以用 show 查看改了什么。实体与概念的改动（如补别名、描述）不算，否则提示会被噪声淹没；
 - ``stale input``：所用的 Artifact 本身可能过期。
 """
 
@@ -25,9 +24,8 @@ from typing import Any
 
 from graph_vc import Changeset
 
-from ..commit.revision import content_changed, layer
 from ..model.refs import parse_ref
-from ..model.schema import ARTIFACT, STANCE_RELS, kind_of
+from ..model.schema import ARTIFACT, CONTENT, kind_of
 from ..query.materials import load_lines, materials
 from ..store.store import Store
 from .document import header_of, parse, strip_checkout
@@ -140,17 +138,15 @@ def references(op: str | None, text: str) -> list[str]:
 
 
 def revised(store: Store, art_id: str, ids: Iterable[str]) -> list[tuple[str, str]]:
-    """``ids`` 中在 ``art_id`` 当前版本形成之后被修订过的有据层与解释层记录 → 最早的那次提交，按 ``ids`` 的顺序。
+    """``ids`` 中在 ``art_id`` 当前版本形成之后被修订过的有据层记录 → 最早的那次提交，按 ``ids`` 的顺序。
 
     当前版本形成的提交取产物节点与当前版本文档两者创建提交中较晚的一个：旧版产物只有一个版本，内容相同的文档
     可能沿用更早写入的 Material。"""
     rows = store.query(
-        """UNWIND $ids AS id MATCH (n {id: id})
-           RETURN n.id AS id, labels(n) AS labels, n.stated_by AS stated_by""",
+        """UNWIND $ids AS id MATCH (n {id: id}) RETURN n.id AS id, labels(n) AS labels""",
         ids=sorted(set(ids)),
     )
-    layers = {r["id"]: layer(kind_of(frozenset(r["labels"])), {"stated_by": r["stated_by"]}) for r in rows}
-    layers = {k: v for k, v in layers.items() if v is not None}
+    layers = {r["id"] for r in rows if kind_of(frozenset(r["labels"])) in CONTENT}  # 有据层：全部 Content
     if not layers:
         return []
     later = store.query(
@@ -171,8 +167,8 @@ def revised(store: Store, art_id: str, ids: Iterable[str]) -> list[tuple[str, st
     return [(i, first[i]) for i in dict.fromkeys(ids) if i in first]
 
 
-def _revised_in(changeset: Changeset, layers: dict[str, str]) -> set[str]:
-    """一次提交中被修订的记录（``layers``：记录 → 所在的层）。被删除的记录由 ``removed`` 报告，这里不算。"""
+def _revised_in(changeset: Changeset, layers: set[str]) -> set[str]:
+    """一次提交中被修订的有据层记录。被删除的记录由 ``removed`` 报告，这里不算。"""
     deleted = {n.id for n in changeset.nodes if n.after is None}
     out = {
         n.id
@@ -180,22 +176,20 @@ def _revised_in(changeset: Changeset, layers: dict[str, str]) -> set[str]:
         if n.id in layers
         and n.before is not None
         and n.after is not None
-        and (n.labels_before != n.labels_after or content_changed(n.before, n.after))
+        and (n.labels_before != n.labels_after or _content_changed(n.before, n.after))
     }
     for e in changeset.edges:
         src = e.key.src
         if src not in layers or src in deleted or e.key.dst in deleted:
             continue
-        if e.key.type in STANCE_RELS and "agent" in (
-            (e.before or {}).get("stated_by"),
-            (e.after or {}).get("stated_by"),
-        ):
-            continue
-        if e.before is None and layers[src] != "grounded":
-            continue  # 别人给解释层记录新增出边，不是修订
-        if e.before is None or e.after is None or content_changed(e.before, e.after):
+        if e.before is None or e.after is None or _content_changed(e.before, e.after):
             out.add(src)
     return out
+
+
+def _content_changed(before: dict[str, Any], after: dict[str, Any]) -> bool:
+    keys = (before.keys() | after.keys()) - {"exp_key"}
+    return any(before.get(k) != after.get(k) for k in keys)
 
 
 def readonly(store: Store, ids: Iterable[str]) -> dict[str, dict[str, Any]]:

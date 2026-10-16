@@ -1,5 +1,5 @@
-"""PaperWeave 的算子（docs/designs/v2/operators.md）：都在 ``db/``，由中间件执行；共同产物经 ``FetchArtifact`` 取出、
-``CheckIn`` 检入，类型契约见 :mod:`paperweave.artifact.types`。每个算子是一个 :class:`Operator`（见
+"""PaperWeave 的工具（docs/designs/v3/tools.md）：都在 ``db/``，由中间件执行；共同产物经 ``checkout`` 取出、
+``commit`` 检入，类型契约见 :mod:`paperweave.artifact.types`。每个算子是一个 :class:`Operator`（见
 :mod:`paperweave.operators.base`），按名称登记在 ``OPERATORS`` 中；
 与版本记录的读取接口一起按名称分发见 :mod:`paperweave.tools`。
 """

@@ -1,2 +1,2 @@
-"""读取共用的部件：结构条件（conditions）、RRF 融合（fusion）、读视图与只读字段（view）、固定材料（materials），
-以及 Resolve 的三级解析（resolve）。"""
+"""读取：检索（search）、读取投影与它的 YAML 写法（view、render）、锚点的章节（sections）、固定材料（materials）、
+写入时的查重（dedup）、会话开始时的总览（overview），以及版本记录的读取（versions、changes、capacity、revisions）。"""

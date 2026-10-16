@@ -1,7 +1,7 @@
 """引用的三种写法（docs/designs/v2/operators.md §2.1）与正文中的方括号引用。
 
 - 对象引用：节点 id，如 ``exp_0012``、``art_0003``；
-- 来源引用：``<材料 id 或带材料的节点 id>::<章节>::<start>:<end>``，与 graph-doc 的 ``source_refs`` 相同；
+- 来源引用：``<论文、产物或材料 id>::[<章节>::]<start>:<end>``，章节可省略；
 - 记录引用：``<artifact id>#<key>``，指 Artifact 中的一条记录：旧版 Agent 算子是数据块中的记录，共同产物是按行键
   对齐的表格行，``key`` 为行键各字段以 ``+`` 相连（如 ``art_0003#method_0001++paper_0001+24+96``），字段可以含
   ``/`` 与空格（operators.md §4.1）。
@@ -51,7 +51,7 @@ def normalize_ref(text: str) -> str:
     if text.startswith("[") and text.endswith("]"):
         text = text[1:-1].strip()
     parts = [p.strip() for p in text.split("::")]
-    if len(parts) < 3:
+    if len(parts) < 2:
         return "::".join(parts)
     lines = _LINES.fullmatch(parts[-1])
     if lines is not None:

@@ -1,4 +1,4 @@
-"""Commit 返回的相关共同产物（docs/designs/v2/operators.md §3.5）：让写者知道刚写的内容与哪些产物有关。
+"""commit 返回的相关共同产物（docs/designs/v2/operators.md §3.5）：让写者知道刚写的内容与哪些产物有关。
 
 当前只沿一条路径：本次提交触及的 Experiment（新建、修改，或增删过关系）→ 它 ``USES`` 的评测数据集 → 以该数据集为
 身份键的 ``Leaderboard``；另列出还没有 Leaderboard 的数据集。这是查询结果，不是要求：不提示写者去维护。
@@ -36,7 +36,7 @@ def related(store: Store, commit: str) -> dict[str, Any] | None:
         "leaderboards": [_board(store, b) for b in boards[:LIST_MAX]],
     }
     if len(boards) > LIST_MAX:
-        out["more"] = f"{len(boards)} leaderboards in all; find the others with Search where.key"
+        out["more"] = f"{len(boards)} leaderboards in all; find the others with search, kind: [Leaderboard]"
     if missing := [
         {"dataset": r["dataset"], "name": r["name"]} for r in used if r["dataset"].casefold() not in covered
     ]:

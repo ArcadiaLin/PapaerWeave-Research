@@ -1,9 +1,10 @@
-"""ReadEvidence：按来源引用读取固定材料中的行（docs/designs/v2/operators.md §3.4）。
+"""read_evidence：按来源引用读取论文或产物文档中的行（docs/designs/v3/tools.md）。
 
-    read_evidence(source_refs, at?) -> {evidence: v0.1, items, missing, coverage}
+    read_evidence(source_refs, at?) -> {items, missing, coverage}
 
-来源引用写作 ``<材料 id>::<章节>::<start>:<end>``，与读视图 ``meta.source_refs`` 中的写法相同；材料 id 也可以换成
-带材料的节点（论文）id，与 graph-doc 中 ``source_refs`` 的写法相同。只定位与读取，不解释内容。逐项记录状态：
+来源引用写作 ``<论文或产物 id>::<start>:<end>``（中间可以带章节：``<id>::<章节>::<start>:<end>``，只作提示），
+也可以用材料 id 开头。读的是论文的当前版本；要读某个锚点写入时的那一版，用材料 id。只定位与读取，不解释内容。
+逐项记录状态：
 
 - ``available``：读到，且文件哈希与入库时一致；``text`` 中每行带行号，便于引用其中更小的范围；
 - ``missing``：引用格式不对、库中没有该材料，或文件不在；
@@ -27,11 +28,12 @@ from typing import Any
 from ...model.refs import normalize_ref
 from ...model.schema import LOCATOR
 from ...query.materials import load_lines, materials, materials_at
+from ...query.sections import headings, section_at
 from ...query.versions import pin
 from ...store.store import ContractError, Store
 from ..base import STRING, STRINGS, db_operator, schema
 
-VERSION = "v0.1"
+MAX_LINES = 400  # 一次读取的行数上限：整篇论文读进上下文不是这个工具的用途
 
 
 def read_evidence(
@@ -55,7 +57,6 @@ def read_evidence(
     states = [item["state"] for item in items]
     coverage = {s: states.count(s) for s in ("available", "missing", "error")}
     return {
-        "evidence": VERSION,
         "items": items,
         "missing": [item["ref"] for item in items if item["state"] == "missing"],
         "coverage": {"requested": len(refs), **coverage, **({"at": pinned.commit} if pinned else {})},
@@ -68,7 +69,7 @@ def _read(
     head, sep, locator = normalize_ref(ref).partition("::")
     match = LOCATOR.fullmatch(locator) if sep else None
     if match is None:
-        return {"ref": ref, "state": "missing", "reason": "not <material>::<section>::<start>:<end>"}
+        return {"ref": ref, "state": "missing", "reason": "write <paper or artifact id>::<start>:<end>, like paper_0001::120:135"}
     material = found.get(head)
     if material is None:
         return {"ref": ref, "state": "missing", "reason": f"{head} is not a material or a node with a material"}
@@ -80,9 +81,10 @@ def _read(
         "state": "available",
         "material": material["id"],
         "path": material["path"],
-        "section": match["section"],
         "lines": [start, end],
     }
+    if end - start + 1 > MAX_LINES:
+        return {**item, "state": "error", "reason": f"at most {MAX_LINES} lines per reference; split the range"}
     if material["id"] not in texts:
         texts[material["id"]] = load_lines(store, material)
     lines = texts[material["id"]]
@@ -93,6 +95,9 @@ def _read(
         return {**item, "state": "error", "reason": "the file changed since it was registered (sha256 differs)"}
     if not 1 <= start <= end <= len(lines):
         return {**item, "state": "error", "reason": f"lines {start}:{end} are outside the material (1:{len(lines)})"}
+    section = section_at(headings(lines), start)
+    if section:
+        item["section"] = section
     item["text"] = "\n".join(f"{n}| {lines[n - 1]}".rstrip() for n in range(start, end + 1)) + "\n"
     return item
 
@@ -106,7 +111,7 @@ def _documents(store: Store, ids: set[str]) -> set[str]:
 
 
 READ_EVIDENCE = db_operator(
-    name="ReadEvidence",
+    name="read_evidence",
     parameters=schema(
         {"source_refs": STRINGS, "at": STRING},
         ["source_refs"],
@@ -115,4 +120,4 @@ READ_EVIDENCE = db_operator(
 )
 
 
-__all__ = ["READ_EVIDENCE", "VERSION", "read_evidence"]
+__all__ = ["READ_EVIDENCE", "read_evidence"]

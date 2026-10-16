@@ -17,9 +17,8 @@ from typing import Any
 from graph_vc import CommitRecord
 
 from ..operators.base import STRING, STRINGS, interface, schema
-from ..query.capacity import paged
+from ..query.capacity import LIMIT, paged
 from ..query.changes import object_ids, preview
-from ..query.excerpts import LIMIT
 from ..query.versions import COMMIT, continue_at, id_list, paging, pin, resume
 from ..store.store import ContractError, Store
 
@@ -123,7 +122,7 @@ def _moment(value: Any, at: str) -> datetime:
 
 
 LOG = interface(
-    name="Log",
+    name="log",
     parameters=schema(
         {
             "branch": STRING,

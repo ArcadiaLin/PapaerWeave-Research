@@ -44,7 +44,7 @@ ROLES = frozenset({"target", "baseline"})
 ORIGINS = frozenset({"run", "cited"})
 DIRECTIONS = frozenset({"lower", "higher"})
 _NUMBER = re.compile(r"-?\d*\.?\d+(?:[eE]-?\d+)?")
-_SOURCE = re.compile(r"[a-z]+_[0-9a-f]{4,}::[^:()\[\]|]+::\d+(?:\s*[:–-]\s*\d+)?")
+_SOURCE = re.compile(r"[a-z]+_[0-9a-f]{4,}::(?:[^:()\[\]|]+::)?\d+(?:\s*[:–-]\s*\d+)?")  # 章节可省略
 _SPLIT = re.compile(r"\s*;\s*|\s*,\s+(?=[a-z]+_[0-9a-f]{4,}::)")
 
 

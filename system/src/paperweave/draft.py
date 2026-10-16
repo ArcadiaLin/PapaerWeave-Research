@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from graph_doc import SECTIONS
 
 from .store.store import ContractError
 
@@ -116,9 +117,10 @@ def yaml_syntax(draft: Draft) -> dict[str, str] | None:
 
 
 def yaml_locator(draft: Draft) -> Callable[[str], str]:
-    """graph-doc 中的位置（如 ``nodes.$exp.FROM[0].locators``）→ ``<文件>:<行号> (<位置>)``。
+    """graph-doc 中的位置（如 ``create.$exp.EVALUATES.method_0021.role``）→ ``<文件>:<行号> (<位置>)``。
 
-    沿位置逐级找到最深的节点，取它的行号；只写节点引用（如 ``$exp``）时在 ``nodes`` 下找。一级也找不到时只给文件。
+    沿位置逐级找到最深的节点，取它的行号；只写节点（如 ``$exp.description``）时在 create、set、delete、confirm
+    下找最深的一处。一级也找不到时只给文件。
     """
     try:
         root = yaml.compose(draft.text, Loader=yaml.SafeLoader)
@@ -144,8 +146,9 @@ def yaml_locator(draft: Draft) -> Callable[[str], str]:
     def locate(at: str) -> str:
         tokens: list[str | int] = [int(i) if i else name for i, name in _TOKEN.findall(at)]
         line, depth = walk(tokens) if tokens else (None, 0)
-        if depth == 0 and tokens and tokens[0] != "nodes":
-            under, deeper = walk(["nodes", *tokens])
+        if depth == 0 and tokens and tokens[0] not in SECTIONS:
+            found = [walk([section, *tokens]) for section in SECTIONS]  # 只写节点（如 $exp）时在各节下找
+            under, deeper = max(found, key=lambda f: f[1])
             line = under if deeper > 1 else None
         where = f"{draft.path}:{line}" if line is not None else draft.path
         return f"{where} ({at})" if at else where

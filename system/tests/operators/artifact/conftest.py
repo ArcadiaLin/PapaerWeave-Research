@@ -1,4 +1,4 @@
-"""共同产物（CheckIn、FetchArtifact、``_stale``）测试的共用部件：在测试实例上写入一小份图，产物文档写到临时的材料根目录，
+"""共同产物（commit 检入、checkout 取出、``_stale``）测试的共用部件：在测试实例上写入一小份图，产物文档写到临时的材料根目录，
 写者的工作目录也是临时目录。
 
 只在设置了 ``GRAPH_VC_TEST_NEO4J_URI`` 时运行，要求开始时库为空，结束后清空库、约束与索引。不会连 neo4j-e09。
@@ -15,12 +15,12 @@ from typing import Any
 import pytest
 
 from paperweave.commit import Context as CommitContext
-from paperweave.commit import Neo4jReader
+from paperweave.commit import Neo4jReader, apply
 from paperweave.draft import Workdir
 from paperweave.operators.base import Context
-from paperweave.operators.db import CHECK_IN, COMMIT, FETCH_ARTIFACT
-from paperweave.operators.db.commit import run
+from paperweave.operators.db import CHECKOUT, COMMIT
 from paperweave.store import Store, open_graph, setup_database
+from paperweave.store.derived import sync
 
 TEST_URI = os.environ.get("GRAPH_VC_TEST_NEO4J_URI")
 TEST_AUTH = (
@@ -31,17 +31,16 @@ AT = "2026-10-14T12:00:00+00:00"
 MATERIAL = "papers/2023-DLinear/paper.md"
 
 GRAPH = """
-graph-doc: v0.1
-by: seed
-nodes:
+graph-doc: v0.2
+create:
   $ltsf:
     kind: Task
     name: Long-term time series forecasting
-    definition: Forecasting with a long horizon.
+    description: Forecasting with a long horizon.
   $tf:
     kind: Method
     name: Transformer-based forecasting
-    definition: Forecasting models built on Transformer architectures.
+    description: Forecasting models built on Transformer architectures.
   $etth1:
     kind: Dataset
     name: ETTh1
@@ -55,19 +54,20 @@ nodes:
   $dlinear:
     kind: Method
     name: DLinear
-    definition: A linear model on a trend and remainder decomposition.
+    description: A linear model on a trend and remainder decomposition.
   $main:
     kind: Experiment
-    anchors: [S5.T2]
-    text: Multivariate long-term forecasting comparing DLinear with Transformer baselines.
-    FROM:
-      - {to: $paper, locators: ["5.2 Comparison::10:20"]}
+    paper: $paper
+    anchor: [10:20]
+    figures: [S5.T2]
+    description: Multivariate long-term forecasting comparing DLinear with Transformer baselines.
     EVALUATES:
-      - {to: $dlinear, role: target}
-      - {to: $tf, role: baseline}
+      $dlinear: {role: target}
+      $tf: {role: baseline}
     USES:
-      - {to: $etth1, role: evaluation_data}
-    ON_TASK: [$ltsf]
+      $etth1: {role: evaluation_data}
+    ON_TASK:
+      $ltsf:
 """
 # task_0001、method_0001 tf、dataset_0001 etth1、paper_0001、method_0002 dlinear、exp_0001
 
@@ -112,9 +112,10 @@ def store(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Store]:
     graph = open_graph(driver, file_root=root)
     try:
         seeded = Store(driver, graph, root)
-        ctx = CommitContext(Neo4jReader(graph, driver), "seed:test", AT, root)
-        run(GRAPH, graph=graph, driver=driver, ctx=ctx, commit=True)
         setup_database(graph, driver)
+        _, record = apply(GRAPH, graph, CommitContext(Neo4jReader(graph, driver), "seed:test", AT, root, "seed"))
+        assert record is not None
+        sync(driver, None, None)
         yield seeded
     finally:
         driver.execute_query("MATCH (n) DETACH DELETE n")
@@ -125,10 +126,14 @@ def store(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Store]:
         driver.close()
 
 
-def commit_doc(store: Store, text: str, *, source: str = "test", commit: bool = True) -> dict[str, Any]:
-    """经 Commit 写入路径提交（或 dry_run）一份 graph-doc。"""
-    ctx = CommitContext(Neo4jReader(store.graph, store.driver), source, AT, store.material_root)
-    return run(text, graph=store.graph, driver=store.driver, ctx=ctx, commit=commit)
+def commit_doc(store: Store, text: str, *, user: str = "test", commit: bool = True) -> dict[str, Any]:
+    """经 commit 提交（或 dry_run）一份 graph-doc：写到临时工作目录再交文件，与写者的路径相同。"""
+    root = store.material_root.parent / "maintainer"
+    root.mkdir(exist_ok=True)
+    (root / "doc.yaml").write_text(text, encoding="utf-8")
+    ctx = Context(store, AT, session="s-maintainer", formed_by=user, workdir=Workdir(root), sync=lambda: sync(store.driver, None, None))
+    out = COMMIT.call(ctx, {"files": ["doc.yaml"], "message": "test", "dry_run": not commit}).details
+    return {**out.get("graph_doc", {}), "status": out["status"]} if "graph_doc" in out else out
 
 
 class Writer:
@@ -139,7 +144,8 @@ class Writer:
         root.mkdir(parents=True, exist_ok=True)
 
     def ctx(self) -> Context:
-        return Context(self.store, AT, session=f"s-{self.name}", formed_by=self.name, workdir=Workdir(self.root))
+        refresh = lambda: sync(self.store.driver, None, None)  # noqa: E731
+        return Context(self.store, AT, session=f"s-{self.name}", formed_by=self.name, workdir=Workdir(self.root), sync=refresh)
 
     def write(self, path: str, text: str) -> str:
         file = self.root / path
@@ -150,18 +156,23 @@ class Writer:
     def read(self, path: str) -> str:
         return (self.root / path).read_text(encoding="utf-8")
 
-    def fetch(self, *ids: str, at: str | None = None) -> dict[str, Any]:
-        request: dict[str, Any] = {"artifact": list(ids)}
-        if at is not None:
-            request["at"] = at
-        return FETCH_ARTIFACT.call(self.ctx(), request).details
+    def fetch(self, *ids: str) -> dict[str, Any]:
+        """checkout 产物：``items`` 是取出的产物，``missing`` 是取不到的。"""
+        out = CHECKOUT.call(self.ctx(), {"ids": list(ids)}).details
+        items = [{k: v for k, v in f.items() if k != "kind"} for f in out["files"] if f["kind"] == "artifact"]
+        return {"items": items, "missing": [{"artifact": m["id"], "msg": m["msg"]} for m in out["missing"]]}
 
     def commit(self, text: str) -> dict[str, Any]:
-        return COMMIT.call(self.ctx(), {"doc": text, "source": "test", "dedup": False}).details
+        """commit 一份 graph-doc，返回其中 graph-doc 部分的结果。"""
+        self.write("doc.yaml", text)
+        out = COMMIT.call(self.ctx(), {"files": ["doc.yaml"], "message": "test"}).details
+        return {**out.get("graph_doc", {}), "status": out["status"]}
 
-    def check_in(self, *paths: str, message: str = "Edit.", **extra: Any) -> dict[str, Any]:
-        request = {"artifact_doc": list(paths), "update_abstract": message, **extra}
-        return CHECK_IN.call(self.ctx(), request).details
+    def check_in(self, *paths: str, message: str = "Edit.", confirm: bool = False, **extra: Any) -> dict[str, Any]:
+        """commit 产物文档；``confirm`` 为假时只检查（dry_run）。返回其中产物部分的结果。"""
+        request = {"files": list(paths), "message": message, "dry_run": not confirm, **extra}
+        out = COMMIT.call(self.ctx(), request).details
+        return out.get("artifacts", out)
 
 
 @pytest.fixture(scope="module")

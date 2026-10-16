@@ -7,7 +7,6 @@ from typing import Any
 import pytest
 
 from paperweave.model.refs import normalize_ref, parse_ref
-from paperweave.operators import OPERATORS
 from paperweave.operators.base import STRING, Operator, Result, one_or_many, schema
 from paperweave.operators.repair import repair
 
@@ -20,7 +19,15 @@ CHECK = schema(
         "payload": schema({"judgments": {"type": "array", "items": JUDGMENT}}),
     }
 )
-SEARCH = OPERATORS["Search"].parameters
+# V2 Search 的参数形状：有枚举、整数与数组，覆盖各类修复
+SEARCH = schema(
+    {
+        "type": {"enum": ["Entity", "Concept", "Content", "Artifact"]},
+        "query": STRING,
+        "kinds": {"type": "array", "items": {"type": "string"}},
+        "budget": {"type": "integer"},
+    }
+)
 
 
 def test_json_text_is_parsed_into_the_declared_type() -> None:

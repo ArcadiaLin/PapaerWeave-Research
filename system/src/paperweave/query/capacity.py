@@ -1,7 +1,7 @@
 """结果的容量控制（docs/designs/v2/versioning_interfaces.md §2.2）：分页时放得下的最多项数；单项自己就放不下时
 截短它的长文本与长列表，被截短的值用分块读取取回。
 
-大小按 YAML 的字节数计（与返回给 Agent 的文本相同），上限是 :data:`paperweave.query.excerpts.LIMIT`。
+大小按 YAML 的字节数计（与返回给 Agent 的文本相同），上限是 :data:`LIMIT`。
 
 **截短。** 先把过长的字符串截到同一个长度（在 UTF-8 字符边界截断，末尾写 ``…``），取放得下的最大长度；字符串截到
 最短仍放不下时，再把过长的列表截到同一个项数。被截短的位置记在该项的 ``_cut`` 中：``{路径: {bytes: 原长}}`` 或
@@ -15,10 +15,17 @@ from typing import Any
 
 from ..store.store import ContractError
 from ..yamlfmt import dump
-from .excerpts import LIMIT, cut
 
+LIMIT = 16 * 1024  # 字节；低于 pi 的 20 KB，给 YAML 与客户端的提示留出余量
+ELLIPSIS = "…"
 MIN_TEXT = 64  # 截短后字符串至少保留的字节数
 MIN_ITEMS = 1  # 截短后列表至少保留的项数
+
+
+def cut(text: str, size: int) -> str:
+    """截到 ``size`` 字节以内（UTF-8 字符边界），末尾写 ``…``。"""
+    head = text.encode("utf-8")[: max(size - len(ELLIPSIS.encode()), 0)].decode("utf-8", "ignore").rstrip()
+    return head + ELLIPSIS
 
 
 def size(view: Any) -> int:

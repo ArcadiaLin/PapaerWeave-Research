@@ -9,7 +9,7 @@
 - **比对单位**（:meth:`ArtifactType.units`）：按行键对齐的表格行，以及其余的逐行文字；版本之间的改动与每一行的
   编辑者按它们计算（:mod:`paperweave.artifact.versions`）；
 - **记录**（:meth:`ArtifactType.records`）：可用 ``<artifact>#<key>`` 引用的行；
-- **取出的位置**（:meth:`ArtifactType.checkout_path`）：``FetchArtifact`` 写到写者工作目录的哪里；
+- **取出的位置**（:meth:`ArtifactType.checkout_path`）：``checkout`` 写到写者工作目录的哪里；
 - **轻度规则**（:meth:`ArtifactType.rules`）：只作用于这次新增与修改的单位，拒绝的记为错误，其余只警告（如数字
   不在所引的行中）；需要所引来源的行时经 :data:`Lookup` 取得；
 - **统计与附注**（:meth:`ArtifactType.stats`、:meth:`ArtifactType.notes`）：检入时返回的统计，以及读取时现算、

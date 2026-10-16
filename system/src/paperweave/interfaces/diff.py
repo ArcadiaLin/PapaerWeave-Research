@@ -12,9 +12,8 @@ from __future__ import annotations
 from typing import Any
 
 from ..operators.base import STRING, STRINGS, interface, schema
-from ..query.capacity import field_view, paged
+from ..query.capacity import LIMIT, field_view, paged
 from ..query.changes import changes, summary
-from ..query.excerpts import LIMIT
 from ..query.versions import continue_at, id_list, pin, resume
 from ..store.store import ContractError, Store
 
@@ -75,7 +74,7 @@ def _run(store: Store, **params: Any) -> dict[str, Any]:
 
 
 DIFF = interface(
-    name="Diff",
+    name="diff",
     parameters=schema(
         {
             "from": STRING,

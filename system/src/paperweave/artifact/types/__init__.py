@@ -1,8 +1,7 @@
 """共同产物的类型契约（docs/designs/v2/operators.md §4）：按头部的 ``type`` 取用。
 
 v1 的 Leaderboard、Generate、Skill 有种子；CompareSettings、Verify、Summarize 只登记契约，不写种子
-（docs/experiments/2026-10-13-arxiv-v1-todo.md A4）。论文表单与增补表单是拆开存进图的检入，经 ``Commit``，不经
-``CheckIn``。
+（docs/experiments/2026-10-13-arxiv-v1-todo.md A4）。论文表单与增补表单是拆开存进图的检入，经 ``commit``（graph-doc），不按产物检入。
 """
 
 from __future__ import annotations

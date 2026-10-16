@@ -1,7 +1,7 @@
 """写入所连的库：拒绝没有版本记录的旧库，建立版本记录、约束与索引。
 
-旧写入路径建出的库（tag ``e09-legacy-write``，如现有的 neo4j-e09）有数据却没有 ``Branch`` 节点；
-它的 NameKey 没有 ``id``，还有冻结模型之外的 Metric，新路径既不能在上面求差，也不迁移它，只能重建。
+没有 ``Branch`` 节点却有数据的库不是由这条写入路径建出的，不迁移，只能重建。V2 的库（tag ``v2-pilot3``）字段不同，
+同样从零重建。
 """
 
 from __future__ import annotations
@@ -15,13 +15,17 @@ from graph_vc import VersionedGraph
 from ..model.schema import (
     CONSTRAINTS,
     DERIVED_FIELDS,
-    DESCRIBED_RELS,
-    FULLTEXT,
+    EDGE_TEXT_INDEX,
+    EDGE_VECTOR_INDEX,
+    INDEXED_RELS,
     NODE_LABELS,
+    NODE_TEXT_INDEX,
+    NODE_VECTOR_INDEX,
     REL_TYPES,
     RETIRED_CONSTRAINTS,
+    SEARCHABLE,
 )
-from .embedding import EMBED_DIM, REL_VECTOR_INDEX, VECTOR_INDEXES
+from .embedding import EMBED_DIM
 
 
 class UnversionedDatabaseError(RuntimeError):
@@ -69,21 +73,18 @@ def setup_database(graph: VersionedGraph, driver: Driver, *, database: str | Non
 
 
 def index_statements() -> list[str]:
+    """约束、两个全文索引（节点与边的 ``search_text``）与两个向量索引（节点与边的 ``embedding``）。"""
     options = f"OPTIONS {{indexConfig: {{`vector.dimensions`: {EMBED_DIM}, `vector.similarity_function`: 'cosine'}}}}"
-    statements = list(CONSTRAINTS)
-    for name, (label, fields, analyzer) in FULLTEXT.items():
-        on = ", ".join(f"n.{f}" for f in fields)
-        statements.append(
-            f"CREATE FULLTEXT INDEX {name} IF NOT EXISTS FOR (n:{label}) ON EACH [{on}] "
-            f"OPTIONS {{indexConfig: {{`fulltext.analyzer`: '{analyzer}'}}}}"
-        )
-    for name, label in VECTOR_INDEXES.items():
-        statements.append(f"CREATE VECTOR INDEX {name} IF NOT EXISTS FOR (n:{label}) ON n.embedding {options}")
-    statements.append(
-        f"CREATE VECTOR INDEX {REL_VECTOR_INDEX} IF NOT EXISTS "
-        f"FOR ()-[r:{'|'.join(DESCRIBED_RELS)}]-() ON r.embedding {options}"
-    )
-    return statements
+    analyzer = "OPTIONS {indexConfig: {`fulltext.analyzer`: 'english'}}"
+    rels = "|".join(INDEXED_RELS)
+    return [
+        *CONSTRAINTS,
+        "CREATE INDEX namekey_normalized IF NOT EXISTS FOR (k:NameKey) ON (k.normalized)",
+        f"CREATE FULLTEXT INDEX {NODE_TEXT_INDEX} IF NOT EXISTS FOR (n:{SEARCHABLE}) ON EACH [n.search_text] {analyzer}",
+        f"CREATE FULLTEXT INDEX {EDGE_TEXT_INDEX} IF NOT EXISTS FOR ()-[r:{rels}]-() ON EACH [r.search_text] {analyzer}",
+        f"CREATE VECTOR INDEX {NODE_VECTOR_INDEX} IF NOT EXISTS FOR (n:{SEARCHABLE}) ON n.embedding {options}",
+        f"CREATE VECTOR INDEX {EDGE_VECTOR_INDEX} IF NOT EXISTS FOR ()-[r:{rels}]-() ON r.embedding {options}",
+    ]
 
 
 __all__ = ["UnversionedDatabaseError", "check_versioned", "index_statements", "open_graph", "setup_database"]

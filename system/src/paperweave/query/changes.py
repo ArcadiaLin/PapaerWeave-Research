@@ -1,15 +1,15 @@
-"""旧状态的读视图与变更视图（docs/designs/v2/versioning_interfaces.md §2.3、§6.2）。
+"""旧状态的读视图与变更视图（docs/designs/v2/versioning_interfaces.md §2.3、§6.2；视图按 V3 的 get）。
 
 **旧视图。** 由某个状态（:meth:`graph_vc.VersionedGraph.state_at`）渲染，与 :mod:`paperweave.query.view` 的读视图同形；
-只读字段都从这个状态求得：别名、材料、Artifact 的 ``_document``（文档路径）。``_stale`` 是相对当前状态的判断，
-不提供。
+只读字段都从这个状态求得：别名、材料、Artifact 的 ``_document``（文档路径）。入边计数等由别的对象决定的字段不给；
+``_stale`` 是相对当前状态的判断，也不提供。
 
 **变更视图。** 比较一个对象在两个状态中的读视图，逐节点给出：
 
     {id, kind, op, fields?: {字段: [改前, 改后]}, edges?: {added, removed, changed}}
 
 ``op`` 为 ``create``、``update``、``delete``，或 ``edges``（字段没变，只有出边变了）。字段与关系的拼写与读视图
-相同，所以别名（``NAMES``）的变化显示为 ``aliases`` 的变化，材料（``MATERIAL_OF``）的变化显示为 ``material``
+相同，所以别名（``NAMES``）的变化显示为 ``alias`` 的变化，材料（``MATERIAL_OF``）的变化显示为 ``material``
 （Artifact 为 ``_document``）的变化。关系挂在起点一侧；Artifact 的 ``_USED`` 按关系比较。
 """
 
@@ -22,11 +22,12 @@ from typing import Any
 
 from graph_vc import GraphState
 
-from ..model.schema import ARTIFACT, PREFIX, RELATIONSHIPS, kind_of
-from .view import artifact_view, material_of, node_view
+from ..model.schema import ARTIFACT, PREFIX, RELATIONSHIPS, USED, kind_of
+from .view import View, artifact, current_material, full
 
-USED = "_USED"
 PREVIEW = 20  # 摘要中列表的预览项数
+# 读视图中由别的对象决定的只读字段（入边计数、谁指向这里）：不算这个对象的变化
+_INCOMING = frozenset({"_edges_in", "_supported_by", "_opposed_by", "_used_by"})
 _OBJECT_ID = re.compile(rf"^({'|'.join(sorted({*PREFIX.values(), 'art'}))})_\d+$")
 
 
@@ -45,10 +46,11 @@ def object_ids(ids: Iterable[str]) -> list[str]:
 def old_view(node_id: str, state: GraphState) -> dict[str, Any]:
     """对象在 ``state`` 中的读视图；Artifact 的 ``_document`` 由该状态中的材料求得，不带 ``_stale``。"""
     if ARTIFACT not in state.nodes[node_id].labels:
-        return node_view(node_id, state)
-    material = material_of(node_id, state)
+        return {k: v for k, v in full(node_id, state, View()).items() if k not in _INCOMING}
+    material = current_material(node_id, state)
     document = state.nodes[material].props.get("path") if material is not None else None
-    return artifact_view(node_id, state, {"_document": document})
+    used = {USED: {k.dst: None for k in state.edges if k.src == node_id and k.type == USED}}
+    return {**artifact(node_id, state, View(), full_abs=True), "_document": document, **used}
 
 
 def affected(ids: Iterable[str], *states: GraphState) -> list[str]:
@@ -121,9 +123,8 @@ def _split(view: dict[str, Any]) -> tuple[dict[str, Any], dict[tuple[str, str], 
     edges: dict[tuple[str, str], dict[str, Any]] = {}
     for key, value in view.items():
         if key in RELATIONSHIPS or key == USED:
-            for entry in value:
-                to, props = (entry, {}) if isinstance(entry, str) else (entry["to"], _without(entry, "to"))
-                edges[(key, to)] = props
+            for to, props in (value or {}).items():
+                edges[(key, to)] = dict(props or {})
         else:
             fields[key] = value
     return fields, edges
@@ -146,10 +147,6 @@ def _edge_changes(
 
 def _kind(view: dict[str, Any]) -> str:
     return view.get("kind") or ARTIFACT
-
-
-def _without(entry: dict[str, Any], key: str) -> dict[str, Any]:
-    return {k: v for k, v in entry.items() if k != key}
 
 
 __all__ = ["affected", "change", "changes", "is_object", "object_ids", "old_view", "preview", "summary"]

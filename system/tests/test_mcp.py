@@ -26,60 +26,50 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
-async def _tools(monkeypatch: pytest.MonkeyPatch, commit: bool) -> dict[str, Any]:
-    if commit:
-        monkeypatch.setenv("PAPERWEAVE_ENABLE_COMMIT", "1")
-    else:
-        monkeypatch.delenv("PAPERWEAVE_ENABLE_COMMIT", raising=False)
+async def _tools(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     server = serve(NO_STORE, session="s-test", formed_by="test/model", sync=None)
     async with create_connected_server_and_client_session(server) as client:
         return {t.name: t for t in (await client.list_tools()).tools}
 
 
 @pytest.mark.anyio
-async def test_each_operator_is_a_tool_and_commit_is_listed_only_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    tools = await _tools(monkeypatch, commit=False)
-    assert list(tools) == [n for n in OPERATORS if n != "Commit"]
-    assert all(_bare(tools[n].inputSchema) == _admitted(OPERATORS[n].parameters) for n in tools)  # 结构来自算子
-    assert tools["CheckIn"].inputSchema["properties"]["artifact_doc"]["type"] == ["array", "string"]
+async def test_each_tool_is_listed_with_its_structure_and_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    tools = await _tools(monkeypatch)
+    assert list(tools) == list(OPERATORS)
+    assert all(_bare(tools[n].inputSchema) == _admitted(OPERATORS[n].parameters) for n in tools)  # 结构来自工具
+    assert tools["commit"].inputSchema["properties"]["files"]["type"] == ["array", "string"]
     assert all(
         tools[n].description and all("description" in p for p in tools[n].inputSchema["properties"].values())
         for n in tools
     )
-    assert tools["Search"].annotations.readOnlyHint is True
-    checkin = tools["CheckIn"].annotations  # 只追加版本，相同内容重交不再写入
-    assert checkin.readOnlyHint is False and checkin.idempotentHint is True and checkin.destructiveHint is False
-    commit = (await _tools(monkeypatch, commit=True))["Commit"].annotations
+    assert "{{" not in tools["commit"].description and "EVALUATES: Experiment →" in tools["commit"].description
+    assert tools["search"].annotations.readOnlyHint is True
+    commit = tools["commit"].annotations
     assert commit.destructiveHint is True and commit.idempotentHint is False
 
 
 @pytest.mark.anyio
 async def test_read_only_lists_only_tools_that_do_not_write(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("PAPERWEAVE_READ_ONLY", "1")  # 读者：Commit 即使开启也不列出，CheckIn 也不列出
-    tools = await _tools(monkeypatch, commit=True)
+    monkeypatch.setenv("PAPERWEAVE_READ_ONLY", "1")  # 读者：不列出 commit
+    tools = await _tools(monkeypatch)
     assert list(tools) == [n for n, op in OPERATORS.items() if not op.writes]
-    assert {"Search", "Traverse", "ReadEvidence", "Log"} <= set(tools) and "CheckIn" not in tools
-    monkeypatch.setenv("PAPERWEAVE_HIDE_TOOLS", "ReadEvidence")  # 只读库的读者：不按行号读原文
-    assert "ReadEvidence" not in await _tools(monkeypatch, commit=False)
+    assert {"search", "get", "traverse", "read_evidence", "checkout", "log"} <= set(tools) and "commit" not in tools
+    monkeypatch.setenv("PAPERWEAVE_HIDE_TOOLS", "read_evidence")  # 只读库的读者：不按行号读原文
+    assert "read_evidence" not in await _tools(monkeypatch)
 
 
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     ("name", "arguments", "at"),
     [
-        ("Search", {"type": "Entity", "nope": 1}, "nope"),  # 未知参数
-        (
-            "CheckIn",
-            {"artifact_doc": ["artifacts/a.md"], "update_abstract": "x", "session": "x"},
-            "session",
-        ),  # 调用环境不是参数
-        ("Commit", {"doc": "graph-doc: v0.1", "source": "t"}, "tool"),  # 没有启用
+        ("search", {"query": "x", "nope": 1}, "nope"),  # 未知参数
+        ("commit", {"files": ["a.yaml"], "message": "x", "session": "x"}, "session"),  # 调用环境不是参数
+        ("Search", {"query": "x"}, "tool"),  # 工具名是小写
     ],
 )
 async def test_rejected_calls_are_errors_with_the_unified_shape(
     monkeypatch: pytest.MonkeyPatch, name: str, arguments: dict[str, Any], at: str
 ) -> None:
-    monkeypatch.delenv("PAPERWEAVE_ENABLE_COMMIT", raising=False)
     server = serve(NO_STORE, session="s-test", formed_by="test/model", sync=None)
     async with create_connected_server_and_client_session(server) as client:
         result = await client.call_tool(name, arguments)
@@ -108,15 +98,15 @@ def _bare(schema: Any) -> Any:
 def test_server_yml_describes_every_operator() -> None:
     spec = load()
     assert spec.name == "PaperWeave" and list(spec.tools) == list(OPERATORS)
-    assert spec.tools["CheckIn"].inputSchema["properties"]["artifact_doc"]["description"]
+    assert spec.tools["commit"].inputSchema["properties"]["files"]["description"]
 
 
 @pytest.mark.parametrize(
     ("edit", "problem"),
     [
-        (lambda d: d["tools"].pop("Search"), "tools.Search: missing"),
-        (lambda d: d["tools"]["Search"]["parameters"].update({"wher": "x"}), "tools.Search.parameters.wher: no such"),
-        (lambda d: d["tools"]["Search"]["parameters"].pop("budget"), "tools.Search.parameters.budget: no description"),
+        (lambda d: d["tools"].pop("search"), "tools.search: missing"),
+        (lambda d: d["tools"]["search"]["parameters"].update({"wher": "x"}), "tools.search.parameters.wher: no such"),
+        (lambda d: d["tools"]["search"]["parameters"].pop("topn"), "tools.search.parameters.topn: no description"),
         (lambda d: d["tools"].update({"Rank": {}}), "tools.Rank: no such operator"),
     ],
 )
