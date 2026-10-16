@@ -75,27 +75,19 @@ def result(prepared: Prepared, record: CommitRecord, names: dict[str, str] | Non
     """apply 成功后的返回：提交 id、``$`` 名到 id 的映射（附名称）与计数。"""
     assert prepared.changeset is not None
     names = names or {}
-    counts = Counter(f"nodes_{n.op}d" for n in prepared.changeset.nodes)
-    counts.update(f"edges_{e.op}d" for e in prepared.changeset.edges)
+    summary = summarize(prepared.changeset, _ref_of(prepared))  # 与 dry_run 的 changes 同一口径：不算名称键与材料
     out: dict[str, Any] = {
         "status": "committed",
         "commit": record.id,
         "ids": {ref: f"{node_id} ({names[ref]})" if names.get(ref) else node_id for ref, node_id in prepared.ids.items()},
         "counts": {
-            key: counts.get(key, 0)
-            for key in (
-                "nodes_created",
-                "nodes_updated",
-                "nodes_deleted",
-                "edges_created",
-                "edges_updated",
-                "edges_deleted",
-            )
+            "nodes": {"create": len(summary["create"]), "update": len(summary["update"]), "delete": len(summary["delete"])},
+            "edges": summary["edges"],
         },
     }
     warnings = [p for p in prepared.problems if p.severity == "warning"]
     if warnings:
-        out["warnings"] = [_problem(p, {}) for p in warnings]
+        out["warnings"] = _grouped([_problem(p, {}) for p in warnings])
     return out
 
 

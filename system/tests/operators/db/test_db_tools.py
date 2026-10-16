@@ -148,3 +148,21 @@ def test_a_reversed_edge_says_how_to_write_it(writer: Writer) -> None:
     doc = "graph-doc: v0.2\ncreate:\n  claim_0001:\n    SUPPORTS:\n      exp_0001: {anchor: [12:13]}\n"
     blocked = writer.commit(doc, dry_run=True)
     assert "write it the other way, under exp_0001: SUPPORTS: {claim_0001: ...}" in blocked["errors"][0]["msg"]
+
+
+def test_evaluating_a_model_without_identities_warns(writer: Writer) -> None:
+    doc = """graph-doc: v0.2
+create:
+  $m:
+    kind: Model
+    name: DLinear-trained
+    IMPLEMENTS:
+      method_0003:
+  exp_0001:
+    EVALUATES:
+      $m: {role: target, result: own, anchor: [12:13]}
+confirm:
+  $m: {distinct_from: []}
+"""
+    checked = writer.commit(doc, dry_run=True)
+    assert any("evaluate the Method (method_0003)" in w["msg"] for w in checked.get("warnings", [])), checked

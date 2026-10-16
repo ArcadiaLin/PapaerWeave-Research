@@ -75,7 +75,10 @@ def prepare(text: str, ctx: Context, ids: Mapping[str, str] | None = None) -> Pr
         raise AssertionError(f"diff produced a changeset that does not apply: {exc}") from exc
 
     refs = translation.refs
-    problems += check_state(after, touched(changeset), lambda node_id: refs.get(node_id, node_id))
+    relabeled = {n.id for n in changeset.nodes if n.op == "update" and n.labels_before != n.labels_after}
+    changed = {e.key for e in changeset.edges if e.op != "delete"}
+    changed |= {k for k in after.edges if k.src in relabeled or k.dst in relabeled}
+    problems += check_state(after, touched(changeset), changed, lambda node_id: refs.get(node_id, node_id))
     problems += delete_impact(changeset, {node_id: node.labels for node_id, node in local.nodes.items()})
     revision_problems, revisions = check_revisions(
         doc,

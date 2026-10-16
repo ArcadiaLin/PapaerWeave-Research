@@ -39,9 +39,9 @@ def test_json_text_is_parsed_into_the_declared_type() -> None:
     assert notes == ["payload: JSON text parsed", "params: JSON text parsed"]  # 按请求中的顺序
 
 
-def test_text_that_is_not_json_is_left_for_the_operator() -> None:
+def test_text_that_is_not_json_becomes_a_one_item_list() -> None:
     out, notes = repair(SEARCH, {"type": "Entity", "kinds": "Paper", "query": "PatchTST"})
-    assert out == {"type": "Entity", "kinds": "Paper", "query": "PatchTST"} and notes == []
+    assert out == {"type": "Entity", "kinds": ["Paper"], "query": "PatchTST"} and notes == ["kinds: 'Paper' split on commas"]
 
 
 @pytest.mark.parametrize(
@@ -96,3 +96,10 @@ def test_source_references_are_normalized(text: str, expected: str) -> None:
     assert normalize_ref(text) == expected
     ref = parse_ref(text)
     assert ref is not None and ref.text == expected
+
+
+def test_a_comma_separated_string_becomes_a_list_of_strings() -> None:
+    schema = {"properties": {"kind": {"type": "array", "items": {"type": "string"}}}}
+    fixed, notes = repair(schema, {"kind": "Task, Issue,Model"})
+    assert fixed["kind"] == ["Task", "Issue", "Model"] and notes
+    assert repair(schema, {"kind": "Method"})[0]["kind"] == ["Method"]

@@ -7,7 +7,8 @@ stderr 与 ``PAPERWEAVE_MCP_LOG``）。规则都是确定的，修不了时原�
   与 ``}`` 再试一次（模型输出长参数时常少写最后的括号）；解析结果的类型须是声明的类型；
 - 声明为 integer、number 或 boolean、收到字符串：按字面转换（``"10"``、``"0.5"``、``"true"``）；
 - 枚举：大小写不同的字符串换成枚举中的写法；T/F/U 判断收到 ``true`` / ``false`` 时换成 ``T`` / ``F``；
-- ``anyOf``：按值的类型进入相应的分支；字符串以 ``[`` 或 ``{`` 开头且某个分支是数组或对象时按 JSON 解析。
+- ``anyOf``：按值的类型进入相应的分支；字符串以 ``[`` 或 ``{`` 开头且某个分支是数组或对象时按 JSON 解析；
+- 声明为字符串数组、收到不是 JSON 的字符串：按逗号切开（``"Task,Issue,Model"``），没有逗号时是一项。
 
 来源引用的写法偏差由 :func:`paperweave.model.refs.normalize_ref` 兜底，不在这里。
 """
@@ -49,6 +50,9 @@ def _repair(schema: Mapping[str, Any], value: Any, at: str, notes: list[str]) ->
         if parsed is not None:
             notes.append(f"{at}: JSON text parsed")
             value = parsed
+        elif "array" in types and _types(schema.get("items") or {}) == ["string"]:
+            notes.append(f"{at}: {value!r} split on commas")
+            value = [v.strip() for v in value.split(",") if v.strip()]
     elif isinstance(value, str) and types[:1] in (["integer"], ["number"], ["boolean"]):
         converted = _scalar(value, types[0])
         if converted is not None:

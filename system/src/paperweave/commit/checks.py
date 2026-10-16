@@ -32,16 +32,18 @@ def touched(changeset: Changeset) -> set[str]:
     return ids - deleted
 
 
-def check_state(after: GraphState, ids: set[str], ref: Callable[[str], str] = str) -> list[Problem]:
-    """核对 ``ids`` 中证据节点在 ``after`` 中的字段、必需关系，以及从它们出发的关系。"""
+def check_state(
+    after: GraphState, ids: set[str], changed: set[EdgeKey], ref: Callable[[str], str] = str
+) -> list[Problem]:
+    """核对 ``ids`` 中证据节点在 ``after`` 中的字段与必需关系，以及 ``changed`` 中的关系（本次写入或改动的边，
+    加上 kind 变了的节点的出边）。没改动的旧边在写入时已检查过，不再报告。"""
     problems: list[Problem] = []
-    edges: set[EdgeKey] = set()
+    edges = {k for k in changed if k in after.edges}
     for node_id in sorted(ids):
         node = after.nodes.get(node_id)
         kind = kind_of(node.labels) if node is not None else None
         if node is None or kind is None:
             continue
-        edges |= {k for k in after.incident(node_id) if k.src == node_id}
         at = ref(node_id)
         if node.labels != labels_of(kind):
             problems.append(Problem("labels", at, f"expected labels {sorted(labels_of(kind))}, got {sorted(node.labels)}"))
@@ -86,6 +88,14 @@ def _check_edge(state: GraphState, key: EdgeKey, ref: Callable[[str], str]) -> l
     props = state.edges[key]
     for name in sorted(spec.required - props.keys()):
         problems.append(Problem("required-field", f"{at}.{name}", f"{key.type} requires {name}"))
+    if key.type == "EVALUATES" and dst == "Model" and not state.nodes[key.dst].props.get("identities"):
+        methods = sorted(k.dst for k in state.edges if k.src == key.dst and k.type == "IMPLEMENTS")
+        instead = f" ({', '.join(ref(m) for m in methods)})" if methods else ""
+        msg = (
+            f"{ref(key.dst)} is a Model without identities, which is usually the method itself: evaluate the "
+            f"Method{instead}; a Model is released weights or an API model with a url"
+        )
+        problems.append(Problem("relationship", at, msg, "warning"))
     if key.type == "RELATES_TO":
         if fits := [t for t in relation_types(src, dst) if t != "RELATES_TO"]:
             msg = f"a {src} → {dst} relation may be {' or '.join(fits)}; use RELATES_TO only when none of them fits"
