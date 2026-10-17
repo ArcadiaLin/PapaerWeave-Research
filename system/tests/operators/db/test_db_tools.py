@@ -212,6 +212,25 @@ confirm:
     assert note.startswith("EVALUATES method_0004 written against material_")
 
 
+def test_a_revision_in_the_commit_that_switches_the_material_anchors_in_the_new_one(store: Store, writer: Writer) -> None:
+    older = (store.material_root / "papers/2205.13504v2/paper.md").read_text(encoding="utf-8")
+    total = len(older.splitlines())
+    newer = store.material_root / "papers/2205.13504v3/paper.md"
+    newer.parent.mkdir(parents=True, exist_ok=True)
+    newer.write_text(older + "Appendix table, first row\nAppendix table, second row\n", encoding="utf-8")
+    lines = f"{total + 1}:{total + 2}"  # 只在新版本中存在的行
+    doc = f"""graph-doc: v0.2
+set:
+  paper_0001:
+    material: papers/2205.13504v3/paper.md
+  exp_0001:
+    anchor: [{lines}]
+confirm:
+  exp_0001: {{revise: {{reason: "the table moved to the appendix in the new version", anchor: [{lines}]}}}}
+"""
+    assert writer.commit(doc)["status"] == "committed"
+
+
 def test_get_and_traverse_page_like_read(writer: Writer, monkeypatch: pytest.MonkeyPatch) -> None:
     first = writer.call("get", ids=["exp_0001"], limit=1)
     evaluates = first.details["more"]["exp_0001"]["EVALUATES"]
