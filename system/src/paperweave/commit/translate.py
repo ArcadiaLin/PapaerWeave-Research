@@ -11,7 +11,7 @@
 - ``kind`` → 主 Label、次级 Label 与公共 Label ``Searchable``；``set`` 中写了 kind 必须与现状相同。
 - ``name`` 与 ``alias`` → ``(:NameKey)-[:NAMES]->(对象)``；同一文档中从一个对象移到另一个对象的名称改指，而不是删了再建。
 - ``extra`` → 一个 JSON 字符串属性；``set`` 中按键合并，键写 ``null`` 即删除。边上的 ``extra`` 相同。
-- Content 的 ``paper`` → 指向论文的 ``FROM`` 边，边上记下写入时论文的材料（``material_ref``）。
+- Content 的 ``paper`` → 指向论文的 ``FROM`` 边，边上记下写入时论文的材料（``material_ref``）；改写 ``anchor`` 时随之更新。
 - 节点与边的 ``anchor`` 是论文 Markdown 的行号范围，写入时按论文的当前材料检查不越界；带锚点的边另记 ``material_ref``。
   边的论文取起点所在的论文（Content 的 ``paper``、Paper 本身），起点是 Entity 或 Concept 时边上另写 ``paper``。
 - Paper 的 ``material`` → ``(:Material)-[:MATERIAL_OF]->(Paper)``；换成新文件即为新版本，旧材料留着并记上
@@ -308,6 +308,10 @@ class _Translator:
         if kind in CONTENT and ("anchor" in props or node_id in self.papers):
             anchor = props.get("anchor") or current.props.get("anchor") or []
             self.check_anchor(f"{at}.anchor", self.paper_of(node_id), anchor)
+            paper = self.paper_of(node_id)
+            if "anchor" in props and node_id not in self.papers and paper is not None:
+                # 改写了锚点、论文没变：锚点按当前材料检查过，FROM 上的材料随之更新
+                self.frag(node_id).rels.setdefault(FROM, {})[paper] = self.material_ref(paper)
         for rel_type, edge in doc_node.edges():
             self.edge(f"{at}.{rel_type}.{edge.to}", node_id, rel_type, edge, "set")
 

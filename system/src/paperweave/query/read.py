@@ -9,6 +9,7 @@ from graph_vc import GraphState
 
 from ..model.schema import ARTIFACT, kind_of
 from ..store.store import ContractError, Store
+from .anchor_versions import anchor_versions
 from .materials import section_finder
 from .revisions import latest_revisions
 from .search import Found
@@ -22,7 +23,8 @@ def state_of(store: Store, ids: Iterable[str]) -> GraphState:
 
 
 def get_view(store: Store, ids: list[str], extra: Extra | None = None) -> tuple[View, list[str]]:
-    """``ids`` 的全量投影；返回投影与不存在的 id。修订过的有据层记录带 ``_revised``（最近一次修订）。"""
+    """``ids`` 的全量投影；返回投影与不存在的 id。修订过的有据层记录带 ``_revised``（最近一次修订），锚点写在论文旧材料上的
+    带 ``_anchor_version``。"""
     kinds = store.kinds(ids)
     missing = [i for i in ids if i not in kinds]
     system = [i for i in ids if i in kinds and kinds[i] is None]
@@ -32,11 +34,14 @@ def get_view(store: Store, ids: list[str], extra: Extra | None = None) -> tuple[
     state = state_of(store, present)
     sections = section_finder(store)
     revised = latest_revisions(store, present)
+    old_anchors = anchor_versions(store, present)
     view = View()
     for node_id in present:
         view.data[node_id] = full(node_id, state, view, sections)
         if node_id in revised:
             view.data[node_id]["_revised"] = revised[node_id]
+        if node_id in old_anchors:
+            view.data[node_id]["_anchor_version"] = old_anchors[node_id]
         view.data[node_id].update((extra or {}).get(node_id, {}))
     return view, missing
 

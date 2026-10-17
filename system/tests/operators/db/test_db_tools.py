@@ -170,3 +170,28 @@ confirm:
     assert any(w["rule"] == "model" and "usually the Method (method_0003)" in w["msg"] for w in checked["warnings"]), checked
     stub = doc.replace("    description: The DLinear weights trained in this paper.\n", "    stub: true\n")
     assert not [w for w in writer.commit(stub, dry_run=True).get("warnings", []) if w["rule"] == "model"]
+
+
+def test_anchors_on_a_superseded_material_are_marked(store: Store, writer: Writer) -> None:
+    newer = store.material_root / "papers/2205.13504v2/paper.md"
+    newer.parent.mkdir(parents=True, exist_ok=True)
+    older = (store.material_root / "papers/2205.13504/paper.md").read_text(encoding="utf-8")
+    newer.write_text(older + "Appendix line 62\n", encoding="utf-8")  # 材料按内容登记：新版本要有不同的内容
+    moved = writer.commit("graph-doc: v0.2\nset:\n  paper_0001:\n    material: papers/2205.13504v2/paper.md\n")
+    assert moved["status"] == "committed", moved
+    view = writer.call("get", ids=["exp_0001", "method_0003"]).details["nodes"]
+    note = view["exp_0001"]["_anchor_version"]
+    # 前面的测试给 exp_0001 加过一条带锚点的 EVALUATES：记录本身与这条边的锚点都写在旧材料上
+    assert note.startswith("EVALUATES method_0004, anchor written against material_") and "::<start>:<end>" in note
+    assert "_anchor_version" not in view["method_0003"]
+
+    rewritten = """graph-doc: v0.2
+set:
+  exp_0001:
+    anchor: [12:21]
+confirm:
+  exp_0001: {revise: {reason: "the table runs to line 21 in the new version", anchor: [12:21]}}
+"""
+    assert writer.commit(rewritten)["status"] == "committed"  # 改写记录的锚点：它换到新材料，边的锚点还在旧材料上
+    note = writer.call("get", ids=["exp_0001"]).details["nodes"]["exp_0001"]["_anchor_version"]
+    assert note.startswith("EVALUATES method_0004 written against material_")
