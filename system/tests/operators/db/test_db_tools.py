@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import pytest
 import yaml
 from conftest import Writer
 
@@ -199,3 +200,26 @@ confirm:
     assert writer.commit(rewritten)["status"] == "committed"  # 改写记录的锚点：它换到新材料，边的锚点还在旧材料上
     note = writer.call("get", ids=["exp_0001"]).details["nodes"]["exp_0001"]["_anchor_version"]
     assert note.startswith("EVALUATES method_0004 written against material_")
+
+
+def test_get_and_traverse_page_like_read(writer: Writer, monkeypatch: pytest.MonkeyPatch) -> None:
+    first = writer.call("get", ids=["exp_0001"], limit=1)
+    evaluates = first.details["more"]["exp_0001"]["EVALUATES"]
+    assert evaluates > 1 and len(first.details["nodes"]["exp_0001"]["EVALUATES"]) == 1
+    assert "[Use offset=1 with ids=[exp_0001] to continue.]" in first.text
+    second = writer.call("get", ids=["exp_0001"], offset=1, limit=1)
+    assert list(second.details["nodes"]["exp_0001"]["EVALUATES"]) != list(first.details["nodes"]["exp_0001"]["EVALUATES"])
+    assert writer.call("get", ids=["exp_0001"], limit=1).text == first.text  # 同样的参数，同样的一页
+
+    path = [{"rel": "EVALUATES", "dir": "in"}, {"rel": "EVALUATES"}]
+    whole = writer.call("traverse", start=["method_0003"], path=path).details
+    assert whole["reached"] > 1 and whole["next"] is None
+    head = writer.call("traverse", start=["method_0003"], path=path, limit=1)
+    assert head.details["next"] == 1 and "Use offset=1 to continue." in head.text
+    tail = writer.call("traverse", start=["method_0003"], path=path, offset=1, limit=100).details
+    assert [*head.details["nodes"], *tail["nodes"]] == list(whole["nodes"])
+
+    monkeypatch.setattr("paperweave.operators.db.get.BUDGET", 600)  # 预算小到放不下两个节点：按整节点截短
+    cut = writer.call("get", ids=["method_0003", "dataset_0001"])
+    assert list(cut.details["nodes"]) == ["method_0003"] and cut.details["rest"] == ["dataset_0001"]
+    assert "Get the rest with ids=[dataset_0001]" in cut.text

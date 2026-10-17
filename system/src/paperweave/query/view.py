@@ -55,6 +55,13 @@ class View:
     data: dict[str, Any] = field(default_factory=dict)
     names: dict[str, str] = field(default_factory=dict)
     notes: dict[tuple, str] = field(default_factory=dict)
+    edge_totals: dict[str, dict[str, int]] = field(default_factory=dict)  # 分页时：节点 → 超出一页的关系 → 总条数
+
+    def subset(self, ids: Iterable[str]) -> View:
+        """只含 ``ids`` 的投影（按预算截短时用）；注释与总条数照搬，渲染时只用到数据中出现的。"""
+        keep = list(ids)
+        totals = {i: t for i, t in self.edge_totals.items() if i in keep}
+        return View({i: self.data[i] for i in keep}, self.names, self.notes, totals)
 
     def text(self, header: Iterable[str] = ()) -> str:
         lines = "".join(f"# {line}\n" for line in header)
@@ -84,7 +91,15 @@ def excerpt(text: Any, limit: int = EXCERPT) -> str:
 # ── 全量投影（get）────────────────────────────────────────────────────
 
 
-def full(node_id: str, state: GraphState, view: View, sections: Sections | None = None) -> dict[str, Any]:
+def full(
+    node_id: str,
+    state: GraphState,
+    view: View,
+    sections: Sections | None = None,
+    window: tuple[int, int] | None = None,
+) -> dict[str, Any]:
+    """全部字段与出边。``window`` 为 ``(offset, limit)`` 时，每种出边按终点 id 只列这一段，总数记在
+    ``view.edge_totals``（``get`` 分页；``checkout`` 不分页）。"""
     node = state.nodes[node_id]
     if ARTIFACT in node.labels:
         return artifact(node_id, state, view, full_abs=True)
@@ -94,6 +109,11 @@ def full(node_id: str, state: GraphState, view: View, sections: Sections | None 
     out = _fields(node_id, node, kind, state, view, sections)
     for rel_type in RELATIONSHIPS:
         edges = _out(state, node_id, rel_type)
+        if window is not None:
+            offset, limit = window
+            if offset or len(edges) > limit:
+                view.edge_totals.setdefault(node_id, {})[rel_type] = len(edges)
+            edges = edges[offset : offset + limit]
         if edges:
             out[rel_type] = {}
             for key in edges:

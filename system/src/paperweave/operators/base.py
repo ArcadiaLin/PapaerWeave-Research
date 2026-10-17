@@ -134,6 +134,7 @@ def one_or_many(item: Mapping[str, Any]) -> dict[str, Any]:
 
 STRING = {"type": "string"}
 STRINGS = {"type": "array", "items": STRING}
+BUDGET = 16 * 1024  # 一次读取返回的字节上限：低于 pi 把 MCP 返回转存为临时文件的约 20 KB，超出时按结构分页
 
 
 def params_of(op: str, parameters: Mapping[str, Any], request: Mapping[str, Any]) -> dict[str, Any]:
@@ -180,6 +181,7 @@ def interface(
 
 
 __all__ = [
+    "BUDGET",
     "CONTEXT_KEYS",
     "STRING",
     "STRINGS",

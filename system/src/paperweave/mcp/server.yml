@@ -42,6 +42,8 @@ tools:
       Read nodes by id: all fields and outgoing edges, in the same YAML shape you write under set (fields) and create (edges) in a graph-doc. Comments after # give the names of ids and the paper sections of anchors; fields starting with _ are read-only (_edges_in counts incoming edges by type: follow them with traverse dir in; _supported_by, _opposed_by and _used_by list who points here). An artifact shows its type, title and abstract, and _stale when something it used changed since; checkout it to read or edit the document.
     parameters:
       ids: Node or artifact ids, at most 20.
+      offset: "Edges of each type to skip (default 0). When a node has more edges than shown, the last lines say which offset to use next."
+      limit: Edges of each type to list, 1-100 (default 30).
 
   traverse:
     title: Traverse
@@ -60,6 +62,7 @@ tools:
       path[].dir: out (default), in or both.
       path[].kind: Keep only end nodes of these kinds, families or artifact types.
       limit: Most nodes to list, 1-100 (default 30); the total is always given.
+      offset: "Reached nodes to skip (default 0); nodes are sorted by id. When more remain, the last line says which offset to use next."
 
   read_evidence:
     title: Read evidence

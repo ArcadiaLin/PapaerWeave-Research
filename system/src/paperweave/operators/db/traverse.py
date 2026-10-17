@@ -1,12 +1,13 @@
 """traverse：从起点沿关系走 1–3 跳，列出到达的节点（结构条件与穷举用它，不用 search）。
 
-    traverse(start, path?, limit?: 30) -> 带注释的 YAML：到达的节点 → 紧凑投影 + _via
+    traverse(start, path?, limit?: 30, offset?: 0) -> 带注释的 YAML：到达的节点 → 紧凑投影 + _via
     path = [{rel: <类型或类型列表>, dir?: out | in | both, kind?: [<kind>]}]
 
 - 路径为空时返回起点的紧凑投影。
 - 每跳的 ``rel`` 是关系类型（含系统关系 ``FROM``：Content → 论文，``USED``：产物 → 用到的节点），``dir`` 默认 ``out``；
   ``kind`` 只留这些 kind（或类别、产物类型）的终点。
-- 到达的节点按 id 排序，最多列 ``limit`` 个，总数在开头的注释中。每个节点的 ``_via`` 给出最后一跳从哪些节点、经哪条边
+- 到达的节点按 id 排序，从第 ``offset`` 个起最多列 ``limit`` 个，总数在开头的注释中；返回超过 :data:`BUDGET` 时提前
+  停下。还有剩余时，结尾的注释给出下一页的 ``offset``（与 pi 的 ``read`` 同一用法）。同样的参数与库状态返回同样的一页。每个节点的 ``_via`` 给出最后一跳从哪些节点、经哪条边
   到达（最多 3 个），带边上的属性，如 ``_via: {exp_0004: {USES: {printed_as: ECL}}}``。
 """
 
@@ -18,7 +19,7 @@ from typing import Any
 from ...model.schema import ARTIFACT, ARTIFACT_TYPES, FAMILIES, FROM, KIND_SPECS, RELATIONSHIPS, USED
 from ...query.read import compact_view
 from ...store.store import ContractError, Store
-from ..base import STRINGS, Rendered, db_operator, schema
+from ..base import BUDGET, STRINGS, Rendered, db_operator, schema
 
 MAX_HOPS = 3
 DEFAULT_LIMIT = 30
@@ -28,12 +29,20 @@ RELS = (*RELATIONSHIPS, FROM, USED)
 _HIDDEN = {"formed_by", "formed_at", "material_ref", "embedding", "embedding_key", "search_text"}
 
 
-def traverse(store: Store, start: list[str] | str, path: list[dict[str, Any]] | None = None, limit: int = DEFAULT_LIMIT) -> Rendered:
+def traverse(
+    store: Store,
+    start: list[str] | str,
+    path: list[dict[str, Any]] | None = None,
+    limit: int = DEFAULT_LIMIT,
+    offset: int = 0,
+) -> Rendered:
     starts = [start] if isinstance(start, str) else start
     if not isinstance(starts, list) or not starts or not all(isinstance(s, str) for s in starts):
         raise ContractError([{"at": "start", "msg": "a list of node ids"}])
     if not isinstance(limit, int) or not 1 <= limit <= MAX_LIMIT:
         raise ContractError([{"at": "limit", "msg": f"1-{MAX_LIMIT}"}])
+    if not isinstance(offset, int) or offset < 0:
+        raise ContractError([{"at": "offset", "msg": "0 or more: reached nodes to skip"}])
     hops = [_hop(h, i) for i, h in enumerate(path or [])]
     if len(hops) > MAX_HOPS:
         raise ContractError([{"at": "path", "msg": f"at most {MAX_HOPS} hops"}])
@@ -46,7 +55,7 @@ def traverse(store: Store, start: list[str] | str, path: list[dict[str, Any]] | 
         if not frontier:
             break
     reached = sorted(frontier)
-    shown = reached[:limit]
+    shown = reached[offset : offset + limit]
     extra = {i: {"_via": dict(list(via[i].items())[:VIA])} for i in shown if i in via}
     view = compact_view(store, shown, extra)
     for i in shown:
@@ -56,10 +65,17 @@ def traverse(store: Store, start: list[str] | str, path: list[dict[str, Any]] | 
         names_needed = [p for i in shown for p in list(via.get(i, {}))[:VIA]]
         names = compact_view(store, list(dict.fromkeys(names_needed))).names if names_needed else {}
         view.names.update(names)
-    header = [f"{len(reached)} node(s) reached" + (f"; showing the first {limit} by id" if len(reached) > limit else "")]
+    header = [f"{len(reached)} node(s) reached, sorted by id"]
     if missing:
         header.append(f"not in the store: {', '.join(missing)}")
-    return Rendered({"reached": len(reached), "nodes": view.data, "missing": missing}, view.text(header))
+    while len(shown) > 1 and len(view.subset(shown).text(header).encode()) > BUDGET:
+        shown.pop()
+    page = view.subset(shown)
+    end = offset + len(shown)
+    following = end if shown and end < len(reached) else None
+    footer = [f"[Showing {offset + 1}-{end} of {len(reached)} nodes. Use offset={end} to continue.]"] if following else []
+    text = page.text(header) + "".join(f"# {line}\n" for line in footer)
+    return Rendered({"reached": len(reached), "nodes": page.data, "missing": missing, "next": following}, text)
 
 
 def _hop(hop: Any, i: int) -> tuple[list[str], str, set[str] | None]:
@@ -121,6 +137,7 @@ TRAVERSE = db_operator(
                 ),
             },
             "limit": {"type": "integer"},
+            "offset": {"type": "integer"},
         },
         ["start"],
     ),
