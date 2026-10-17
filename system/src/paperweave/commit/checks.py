@@ -24,7 +24,7 @@ from ..model.schema import (
 )
 from .problems import Problem
 
-# RELATES_TO 的端点恰好符合某个具名类型时提示（data_model.md：写法 / RELATES_TO）
+
 def touched(changeset: Changeset) -> set[str]:
     """本次新建、修改的节点，以及增删改过关系的端点；不含删除的节点。"""
     deleted = {n.id for n in changeset.nodes if n.op == "delete"}
@@ -99,7 +99,8 @@ def _check_edge(state: GraphState, key: EdgeKey, ref: Callable[[str], str]) -> l
         )
         problems.append(Problem("model", at, msg, "warning"))
     if key.type == "RELATES_TO":
-        if fits := [t for t in relation_types(src, dst) if t != "RELATES_TO"]:
+        # 不提示 BROADER：RPC 中概念之间的 RELATES_TO 是组成、改进、对比，没有一条是更宽泛的概念，这条提示全是噪声
+        if fits := [t for t in relation_types(src, dst) if t not in ("RELATES_TO", "BROADER")]:
             msg = f"a {src} → {dst} relation may be {' or '.join(fits)}; use RELATES_TO only when none of them fits"
             problems.append(Problem("relationship", at, msg, "warning"))
     return problems

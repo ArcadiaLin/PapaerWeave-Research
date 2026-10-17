@@ -276,7 +276,7 @@
 - 〔已确认 2026-10-17〕**补全桩自动去掉 `stub`**：`set` 给桩写了 `description` 且没写 `stub` 时，系统清除它。
 - 〔已确认 2026-10-17〕**有据层补边只要锚点**：给已有 Content 加出边时，新边自带 `anchor`，或在 `confirm.<id>.revise.anchor` 中给出；不要求理由。改字段、改或删出边要 `reason` 与 `anchor`；删节点要 `reason`。Entity、Concept 的改动不要求理由（改身份字段 `alias`、`identities` 是否要理由，等评测中出现错误合并再定）。
 - **提交上记下的内容**：`message`（每次必填，做了什么）；`input`（交上来的 graph-doc 原文）；`meta.revisions`（有据层修订：节点 id → 理由与锚点，`get` 中显示为 `_revised`）；`meta.confirmations`（写者的查重判断：节点 id → `distinct_from`，供 C1 审计查询）。
-- 端点检查在翻译阶段与字段错误一起报出，并列出这对端点之间可用的关系类型。`RELATES_TO` 的端点恰好符合某个具名类型时给提示（不阻塞）。
+- 端点检查在翻译阶段与字段错误一起报出，并列出这对端点之间可用的关系类型。〔已确认 2026-10-17〕`RELATES_TO` 的端点恰好符合某个具名类型时给提示（不阻塞），但不提示 `BROADER`：RPC 中概念之间的 `RELATES_TO` 是组成、改进、对比，13 次 `BROADER` 提示全是噪声。不新增“组成部分”关系，带描述的 `RELATES_TO` 已够用。
 - Content 的查重只有 Experiment 的 `<论文 id>::<主表图>`。
 - 写者身份只来自服务端登录（`PAPERWEAVE_USER`），graph-doc 中没有 `by`；没有登录身份时拒绝写入。
 - 〔已确认 2026-10-17〕**新 Entity / Concept 的查重**：名称与别名（不分大小写）、外部标识的精确命中全部列出，另加全文与向量 RRF 的前 3 个近邻。近邻只留向量分数（$(1+\cos)/2$）不低于 0.84 的，已有的桩不设阈值（桩的向量只来自名称，分数偏低）；两边都有唯一外部标识而互不相同时不列。有候选时这一批先不写（`status: blocked`），由写者对每个候选判断一次：改用已有 id，或 `confirm.$x.distinct_from`；系统不合并、不替写者判断。阈值的依据见 [RPC 实验室第 2 轮](../../experiments/2026-10-17-v3-rpc-lab.md)。

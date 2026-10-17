@@ -166,7 +166,9 @@ def test_relates_to_needs_a_description_and_hints_named_types(ingested: MemoryGr
             RELATES_TO: [method_0001]
         """))
     assert {(p.rule, p.at) for p in prepared.errors} == {("required-field", "method_0002.RELATES_TO.method_0001.description")}
-    assert any("IMPLEMENTS" in p.msg for p in prepared.problems if p.severity == "warning")
+    hints = [p.msg for p in prepared.problems if p.severity == "warning"]
+    assert any("IMPLEMENTS" in m for m in hints)
+    assert not any("BROADER" in m for m in hints)  # 概念之间的 RELATES_TO 不提示 BROADER
 
 
 # ── set ───────────────────────────────────────────────────────────────
