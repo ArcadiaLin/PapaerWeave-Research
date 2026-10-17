@@ -463,7 +463,7 @@ staleness, and downstream correctness.
 3. **Problem and Workloads.** 把中枢规约展开为可评测的形式：六类意图及其任务来源与必要信息（取自 intents 分解），写入者模型、事件类型、读者探针，各自给出具体输入、所需输出、数据状态与操作序列。显式写出几条假设：不协调是语义上的而非并发事务；领域词表给定；库不判断谁对（可问责而非权威，按对象类别与 `stated_by` 规定一致方式）；起点只有论文原文与外部标识。明确责任边界。
 4. **System Overview.** Figure 2：共享库、产物版本与提交历史的整体关系；用 Figure 1 中一段写入历史端到端走查各部件。
 5. **Accumulation Meta-Model.** Entity / Concept / Content / Artifact 主类与系统记录；写入机制在每一类上的效果放在第 7 节；身份规则（精确键、标识、重复与歧义的处理）、材料引用、来源与派生谱系；薄图、厚文档的分工；从意图推出的检索面（描述面与检索子集、关系为何进入检索面）。CS 论文的领域词表作为实例单列（回应 C1、C2、C5）。
-6. **Operator Contracts and Artifact Persistence.** 访问算子（Search、Resolve、Traverse、ReadEvidence）的契约：混合检索中关系的作用、有界视图、分歧与过时随结果返回（回应 C5）。Agent 算子的输入输出契约：中间件校验计划、保存产物与声明依赖，使贡献自描述、可复查、可继续组合（回应 C2）。以意图的数据流说明两类算子如何组合。
+6. **Tool Contracts and Artifact Persistence.** 知识访问工具（search、get、traverse、read_evidence）的契约：混合检索中关系的作用、有界视图与分页、分歧与过时随结果返回（回应 C5）。产物类型的契约：产物是按类型检查的版本化文档，写者经 checkout / commit 检出与检入，中间件校验文档结构与引用、保存各版本、记录所用的节点，使贡献自描述、可复查、可继续组合（回应 C2）。以意图的数据流说明两类契约如何组合。
 7. **Versions, Revision, and Shared Artifacts.** 统一提交与完整变更记录；有据层的修订（附锚点与理由）与解释层的并存；撤回；核对写成 Verify 产物；共同产物的检出、检入与版本；基于依赖的过时提示；历史访问。区分产物输入谱系与提交祖先（回应 C3、C4）。
 8. **Implementation.** 现有原型：属性图与材料存储、graph-doc 与 Commit、graph-vc 统一写入与版本、算子契约到 Cypher 与后端的映射、MCP 接入。
 9. **Evaluation.** 三个命题，细节见评测草案：

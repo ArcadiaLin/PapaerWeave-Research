@@ -59,10 +59,11 @@ without looking wrong.
 ### Approach
 
 - **A middleware over Neo4j and graph-vc, offered to general-purpose agents
-  through MCP.** Middleware operators: Search, Resolve, Traverse, ReadEvidence,
-  FetchArtifact, Commit. Artifact operators: Leaderboard, CompareSettings,
-  Verify, Summarize, Generate. Artifacts are versioned documents that writers
-  check out, edit, and check in.
+  through MCP.** Knowledge-access tools: search, get, traverse, read_evidence.
+  Version-management tools: checkout, commit, log, show, diff, as_of.
+  Artifacts are typed, versioned documents (Leaderboard, CompareSettings,
+  Verify, Summarize, Generate, Skill) that writers check out, edit, and commit;
+  the middleware checks each against its type's contract.
 - **Responsibility boundary.** External agents interpret materials, make
   semantic judgments, and plan calls. The middleware validates structure and
   references, executes, persists, and records lineage. It does no internal LLM
