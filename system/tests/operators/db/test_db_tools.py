@@ -103,7 +103,7 @@ def test_a_new_name_that_exists_is_a_dedup_error(writer: Writer, store: Store) -
     assert writer.commit(confirmed(writer, doc), dry_run=True)["status"] == "ready"
 
 
-def test_commit_then_search_sees_it(writer: Writer) -> None:
+def test_commit_then_search_sees_it(writer: Writer, store: Store) -> None:
     doc = """graph-doc: v0.2
 create:
   $patchtst:
@@ -114,9 +114,13 @@ create:
     EVALUATES:
       $patchtst: {role: baseline, result: cited, anchor: [14:15]}
 """
-    done = writer.commit(confirmed(writer, doc))
+    judged = confirmed(writer, doc)
+    done = writer.commit(judged)
     assert done["status"] == "committed", done
     new = done["ids"]["$patchtst"].split()[0]
+    apart = load(judged)["confirm"]["$patchtst"]["distinct_from"]  # 查重给出的候选都判断为不同
+    meta = store.graph.get_commit(done["commit"]).meta
+    assert meta["confirmations"] == {new: {"distinct_from": apart}}  # 写者的判断按 id 记在提交上
     assert list(results(writer, query="PatchTST"))[0] == new  # 提交后补算了检索字段
     again = writer.commit(doc.replace("$patchtst", new).replace(f"  {new}:\n    kind: Method\n    name: PatchTST\n    description: Channel-independent patch Transformer for long-term forecasting.\n", ""))
     assert again["status"] == "noop"  # 同样的边已在，属性相同

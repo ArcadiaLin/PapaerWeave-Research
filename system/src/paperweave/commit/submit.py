@@ -17,7 +17,7 @@ from graph_vc import Changeset, ChangesetError, CommitRecord, ConflictError, Gra
 from ..model.schema import DERIVED_FIELDS, NODE_LABELS, PREFIX, REL_TYPES
 from .checks import check_state, touched
 from .problems import Problem
-from .review import delete_impact, review
+from .review import delete_impact, distinct_from, review
 from .revision import check_revisions
 from .translate import Context, translate
 
@@ -118,11 +118,25 @@ def apply(
         source=ctx.source,
         base=base,
         input=text,
-        meta={"ids": ids, "dedup": ctx.deduper is not None, "revisions": prepared.revisions}
+        meta={
+            "ids": ids,
+            "dedup": ctx.deduper is not None,
+            "revisions": prepared.revisions,
+            "confirmations": confirmations(prepared.document, ids),
+        }
         | ({"agent": ctx.agent} if ctx.agent else {})
         | dict(meta or {}),
     )
     return prepared, record
+
+
+def confirmations(doc: Document | None, ids: Mapping[str, str]) -> dict[str, dict[str, list[str]]]:
+    """写者的查重判断：节点 id → ``{distinct_from: [已有 id]}``。原文也在提交的 ``input`` 中，这里换成 id 便于查询。"""
+    out: dict[str, dict[str, list[str]]] = {}
+    for ref, entry in (doc.confirm if doc else {}).items():
+        if apart := distinct_from(entry):
+            out[ids.get(ref, ref)] = {"distinct_from": [ids.get(i, i) for i in apart]}
+    return out
 
 
 def allocate_ids(doc: Document, graph: IdAllocator) -> dict[str, str]:
