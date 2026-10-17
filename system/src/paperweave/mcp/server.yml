@@ -29,7 +29,7 @@ tools:
 
       Kinds:
       {{kinds}}
-      Artifacts (shared documents sessions edit together): Leaderboard, CompareSettings, Verify, Summarize, Generate, Skill. At most 3 artifacts are mixed into a search unless kind names an artifact type.
+      Artifacts (shared documents sessions edit together): Leaderboard (results of methods on one task, dataset and setting), CompareSettings (whether two results are comparable, setting by setting), Verify (whether a claim holds, with the evidence), Summarize (a cited summary of a topic), Generate (a cited answer or other text), Skill (how to do a kind of task with this store). At most 3 artifacts are mixed into a search unless kind names an artifact type.
     parameters:
       query: A name, identifier, id or descriptive words.
       kind: Only these kinds, families (Entity, Concept, Content), artifact types, or relation types; omit for everything.
