@@ -79,7 +79,7 @@ tools:
     title: Checkout
     description: |-
       Put what you want to write into your working directory, as files to edit with your own tools and then pass to commit. Nothing in the store changes.
-      - new: [<kind>, ...] gives a blank graph-doc template with one $node per kind, its fields and the relations it can have, with a comment on each; delete what you do not use. An artifact type (Leaderboard, Generate) gives a blank document of that type.
+      - new: [<kind>, ...] gives a blank graph-doc template with one $node per kind, its fields and the relations it can have, with a comment on each; delete what you do not use. An artifact type (Leaderboard, CompareSettings, Verify, Summarize, Generate) gives a blank document of that type.
       - ids of nodes give a graph-doc with those nodes under set, as get shows them: change values to edit them.
       - ids of artifacts check out their current documents (artifacts/<title>.md; a Skill goes to .agents/skills/<name>/SKILL.md) with id and base header lines (do not edit those two lines), plus a hint: version, last editors, and what others changed since your last edit.
     parameters:

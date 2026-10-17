@@ -18,9 +18,29 @@ from .base import ArtifactType, Mention, Report, cited_paragraphs, header_line, 
 VERDICTS = ("T", "F", "U")
 
 
+TEMPLATE = """---
+type: Verify
+title: <the claim, in a few words>
+abs: <one sentence on whether it holds, and within what scope>
+claim: <claim id>          # <the claim>
+verdict: U                 # T: holds, F: does not hold, U: undecided, or the judgments below conflict
+scope: <where it holds, e.g. multivariate ETT benchmarks at horizons 96-720>
+---
+## <your verdict (T, F or U)>: <one line>
+
+<Your reasoning. Cite what each statement rests on in brackets: a node [exp_0003], paper lines
+[paper_0001::120:135], or an artifact row [art_0002#<row key>].>
+
+<!-- One verification per claim, shared by all writers. If you reach a different verdict from one already
+here, keep the earlier section and its citations, add yours as a new section, and set verdict to U when the
+sections conflict. -->
+"""
+
+
 class Verify(ArtifactType):
     name = "Verify"
     identity_fields = ("claim",)
+    template = TEMPLATE
 
     def key(self, header: Mapping[str, Any]) -> str | None:
         return identity(self.name, leading_id(str(header.get("claim") or "")))

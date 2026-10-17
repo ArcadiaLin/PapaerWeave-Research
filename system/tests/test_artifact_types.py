@@ -246,3 +246,9 @@ def test_contract_only_types() -> None:
 
     generate = "---\ntype: Generate\ntitle: G\nabs: A.\n---\nOne [exp_0001].\n\nTwo.\n"
     assert TYPES["Generate"].stats(parse(generate)) == {"paragraphs": 2, "cited_paragraphs": 1}
+
+
+def test_every_document_type_has_a_blank_template() -> None:
+    for name in ("Leaderboard", "CompareSettings", "Verify", "Summarize", "Generate"):
+        doc = parse(TYPES[name].template)  # checkout new: [<type>] 给出的空白文档，头部是合法的 YAML
+        assert doc.header["type"] == name
