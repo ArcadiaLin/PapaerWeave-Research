@@ -10,8 +10,8 @@
 
 ## 语料
 
-- 先导用 lab 中的 10 篇时序预测论文（`~/pw-lab/data/papers`，来自 `data/raw/t1-pilot-corpus`；Query Selector 另有 v3、v4 两个版本），用户已确认够用。
-- 已建库 7 篇；SCINet、Query Selector、FiLM 等可以按需补建。
+- 先导用 lab 中的 10 篇时序预测论文（`~/pw-lab/data/papers`，来自 `data/raw/t1-pilot-corpus`；FiLM 另有 v3、v4 两个版本），用户已确认够用。
+- 已建库 7 篇；SCINet、Query Selector、FiLM 三篇可以按需补建。
 - 正式实验的语料另抽，由用户决定；先导中在这 10 篇上调过的东西，不能拿到正式语料之外当作证据。
 
 ## Claude 可以自行决定的
