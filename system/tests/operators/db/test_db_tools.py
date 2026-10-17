@@ -150,12 +150,13 @@ def test_a_reversed_edge_says_how_to_write_it(writer: Writer) -> None:
     assert "write it the other way, under exp_0001: SUPPORTS: {claim_0001: ...}" in blocked["errors"][0]["msg"]
 
 
-def test_evaluating_a_model_without_identities_blocks(writer: Writer) -> None:
+def test_evaluating_a_model_without_identities_warns_unless_stub(writer: Writer) -> None:
     doc = """graph-doc: v0.2
 create:
   $m:
     kind: Model
     name: DLinear-trained
+    description: The DLinear weights trained in this paper.
     IMPLEMENTS:
       method_0003:
   exp_0001:
@@ -165,5 +166,7 @@ confirm:
   $m: {distinct_from: []}
 """
     checked = writer.commit(doc, dry_run=True)
-    assert checked["status"] == "blocked"
-    assert any(e["rule"] == "model" and "evaluates the Method (method_0003)" in e["msg"] for e in checked["errors"]), checked
+    assert checked["status"] == "ready", checked  # 提示，不阻塞
+    assert any(w["rule"] == "model" and "usually the Method (method_0003)" in w["msg"] for w in checked["warnings"]), checked
+    stub = doc.replace("    description: The DLinear weights trained in this paper.\n", "    stub: true\n")
+    assert not [w for w in writer.commit(stub, dry_run=True).get("warnings", []) if w["rule"] == "model"]
