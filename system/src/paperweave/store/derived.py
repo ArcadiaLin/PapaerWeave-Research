@@ -1,7 +1,8 @@
 """检索用的派生字段：每次提交后补算，不受版本管理（``schema.DERIVED_FIELDS``）。
 
 - 节点的 ``search_text``（全文索引 ``node_texts``）：名称、别名、描述，以及邻居的名称——检索 "PatchTST ETTh1"
-  能命中用到二者的 Experiment，即使它的描述里没写这两个名字。产物是标题与摘要。
+  能命中用到二者的 Experiment，即使它的描述里没写这两个名字。邻居不经 ``USED``；产物是标题、摘要与它用到的节点的
+  名称（只在产物一侧：节点的文本里不放产物标题，免得热门节点被产物挤满）。
 - 节点的 ``embedding``（向量索引 ``node_vectors``）：名称、别名与描述；Content 是描述；产物是标题与摘要。
 - 带 ``description`` 的边的 ``search_text``（``edge_texts``）与 ``embedding``（``edge_vectors``）：两端的名称、
   关系类型与描述。没有描述的边不进索引。
@@ -18,7 +19,7 @@ from typing import Any
 
 from neo4j import Driver, RoutingControl
 
-from ..model.schema import FROM, INDEXED_RELS, SEARCHABLE
+from ..model.schema import ARTIFACT, FROM, INDEXED_RELS, SEARCHABLE
 from .embedding import embedding_key
 
 Embed = Callable[[list[str]], list[list[float]]]
@@ -33,7 +34,7 @@ def node_texts(driver: Driver, database: str | None, ids: list[str] | None = Non
         f"""MATCH (n:{SEARCHABLE}) WHERE $ids IS NULL OR n.id IN $ids
             OPTIONAL MATCH (k:NameKey)-[:NAMES]->(n) WHERE k.raw <> n.name
             WITH n, collect(DISTINCT k.raw) AS alias
-            OPTIONAL MATCH (n)-[r]-(m:{SEARCHABLE}) WHERE type(r) <> 'USED'
+            OPTIONAL MATCH (n)-[r]-(m:{SEARCHABLE}) WHERE type(r) <> 'USED' OR (n:{ARTIFACT} AND startNode(r) = n)
             WITH n, alias, collect(DISTINCT coalesce(m.name, m.title))[..{NEIGHBOR_NAMES}] AS near
             OPTIONAL MATCH (n)-[:{FROM}]->(p:Paper)
             RETURN n.id AS id, n.name AS name, n.title AS title, n.abs AS abs, n.description AS description,
@@ -122,11 +123,12 @@ def sync(driver: Driver, database: str | None, embed: Embed | None, touched: Ite
 
 
 def _with_neighbors(driver: Driver, database: str | None, ids: list[str]) -> list[str]:
-    """``ids`` 与它们的一层可检索邻居（不经 ``USED``，与 ``related`` 的口径相同）。"""
+    """``ids`` 与它们的一层可检索邻居，口径与 ``related`` 相同：不经 ``USED``，但用到它们的产物算在内。"""
     rows = _read(
         driver,
         database,
-        f"""UNWIND $ids AS id MATCH (n:{SEARCHABLE} {{id: id}})-[r]-(m:{SEARCHABLE}) WHERE type(r) <> 'USED'
+        f"""UNWIND $ids AS id MATCH (n:{SEARCHABLE} {{id: id}})-[r]-(m:{SEARCHABLE})
+            WHERE type(r) <> 'USED' OR (m:{ARTIFACT} AND startNode(r) = m)
             RETURN DISTINCT m.id AS id""",
         ids=ids,
     )

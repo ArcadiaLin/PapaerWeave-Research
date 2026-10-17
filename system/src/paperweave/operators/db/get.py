@@ -3,7 +3,8 @@
     get(ids, offset?: 0, limit?: 30) -> 带注释的 YAML：id → 节点，形状与 commit 中 set 下的节点相同
 
 原样贴进 ``set`` 没有改动；改其中几个值就是修改。入边只给各类的条数（``_edges_in``），要看就用 ``traverse``。
-产物给出类型、标题、摘要与 ``_stale``，文档用 ``checkout`` 取出。
+产物给出类型、标题、摘要、``_stale`` 与 ``_uses``（用到的节点，按在文档中的位置分组）；全文用 ``checkout`` 取成
+文件，用 agent 自己的读文件工具读（翻页也由它做），改完 ``commit``。
 
 **分页**（与 pi 的 ``read`` 同一用法）：每种出边按终点 id 排序，只列第 ``offset`` 起的 ``limit`` 条；还有剩余时，
 结尾的注释给出下一页的参数。返回超过 :data:`BUDGET` 时按整节点截短，剩下的 id 也在结尾给出。同样的参数与库状态
@@ -40,7 +41,9 @@ def get(store: Store, ids: list[str] | str, offset: int = 0, limit: int = DEFAUL
     if arts:
         for art_id, info in readonly(store, arts).items():
             extra[art_id] = {"_stale": info["_stale"]} if info.get("_stale") else {}
-            extra[art_id]["_document"] = "checkout this id to read or edit the document"
+            extra[art_id]["_document"] = (
+                "checkout this id to get the document as a file; read it with your read tool, edit it and commit to save"
+            )
     view, missing = get_view(store, wanted, extra, (offset, limit))
     header = []
     if missing:

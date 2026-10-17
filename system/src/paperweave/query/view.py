@@ -102,7 +102,10 @@ def full(
     ``view.edge_totals``（``get`` 分页；``checkout`` 不分页）。"""
     node = state.nodes[node_id]
     if ARTIFACT in node.labels:
-        return artifact(node_id, state, view, full_abs=True)
+        out = artifact(node_id, state, view, full_abs=True)
+        if uses := _uses(node_id, state, view, window):
+            out["_uses"] = uses
+        return out
     kind = kind_of(node.labels)
     if kind is None:
         raise ValueError(f"{node_id} is not an evidence node")
@@ -262,6 +265,28 @@ def artifact(node_id: str, state: GraphState, view: View, *, full_abs: bool = Fa
     used = [k for k in state.edges if k.src == node_id and k.type == USED]
     if used:
         out["_uses"] = len(used)
+    return out
+
+
+def _uses(node_id: str, state: GraphState, view: View, window: tuple[int, int] | None) -> dict[str, list[str]]:
+    """产物用到的节点（``USED`` 边），按在文档中的位置（``role``，如 method、paper、dataset）分组、按 id 排序；与节点的
+    出边一样按 ``window`` 分页，总数记为 ``_uses.<role>``。"""
+    groups: dict[str, list[str]] = defaultdict(list)
+    for key in sorted((k for k in state.edges if k.src == node_id and k.type == USED), key=lambda k: k.dst):
+        roles = state.edges[key].get("role") or ["other"]
+        for role in [roles] if isinstance(roles, str) else roles:
+            groups[role].append(key.dst)
+    out: dict[str, list[str]] = {}
+    for role in sorted(groups):
+        ids = groups[role]
+        if window is not None:
+            offset, limit = window
+            if offset or len(ids) > limit:
+                view.edge_totals.setdefault(node_id, {})[f"_uses.{role}"] = len(ids)
+            ids = ids[offset : offset + limit]
+        if ids:
+            out[role] = ids
+            view.names.update((i, label(i, state)) for i in ids)
     return out
 
 
