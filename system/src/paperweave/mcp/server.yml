@@ -134,6 +134,7 @@ tools:
       - Writing a node that already exists blocks with exists; an edge that already exists with the same properties is skipped. To change, use set (fields) or delete (edges); to replace an edge's properties, write it under set.
       - New Entities and Concepts are checked for duplicates: a dedup error lists stored candidates. If one is the same thing, use its id instead of your $name; if none is, add confirm: {$name: {distinct_from: [the candidate ids]}}.
       - Content (Experiment, Claim, Contribution) records what a paper says. New edges on an existing record need anchor (on the edge, or in confirm revise); changing its fields or edges needs confirm: {id: {revise: {reason, anchor}}}; deleting it needs reason. The old version stays in the history.
+      - A paper's new version: set the Paper's material to the new file. Anchors written earlier stay on the old version, and readers are told which ones; revise only the records the new version changes, with anchors in the new file.
       - Fields starting with _ and # comments are ignored, so a node pasted from get can go under set unchanged.
       - Quote short text containing ": " or starting with a special character; put long text in a | block.
 
