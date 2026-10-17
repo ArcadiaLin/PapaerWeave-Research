@@ -18,6 +18,7 @@
 ## 知识访问
 
 - `search(query, kind[]?, paper[]?, topn?: 10)`：一个检索覆盖全部节点、产物与带说明的关系。
+  - 实现：模型节点与产物都带公共 Label `Searchable`（系统写入，agent 看不到）。Neo4j 的向量索引只能挂在一个 Label 上，有了它，全文、向量各一个索引就覆盖全部类别；Cypher 中也用它区分模型节点与名称键、材料、提交记录等内部节点。
   - 精确命中在前，标 `_match`：`id`、外部标识（`arxiv:2205.13504` 或不带命名空间的 arXiv 号）、名称或别名（不分大小写）。
   - 其余按四路 RRF（节点全文、节点向量、关系全文、关系向量；`RRF_K=20`，每路取 30）排序。关系命中挂在起点下，只列命中的那几条关系。
   - `kind` 可以是 kind、类别（Entity / Concept / Content）、产物类型或关系类型。不指定产物类型时，结果中至多混入 3 份产物，其余计数在开头的注释中。
@@ -25,7 +26,7 @@
   - 说明末尾附会话开始时的库总览（下节）。
   - 〔已确认 2026-10-17〕不再分页，不再有 `where`。按产物身份查找（V2 的 `where.key`）删除：写重复身份的产物时 `commit` 报 `identity` 并给出已有 id。
 - `get(ids[])`：全部字段与出边，形状与 graph-doc 中 `set`（字段）和 `create`（边）下写的相同。
-  - 只读字段：`_formed_by`、`_formed_at`、`_edges_in`（各类入边的条数）、`_supported_by` / `_opposed_by` / `_used_by`、有据层记录的 `_revised`（最近一次修订的提交、作者、理由、锚点）、产物的 `_stale`。
+  - 只读字段：`_formed_by`、`_formed_at`、`_edges_in`（各类入边的条数）、`_supported_by` / `_opposed_by` / `_used_by`、有据层记录的 `_revised`（最近一次修订的提交、作者、理由、锚点）、锚点写在论文旧材料上时的 `_anchor_version`、产物的 `_stale`。
   - 一次至多 20 个 id。
 - `traverse(start[], path?, limit?: 30)`：沿关系走，表达结构条件与穷举。
   - `path` 是 0–3 跳，每跳 `{rel, dir?: out | in | both, kind?}`；`rel` 可以是列表，含系统关系 `FROM`（Content → 论文）与 `USED`（产物 → 用到的节点）。
