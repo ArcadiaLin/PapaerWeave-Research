@@ -42,6 +42,9 @@ def test_a_paper_missing_from_the_table_is_uncovered(store: Store, writers: dict
     claude.write("board.md", LEADERBOARD)
     assert claude.check_in("board.md", confirm=True)["items"][0]["artifact"] == "art_0001"
     assert stale(store, ["art_0001"]) == {"art_0001": []}
+    claude.write("row.md", "---\ntype: Generate\ntitle: row\nabs: Cites a row.\n---\n"
+                 "DLinear reaches 0.375 [art_0001#method_0002++paper_0001+96+336].\n")
+    answer = claude.check_in("row.md", confirm=True)["items"][0]["artifact"]
 
     file = store.material_root / SECOND
     file.parent.mkdir(parents=True, exist_ok=True)
@@ -49,6 +52,11 @@ def test_a_paper_missing_from_the_table_is_uncovered(store: Store, writers: dict
     done = bob.commit(OTHER_PAPER)
     assert done["status"] == "committed", done
     assert stale(store, ["art_0001"])["art_0001"] == [{"ref": "paper_0002", "reason": "uncovered", "experiments": "exp_0002"}]
+    told = {a["artifact"]: a["reasons"] for a in done["affected_artifacts"]["artifacts"]}
+    assert told == {  # 表因新论文的实验变得可能过期，引用表中一行的产物随之报 stale input
+        "art_0001": ["paper_0002 uncovered (exp_0002)"],
+        answer: ["art_0001#method_0002++paper_0001+96+336 stale input"],
+    }
 
     edit = claude.fetch("art_0001")["items"][0]["path"]
     text = claude.read(edit).replace(

@@ -7,6 +7,8 @@
   （一次至多一份：``$`` 名只在一份文件内有效），其余按产物文档的头部取类型（:mod:`paperweave.artifact`）。
 - 先对全部文件做一遍检查；任何一份有阻塞项时什么都不写，阻塞项的位置换算成 ``<文件>:<行号>``。都通过时依次写入：
   graph-doc 一个提交、产物文档一个提交。``dry_run: true`` 只检查。
+- graph-doc 写入后另给 ``related_artifacts``（:mod:`paperweave.artifact.related`）与 ``affected_artifacts``：
+  因本次提交新出现可能过期原因的产物（:mod:`paperweave.artifact.affected`），都只是信息。
 - ``message`` 是提交说明，产物文档的 ``update_abstract`` 也用它；改动或删除了他人写的产物行时要给 ``reason``。
 - 写入身份与来源由调用环境给出（登录身份、会话），不是参数。提交后补算检索用的派生字段，失败只提示。
 
@@ -22,6 +24,7 @@ from graph_doc import GraphDocError, load
 from graph_vc import ConflictError
 
 from ... import draft
+from ...artifact.affected import affected, watch
 from ...artifact.checkin import check_in
 from ...artifact.related import related
 from ...commit.reader import Neo4jReader
@@ -87,7 +90,8 @@ def execute(ctx: Context, request: Mapping[str, Any]) -> dict[str, Any]:
     blocked = False
     doc = docs[0] if docs else None
     if doc is not None:
-        checked = draft.locate_doc(plan(prepare(doc.text, graph_ctx), graph_ctx.reader), doc)
+        dry = prepare(doc.text, graph_ctx)
+        checked = draft.locate_doc(plan(dry, graph_ctx.reader), doc)
         out["graph_doc"] = {"file": doc.path, **checked}
         blocked |= checked["status"] == "blocked"
     if artifacts:
@@ -107,6 +111,11 @@ def execute(ctx: Context, request: Mapping[str, Any]) -> dict[str, Any]:
 
     # 2. 写入
     if doc is not None and out["graph_doc"]["status"] == "ready":
+        unseen = None  # affected_artifacts 只是提示，算不出来不影响提交
+        try:  # 提交前记下可能受影响的产物当时的 _stale，提交后只报新出现的原因
+            before = watch(store, dry.changeset) if dry.changeset else {}
+        except Exception as exc:  # noqa: BLE001
+            before, unseen = {}, f"affected artifacts not computed ({exc})"
         try:
             prepared, record = apply(doc.text, store.graph, graph_ctx, message=message, meta={"draft": doc.meta()})
         except ConflictError as exc:
@@ -119,6 +128,13 @@ def execute(ctx: Context, request: Mapping[str, Any]) -> dict[str, Any]:
         out["graph_doc"] = {"file": doc.path, **draft.locate_doc(result(prepared, record, names), doc)}
         if shared := related(store, record.id):
             out["graph_doc"]["related_artifacts"] = shared
+        try:
+            if hit := affected(store, before):
+                out["graph_doc"]["affected_artifacts"] = hit
+        except Exception as exc:  # noqa: BLE001
+            unseen = f"affected artifacts not computed ({exc})"
+        if unseen:
+            out.setdefault("warnings", []).append(unseen)
     if artifacts:
         try:
             out["artifacts"] = check_in(store, artifacts, message, confirm=True, reason=params.get("reason"), **art_args)

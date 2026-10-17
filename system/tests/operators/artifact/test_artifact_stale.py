@@ -55,12 +55,18 @@ def test_revisions_of_used_records_mark_artifacts(store: Store, writers: dict[st
     assert stale(store, [first]) == {first: []}
 
     entity = doc("  dataset_0001:\n    alias: [ETT-h1]\n    description: Hourly ETT data, a common LTSF benchmark.\n")
-    assert commit_doc(store, entity)["status"] == "committed"
+    quiet = commit_doc(store, entity)
+    assert quiet["status"] == "committed" and "affected_artifacts" not in quiet
     assert stale(store, [first]) == {first: []}  # 实体的改动不算
 
     revision = commit_doc(store, REVISE_EXP, user="maintainer")
     assert revision["status"] == "committed", revision
     assert stale(store, [first]) == {first: [{"ref": "exp_0001", "reason": "revised", "commit": revision["commit"]}]}
+    told = revision["affected_artifacts"]  # 提交时就告诉改记录的写者：哪些产物用到了它
+    assert [(a["artifact"], a["reasons"]) for a in told["artifacts"]] == [
+        ("art_0001", ["exp_0001 revised"]),  # 表中论文里使用表头数据集的实验
+        (first, ["exp_0001 revised"]),
+    ]
     marked = get(store, ["exp_0001"]).details["nodes"]["exp_0001"]["_revised"]  # 修订标记随记录出现在 get 中
     assert marked["commit"] == revision["commit"] and marked["by"] == "maintainer"
     assert marked["reason"] == "the table compares linear models too" and marked["anchor"] == ["10:20"]
@@ -70,6 +76,8 @@ def test_revisions_of_used_records_mark_artifacts(store: Store, writers: dict[st
 
     anchored = doc("  exp_0001:\n    USES:\n      dataset_0001: {anchor: [12:14]}\n", "create")
     assert commit_doc(store, anchored)["status"] == "blocked"  # 已有的边：create 不能改属性
+    again = commit_doc(store, REVISE_EXP.replace("linear baselines", "simple linear baselines"))
+    assert again["status"] == "committed" and "affected_artifacts" not in again  # 已经报过的不再重复
 
 
 def test_staleness_follows_inputs(store: Store, writers: dict[str, Writer], tmp_path: Path) -> None:
@@ -98,7 +106,13 @@ def test_staleness_follows_inputs(store: Store, writers: dict[str, Writer], tmp_
     removal = doc("  dataset_0001: null\n", "delete")
     impact = [w for w in commit_doc(store, removal, commit=False)["warnings"] if w["rule"] == "delete-impact"]
     assert f"{board} USED" in impact[0]["msg"] and "possibly stale" in impact[0]["msg"]
-    assert commit_doc(store, removal)["status"] == "committed"
+    removed = commit_doc(store, removal)
+    assert removed["status"] == "committed"
+    # 表与 records 新多了 removed；later 早已因表被修订报 stale input，不算本次引起
+    assert {a["artifact"]: a["reasons"] for a in removed["affected_artifacts"]["artifacts"]} == {
+        board: ["dataset_0001 removed"],
+        "art_0002": ["dataset_0001 removed"],
+    }
     view = get(store, [board, later]).details["nodes"]
     assert view[board]["_stale"] == [{"ref": "dataset_0001", "reason": "removed"}]
     assert view[later]["_stale"] == [{"ref": ROW, "reason": "stale input"}]
