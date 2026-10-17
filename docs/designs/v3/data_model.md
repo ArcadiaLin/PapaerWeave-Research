@@ -264,7 +264,7 @@
 
 ## 实现中的决定（2026-10-16 夜）
 
-实现时自行决定、尚未与用户确认的细节，均标〔待确认〕。登记表在 `system/src/paperweave/model/schema.py`（`KIND_SPECS`、`RELATIONSHIPS`），工具说明、空白模板与错误提示都由它生成。
+实现时自行决定、尚未与用户确认的细节，均标〔待确认〕；用户已确认的标〔已确认 2026-10-17〕。登记表在 `system/src/paperweave/model/schema.py`（`KIND_SPECS`、`RELATIONSHIPS`），工具说明、空白模板与错误提示都由它生成。
 
 - 〔待确认〕**公共 Label `Searchable`**：全部证据节点与产物都带，全文与向量各一个索引覆盖全部（替代按类别分通道）。
 - `extra` 存为键排序的 JSON 字符串；`set` 中按键合并，键写 `null` 删除。边上的 `extra` 相同。
@@ -273,12 +273,12 @@
 - 边的锚点论文：起点是 Content 取它的 `paper`，起点是 Paper 取自身，其他起点在边上写 `paper`。带锚点的边记 `material_ref`。
 - 所有新建的节点与边都记 `formed_by`、`formed_at`。
 - 〔待确认〕**动词与现状不符时整批不写**：`create` 写到已存在的边，属性不同报 `exists`（给出现值），相同视为无改动；`set` 写到不存在的节点或边报错并提示改用 `create`。
-- 〔待确认〕**补全桩自动去掉 `stub`**：`set` 给桩写了 `description` 且没写 `stub` 时，系统清除它。
+- 〔已确认 2026-10-17〕**补全桩自动去掉 `stub`**：`set` 给桩写了 `description` 且没写 `stub` 时，系统清除它。
 - 〔待确认〕**有据层补边只要锚点**：给已有 Content 加出边时，新边自带 `anchor`，或在 `confirm.<id>.revise.anchor` 中给出；不要求理由。改字段、改或删出边要 `reason` 与 `anchor`；删节点要 `reason`。Entity、Concept 的改动不要求理由。
 - 端点检查在翻译阶段与字段错误一起报出，并列出这对端点之间可用的关系类型。`RELATES_TO` 的端点恰好符合某个具名类型时给提示（不阻塞）。
 - Content 的查重只有 Experiment 的 `<论文 id>::<主表图>`。
 - 写者身份只来自服务端登录（`PAPERWEAVE_USER`），graph-doc 中没有 `by`；没有登录身份时拒绝写入。
-- 〔待确认〕**新 Entity / Concept 的查重**：名称与别名（不分大小写）、外部标识的精确命中全部列出，另加全文与向量 RRF 的前 3 个近邻。近邻只留向量分数（$(1+\cos)/2$）不低于 0.84 的；两边都有唯一外部标识而互不相同时不列。每个给出的候选都要判断一次（改用已有 id，或 `confirm.$x.distinct_from`）。阈值的依据见 [RPC 实验室第 2 轮](../../experiments/2026-10-17-v3-rpc-lab.md)，暂定。
+- 〔已确认 2026-10-17〕**新 Entity / Concept 的查重**：名称与别名（不分大小写）、外部标识的精确命中全部列出，另加全文与向量 RRF 的前 3 个近邻。近邻只留向量分数（$(1+\cos)/2$）不低于 0.84 的；两边都有唯一外部标识而互不相同时不列。有候选时这一批先不写（`status: blocked`），由写者对每个候选判断一次：改用已有 id，或 `confirm.$x.distinct_from`；系统不合并、不替写者判断。阈值的依据见 [RPC 实验室第 2 轮](../../experiments/2026-10-17-v3-rpc-lab.md)。
 - arXiv 标识不带版本号（`arxiv:2211.14730`），带了阻塞；论文的版本由 `material` 表达。
 - 锚点范围内没有词（空行、列表符号）时阻塞，提示最近的有字行。
-- 〔待确认〕**实验评测一个没有外部标识的 Model 时阻塞**（`rule: model`）：论文训练并比较的模型就是方法本身，`EVALUATES` 指向 Method；Model 只用于发布的权重或 API 模型，带 url。排行榜的行与 `related_artifacts` 都按 `EVALUATES → Method` 汇总。经过：RPC 第 3 轮发现早写者把论文训练的模型建成 Model、后来者照抄；改成警告后，第 7 轮的写者查了库中先例，以“符合库的约定、警告不阻塞”为由保留了原写法；于是改为阻塞，旧数据由第 8 轮的维护会话迁移。
+- 〔已确认 2026-10-17〕**实验评测一个没有外部标识的 Model 时提示，不阻塞**（`rule: model`，warning）：论文训练并比较的模型通常就是方法本身，`EVALUATES` 指向 Method；Model 是发布的权重或 API 模型，带 url。标识暂不清楚的 Model 可以先建成桩（`stub: true`），桩不提示。排行榜的行与 `related_artifacts` 都按 `EVALUATES → Method` 汇总。经过：RPC 第 3 轮发现早写者把论文训练的模型建成 Model、后来者照抄；第 7 轮的写者以“符合库的约定、警告不阻塞”为由保留了原写法，实现中一度改为阻塞，旧数据由第 8 轮的维护会话迁移；用户决定不阻塞、允许建桩。

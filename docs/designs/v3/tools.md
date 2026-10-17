@@ -2,7 +2,7 @@
 
 > **状态：** 已实现（2026-10-16 夜，`system/`，提交 `1502e44` 起），在 [V3 RPC 实验室](../../experiments/2026-10-17-v3-rpc-lab.md) 中边测边改；待用户审阅。本文列出 agent 经 MCP 使用的工具（V2 称"算子"）。数据模型见 [数据模型 V3](./data_model.md)。给模型看的全部文字在 `system/src/paperweave/mcp/server.yml`，本文只记结构与理由。
 >
-> 标 **〔待确认〕** 的是实现中自行决定、尚未与用户确认的改动。
+> 标 **〔待确认〕** 的是实现中自行决定、尚未与用户确认的改动；标〔已确认 2026-10-17〕的已由用户确认。
 
 ## 总览：两组工具
 
@@ -23,14 +23,14 @@
   - `kind` 可以是 kind、类别（Entity / Concept / Content）、产物类型或关系类型。不指定产物类型时，结果中至多混入 3 份产物，其余计数在开头的注释中。
   - 每条结果是紧凑投影：kind、名称或描述摘录、论文、锚点、主要出边、入边计数。
   - 说明末尾附会话开始时的库总览（下节）。
-  - 〔待确认〕不再分页，不再有 `where`。按产物身份查找（V2 的 `where.key`）删除：写重复身份的产物时 `commit` 报 `identity` 并给出已有 id。
+  - 〔已确认 2026-10-17〕不再分页，不再有 `where`。按产物身份查找（V2 的 `where.key`）删除：写重复身份的产物时 `commit` 报 `identity` 并给出已有 id。
 - `get(ids[])`：全部字段与出边，形状与 graph-doc 中 `set`（字段）和 `create`（边）下写的相同。
   - 只读字段：`_formed_by`、`_formed_at`、`_edges_in`（各类入边的条数）、`_supported_by` / `_opposed_by` / `_used_by`、有据层记录的 `_revised`（最近一次修订的提交、作者、理由、锚点）、产物的 `_stale`。
   - 一次至多 20 个 id。
 - `traverse(start[], path?, limit?: 30)`：沿关系走，表达结构条件与穷举。
   - `path` 是 0–3 跳，每跳 `{rel, dir?: out | in | both, kind?}`；`rel` 可以是列表，含系统关系 `FROM`（Content → 论文）与 `USED`（产物 → 用到的节点）。
   - 结果是最后一跳到达的节点，按 id 排序，各带 `_via`：上一步从哪些节点、经哪条边到达，带边上的属性。总数在开头的注释中。
-  - 〔待确认〕不再有分页、`where`、`edge`、`depth`。
+  - 〔已确认 2026-10-17〕不再有分页、`where`、`edge`、`depth`。
 - `read_evidence(source_refs[], at?)`：读论文或产物文档中的行。
   - 引用写作 `<论文或产物 id>::<起>:<止>`；中间带章节（V2 写法）也接受，只作提示。返回中补上所在章节。
   - 单条引用至多 400 行。
@@ -41,17 +41,18 @@
   - `ids` 中的产物：取出当前版本的文档（头部带 `id`、`base`）与编辑提示（V2 的 `fetch_artifact`）。
   - `ids` 中的证据节点：写成一份 graph-doc，节点在 `set` 下（即 `get` 的投影），改值即修改。
   - `new` 中的 kind：一份空白 graph-doc 模板，每个 kind 一个 `$` 节点，字段与能连的关系都带注释；模板由数据模型登记表生成。产物类型（Leaderboard、Generate）给出该类型的空白文档。
-  - 〔待确认〕不再支持取旧版本（V2 的 `at`）：旧状态用 `as_of`，旧文档行用 `read_evidence at`。
+  - 〔已确认 2026-10-17〕不再支持取旧版本（V2 的 `at`）：旧状态用 `as_of`，旧文档行用 `read_evidence at`。
 - `commit(files[], message, reason?, dry_run?)`：提交工作目录中的文件。
   - 以 `graph-doc:` 开头的 YAML 是 graph-doc（一次至多一份：`$` 名只在一份文件内有效），其余按头部的 `type` 是产物文档。
   - 先对全部文件做检查，任何一份有阻塞项时都不写；位置换算成 `<文件>:<行号> (<文档中的路径>)`。通过后 graph-doc 一个提交、产物文档一个提交。
   - 错误报告要短（RPC 第 2 轮：20 KB 的返回被 pi 截断，写者只能到临时文件里翻找）：规则、消息与改法都相同的错误只报一次，`at` 列出各处；查重候选一行一个；方向写反时给出另一端的写法；只检查本次写入或改动的边。
   - dry run 与提交结果的计数同一口径：只算证据节点与关系，不算名称键与材料。
   - `message` 是提交说明，也是产物的 `update_abstract`；改动他人写的产物行时要 `reason`。
-  - 〔待确认〕默认直接写入（V2 的 CheckIn 默认只检查），`dry_run: true` 只检查。
+  - 〔待确认〕默认直接写入（V2 的 CheckIn 默认只检查），`dry_run: true` 只检查。两种方式的检查相同（含查重），有阻塞项时都不写；`dry_run` 只是检查通过后也不写。
   - 提交后补算检索用的派生字段（`search_text`、`embedding`），失败只提示，下次提交重算。
   - 涉及 Experiment 时返回 `related_artifacts`：其评测数据集上的 Leaderboard，以及还没有 Leaderboard 的数据集。
 - 产物的 `_stale`（`get`、`search` 中给出，读取时计算）：V2 的各项原因之外，Leaderboard 另有隐含输入。表中论文里使用表头数据集的 Experiment 被修订时报 `revised`；库中有使用该数据集、但论文不在表中的 Experiment 时报 `uncovered`。有意不收的论文写进 “Papers covered” 并说明原因，提示即消失。RPC 第 9 轮中，下一位写者正是据此把漏掉的论文补进了表。
+  - 〔待议，未实现〕两处收紧：`uncovered` 只算 `ON_TASK` 与表头 `task` 一致的实验；`revised` 只算锚点与表中所引论文行重叠的实验（现在表中论文里用到该数据集的实验都算，改一个消融实验也会让整张表报 `revised`）。单变量、多变量这类设置不在实验上结构化，不做过滤，交给写者在 “Papers covered” 中说明。
 - 参数修复（不提示给 agent，只记日志）：列表参数收到逗号分隔的字符串时切开；对象或数组参数收到 YAML 行内写法（键不加引号）时按 graph-doc 的 YAML 规则解析。
 - `log`、`show`、`diff`、`as_of`：与 V2 相同，视图换成 V3 的 `get` 形状；由别的对象决定的只读字段（入边计数等）不计入变化。
 
