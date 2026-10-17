@@ -49,7 +49,7 @@
   - 错误报告要短（RPC 第 2 轮：20 KB 的返回被 pi 截断，写者只能到临时文件里翻找）：规则、消息与改法都相同的错误只报一次，`at` 列出各处；查重候选一行一个；方向写反时给出另一端的写法；只检查本次写入或改动的边。
   - dry run 与提交结果的计数同一口径：只算证据节点与关系，不算名称键与材料。
   - `message` 是提交说明，也是产物的 `update_abstract`；改动他人写的产物行时要 `reason`。
-  - 〔待确认〕默认直接写入（V2 的 CheckIn 默认只检查），`dry_run: true` 只检查。两种方式的检查相同（含查重），有阻塞项时都不写；`dry_run` 只是检查通过后也不写。
+  - 〔已确认 2026-10-17〕默认直接写入（V2 的 CheckIn 默认只检查），`dry_run: true` 只检查。两种方式的检查相同（含查重），有阻塞项时都不写；`dry_run` 只是检查通过后也不写。
   - 提交后补算检索用的派生字段（`search_text`、`embedding`），失败只提示，下次提交重算。
   - 涉及 Experiment 时返回 `related_artifacts`：其评测数据集上的 Leaderboard，以及还没有 Leaderboard 的数据集。
 - 产物的 `_stale`（`get`、`search` 中给出，读取时计算）：V2 的各项原因之外，Leaderboard 另有隐含输入。表中论文里使用表头数据集的 Experiment 被修订时报 `revised`；库中有使用该数据集、但论文不在表中的 Experiment 时报 `uncovered`。有意不收的论文写进 “Papers covered” 并说明原因，提示即消失。RPC 第 9 轮中，下一位写者正是据此把漏掉的论文补进了表。
