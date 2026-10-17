@@ -89,7 +89,7 @@ FIELD_GLOSS = {
     "identities": "external identities <namespace>:<value>, namespaces arxiv, doi, s2, url",
     "description": "what it is, in your own words, readable on its own; no numbers",
     "extra": "other details as key: value lines (venue, authors, cited_as, caveat ...)",
-    "stub": "true when only mentioned, not yet described (name only)",
+    "stub": "true when only mentioned, not yet described: the name is enough; add identities if known, so others find it",
     "year": "publication year",
     "material": "the paper's Markdown file, relative to the material root",
     "paper": "the id of the paper it comes from",

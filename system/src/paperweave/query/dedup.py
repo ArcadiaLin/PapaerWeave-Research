@@ -7,6 +7,8 @@
   不是就列进 ``distinct_from``）。
 - 两边都有唯一命名空间（``arxiv``、``doi``、``s2``）的外部标识而互不相同时，是两个对象，不列为近似候选。
 - 桩只有名称，只开精确与名称全文两路，全文近邻不设阈值；没有向量服务时同样只按全文取前几个。
+- 已有的桩作为候选时也不设阈值：它的向量只来自名称，与带描述的新节点比分数偏低，换了写法（ECL 与 Electricity）
+  就会被阈值滤掉。桩少，多列几个候选的负担不大。
 
 只给候选，不判断是不是同一对象。
 """
@@ -76,12 +78,20 @@ class SearchDeduper:
                 errors.append(f"vector: {brief(exc)}")
         exact = [i for i, ch in found.items() if ch]
         ranked = sorted(near, key=lambda i: -near[i])
+        if close is not None:
+            close |= self._stubs(ranked)
         fuzzy = [i for i in ranked if i not in exact and (close is None or i in close)]
         fuzzy = [i for i in fuzzy if i not in self._identified_apart(fuzzy, identities)][:NEAR]
         for i in fuzzy:
             found[i].add("similar")
         ids = exact + fuzzy
         return Lookup(tuple(Candidate(i, tuple(sorted(found[i]))) for i in ids), tuple(errors))
+
+    def _stubs(self, ids: list[str]) -> set[str]:
+        if not ids:
+            return set()
+        rows = self.store.query("MATCH (n) WHERE n.id IN $ids AND n.stub = true RETURN n.id AS id", ids=ids)
+        return {r["id"] for r in rows}
 
     def _identified_apart(self, ids: list[str], identities: list[str]) -> set[str]:
         """``ids`` 中与新节点各有唯一标识、且没有一个相同的节点。"""
