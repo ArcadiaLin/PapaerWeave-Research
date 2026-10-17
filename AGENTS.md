@@ -63,7 +63,9 @@ without looking wrong.
   Version-management tools: checkout, commit, log, show, diff, as_of.
   Artifacts are typed, versioned documents (Leaderboard, CompareSettings,
   Verify, Summarize, Generate, Skill) that writers check out, edit, and commit;
-  the middleware checks each against its type's contract.
+  the middleware checks each against its type's contract. Artifacts declare
+  their inputs: reads flag artifacts that may be stale, and a commit tells its
+  writer which artifacts it may have made stale.
 - **Responsibility boundary.** External agents interpret materials, make
   semantic judgments, and plan calls. The middleware validates structure and
   references, executes, persists, and records lineage. It does no internal LLM
@@ -140,15 +142,19 @@ Implementation status lives in the status line of each design document.
 
 - C1 merge and split: not implemented. Duplicates and wrong merges are measured
   and reported as a limitation.
-- New retraction semantics: none. Retraction is deletion or revert on the
-  grounded layer and an `OPPOSES` Observation on the interpretive layer.
+- New retraction semantics: none. Retraction is deletion (with a reason,
+  history kept) on the grounded layer and an `OPPOSES` Observation on the
+  interpretive layer; any past state can be rebuilt (`as_of`). Commit revert
+  is not offered to agents.
 - Transactional concurrency: writers run in turn.
 - Model changes: no new entity types or fields without agreement.
 
 ## Evaluation
 
 The evaluation tests falsifiable propositions. Details, arms, metrics, and the
-plan are in `docs/designs/v2/evaluation_draft.md`.
+plan are in `docs/designs/v2/evaluation_draft.md`; `docs/designs/v3/evaluation.md`
+adds the V3 settings and overrides it where they differ. The pilot runs under
+the mandate in `docs/decisions/2026-10-17-pilot-mandate.md`.
 
 - **E1 integrity (core):** adding uncoordinated writers costs PaperWeave
   significantly less than files + Git, in store health and in probe accuracy.
@@ -285,11 +291,17 @@ Current documents (these hold the agreed details):
   challenges, contributions, positioning against related systems.
 - `docs/designs/v2/evaluation_draft.md` — evaluation: E1–E3, arms, workload,
   metrics, plan, risks, open items.
-- `docs/designs/v2/` — system design: `graph_model_v2.md`,
-  `commit_contract.md`, `operators.md`, `draft_files.md`,
+- `docs/designs/v3/` — current system design: `data_model.md` and `tools.md`
+  (the MCP tools and artifact types), plus `evaluation.md`, the V3 additions to
+  the evaluation. Where they conflict with V2, V3 holds.
+- `docs/designs/v2/` — background system design that V3 revises:
+  `graph_model_v2.md`, `commit_contract.md`, `operators.md`, `draft_files.md`,
   `versioning_interfaces.md`, `extraction_principles.md`, and
-  `intents_decompose.md`, the workload root (I1–I6, writer tasks, reader probes,
-  retrieval surface).
+  `intents_decompose.md`, still the workload root (I1–I6, writer tasks, reader
+  probes, retrieval surface).
+- `docs/decisions/2026-10-17-pilot-mandate.md` — what the agent decides alone
+  and what it confirms with the user during the pilot.
+- `docs/experiments/2026-10-17-v3-rpc-lab.md` — the V3 lab rounds with pi.
 - `docs/discussions/2026-10-12-task-operators-and-leaderboard.md` — artifact
   operators and co-editable artifacts.
 - `docs/discussions/2026-10-10-challenges-and-classical-mechanisms.md` —
