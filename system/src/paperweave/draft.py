@@ -113,7 +113,11 @@ def yaml_syntax(draft: Draft) -> dict[str, str] | None:
         where = f"{draft.path}:{line[1]}" if line else draft.path
         msg = text[line.end() :] if line else text
         if msg.startswith("duplicate key"):
-            msg += "; each key appears once in a mapping (a $name is defined once under create)"
+            msg += (
+                "; each key appears once in a mapping: a $name is defined once under create, and a node has one edge of "
+                "a type to each target (when the edge plays two roles, write role as a list, like "
+                "role: [training_data, evaluation_data])"
+            )
         return {"rule": "format", "at": where, "msg": f"not YAML: {msg}"}
     return None
 

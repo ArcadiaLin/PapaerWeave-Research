@@ -101,7 +101,10 @@ EDGE_GLOSS = {
     "description": "what the relation is, in a sentence",
     "extra": "other details as key: value lines",
     "paper": "the paper the anchor lines are in (only when the start node is not a paper or paper content)",
-    "role": "EVALUATES: target | baseline; USES: evaluation_data | training_data | analysis_input | tooling | retrieval_corpus",
+    "role": (
+        "EVALUATES: target | baseline; USES: evaluation_data | training_data | analysis_input | tooling | retrieval_corpus; "
+        "a list when one edge plays two, like [training_data, evaluation_data]"
+    ),
     "result": "own (the authors ran it) | cited (copied from another paper) | unstated",
     "printed_as": "the name as printed in the paper, like ECL",
 }

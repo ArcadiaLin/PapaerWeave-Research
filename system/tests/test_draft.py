@@ -82,3 +82,5 @@ def test_doc_positions_become_file_lines() -> None:
     assert locate("exp_0001-[EVALUATES]->x") == "d.yml (exp_0001-[EVALUATES]->x)"
     assert yaml_syntax(Draft("d.yml", DOC)) is None
     assert yaml_syntax(Draft("d.yml", "nodes:\n  $a: {kind: Task\n  $b: 1\n"))["at"].startswith("d.yml:")
+    twice = "create:\n  $e:\n    USES:\n      dataset_0002: {role: training_data}\n      dataset_0002: {role: evaluation_data}\n"
+    assert "role: [training_data, evaluation_data]" in yaml_syntax(Draft("d.yml", twice))["msg"]  # 一条边两种用途写成列表

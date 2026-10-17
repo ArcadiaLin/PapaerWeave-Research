@@ -136,6 +136,16 @@ def test_edges_on_records_need_anchors(writer: Writer) -> None:
     assert blocked["errors"][0]["at"].startswith("doc.yaml:")
 
 
+
+def test_an_edge_with_two_roles_writes_role_as_a_list(writer: Writer) -> None:
+    doc = (
+        "graph-doc: v0.2\nset:\n  exp_0001:\n    USES:\n      dataset_0001: {role: [training_data, evaluation_data]}\n"
+        "confirm:\n  exp_0001: {revise: {reason: \"the model is also trained on this dataset\", anchor: [12:20]}}\n"
+    )
+    assert writer.commit(doc, dry_run=True)["status"] == "ready"
+    bad = writer.commit(doc.replace("training_data", "train"), dry_run=True)
+    assert "a list when it plays two roles" in bad["errors"][0]["msg"]
+
 def test_an_arxiv_identity_has_no_version(writer: Writer) -> None:
     doc = "graph-doc: v0.2\ncreate:\n  $p:\n    kind: Paper\n    name: Some paper\n    stub: true\n    identities: [arxiv:2211.14730v2]\n"
     blocked = writer.commit(doc, dry_run=True)
