@@ -217,7 +217,7 @@ class Leaderboard(ArtifactType):
             if number is not None and found and not _within(value, number, numbers):
                 warn("number", line, f"{metric} {value} does not appear in the cited lines {'; '.join(refs)}")
 
-    def notes(self, doc: Parsed, authors: Authors, lookup: Lookup) -> dict[str, Any]:
+    def notes(self, doc: Parsed, authors: Authors, lookup: Lookup, changed: set[int] | None = None) -> dict[str, Any]:
         rows = [row for table in tables(doc) if _results(table) for row in table.rows]
         out: dict[str, Any] = {}
         counts: dict[str, list[int]] = {}
@@ -237,8 +237,14 @@ class Leaderboard(ArtifactType):
                     superseded.append(entry)
         if superseded:
             out["superseded_sources"] = superseded
-        if several := _several(rows, _metrics(doc.header)):
-            out["cells_with_several_values"] = several
+        several = _several(rows, _metrics(doc.header))
+        shown = several if changed is None else _several(rows, _metrics(doc.header), changed)
+        if shown:
+            out["cells_with_several_values"] = shown
+        if len(several) > len(shown):
+            out["cells_with_several_values_elsewhere"] = (
+                f"{len(several) - len(shown)} cell(s) in rows you did not change; checkout lists them in the notes file"
+            )
         return out
 
 
@@ -265,9 +271,9 @@ def _within(written: str, value: float, numbers: list[float]) -> bool:
     return any(abs(value - n) <= tolerance for n in numbers)
 
 
-def _several(rows: list[Any], metrics: list[str]) -> dict[str, str]:
+def _several(rows: list[Any], metrics: list[str], changed: set[int] | None = None) -> dict[str, str]:
     """同一格（方法、变体、预测长度、指标）上的几个值，一格一行：``格 → "<different papers | same paper>: 值 (论文,
-    L=lookback, line 行号); …"``。表大时这一项最长，所以不展开成嵌套的映射。"""
+    L=lookback, line 行号); …"``。表大时这一项最长，所以不展开成嵌套的映射。``changed`` 给出时只留含这些行的格。"""
     cells: dict[tuple[str, str, str], list[Any]] = {}
     for row in rows:
         key = (
@@ -278,6 +284,8 @@ def _several(rows: list[Any], metrics: list[str]) -> dict[str, str]:
         cells.setdefault(key, []).append(row)
     out: dict[str, str] = {}
     for (method, variant, horizon), group in cells.items():
+        if changed is not None and not any(r.line in changed for r in group):
+            continue
         for metric in metrics:
             values = [
                 {

@@ -210,6 +210,13 @@ def test_leaderboard_notes() -> None:
     ]
     [(cell, values)] = notes["cells_with_several_values"].items()
     assert cell == "method_0001 · 24 · MSE" and values.startswith("different papers: ")
+    lookup = fake_lookup("paper_0001", [], "material_0bb2")
+    focused = TYPES["Leaderboard"].notes(doc, {14: ("seed", 1), 15: ("bob", 2)}, lookup, changed={16})
+    assert "cells_with_several_values" not in focused  # 检入的返回只展开这次改动的行所在的格
+    assert focused["cells_with_several_values_elsewhere"].startswith("1 cell(s) in rows you did not change")
+    assert TYPES["Leaderboard"].notes(doc, {}, lookup, changed={15})["cells_with_several_values"] == notes[
+        "cells_with_several_values"
+    ]
 
 
 def test_contract_only_types() -> None:

@@ -171,8 +171,9 @@ class ArtifactType:
         """检入时返回的统计；只是报告项，不是校验。"""
         return {}
 
-    def notes(self, doc: Parsed, authors: Authors, lookup: Lookup) -> dict[str, Any]:
-        """读取时现算的附注，不写进文档；行号是 ``doc`` 中的行号。"""
+    def notes(self, doc: Parsed, authors: Authors, lookup: Lookup, changed: set[int] | None = None) -> dict[str, Any]:
+        """读取时现算的附注，不写进文档；行号是 ``doc`` 中的行号。``changed`` 给出时（检入的返回）是这次新增与修改
+        的行：随表变长的逐条附注只展开与它们有关的，其余给条数，全部的在 checkout 写出的 notes 文件中。"""
         return {}
 
     # ── 取出 ──

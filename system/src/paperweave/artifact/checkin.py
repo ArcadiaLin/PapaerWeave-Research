@@ -21,7 +21,7 @@
    都相同的警告合并为一条，列出各行（:meth:`Item.grouped_warnings`）。
 
 ``checked`` 的每份文档另给 ``stats``（类型的统计）与 ``warnings``；``committed`` 的每份另给读取时现算的 ``notes``
-（如 Leaderboard 每位编辑者写的行数、所引论文已有新版本的行、同一格的多个值）。
+（如 Leaderboard 每位编辑者写的行数、所引论文已有新版本的行、同一格的多个值；多值的格只展开这次改动的行所在的）。
 
 任一份有错误时整次不写入。``others`` 不为空时须给出 ``reason``。
 
@@ -593,12 +593,14 @@ def _write(
 
 
 def _notes(store: Store, item: Item, me: str, number: int) -> dict[str, Any]:
-    """新版本读取时现算的附注（如 Leaderboard 的每位编辑者写的行数、同一格的多个值），行号换算成写者文件中的。"""
-    assert item.kind is not None and item.doc is not None
+    """新版本读取时现算的附注（如 Leaderboard 的每位编辑者写的行数、同一格的多个值），行号换算成写者文件中的。
+    随表变长的逐条附注只展开这次新增与修改的行有关的（全部的由 checkout 写进 notes 文件）。"""
+    assert item.kind is not None and item.doc is not None and item.changes is not None
     blamed = blame(item.kind, [*item.history, (me, number, item.doc)])
     authors = {b.unit.line: (b.author, b.version) for b in blamed}
     pinned = {t: p["material_ref"] for t, p in item.used.items() if "material_ref" in p}
-    return relocate(item.kind.notes(item.doc, authors, lookup(store, pinned)), item.at)
+    changed = {c["at"] for c in (*item.changes.added, *item.changes.modified)}
+    return relocate(item.kind.notes(item.doc, authors, lookup(store, pinned), changed), item.at)
 
 
 def relocate(value: Any, at: Callable[[int], Any]) -> Any:
