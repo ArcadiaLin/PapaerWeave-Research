@@ -80,6 +80,7 @@ def index_statements() -> list[str]:
     return [
         *CONSTRAINTS,
         "CREATE INDEX namekey_normalized IF NOT EXISTS FOR (k:NameKey) ON (k.normalized)",
+        f"CREATE INDEX searchable_id IF NOT EXISTS FOR (n:{SEARCHABLE}) ON (n.id)",  # 按 id 补算派生字段
         f"CREATE FULLTEXT INDEX {NODE_TEXT_INDEX} IF NOT EXISTS FOR (n:{SEARCHABLE}) ON EACH [n.search_text] {analyzer}",
         f"CREATE FULLTEXT INDEX {EDGE_TEXT_INDEX} IF NOT EXISTS FOR ()-[r:{rels}]-() ON EACH [r.search_text] {analyzer}",
         f"CREATE VECTOR INDEX {NODE_VECTOR_INDEX} IF NOT EXISTS FOR (n:{SEARCHABLE}) ON n.embedding {options}",

@@ -76,7 +76,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 at=datetime.now(UTC).isoformat(timespec="seconds"),
                 session=args.session,
                 formed_by=args.user,
-                sync=lambda: sync(driver, NEO4J_DB, None if args.no_embed else embed),
+                sync=lambda touched=None: sync(driver, NEO4J_DB, None if args.no_embed else embed, touched),
                 text=text,
                 workdir=Workdir(root),
             )

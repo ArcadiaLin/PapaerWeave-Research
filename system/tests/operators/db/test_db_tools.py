@@ -223,3 +223,15 @@ def test_get_and_traverse_page_like_read(writer: Writer, monkeypatch: pytest.Mon
     cut = writer.call("get", ids=["method_0003", "dataset_0001"])
     assert list(cut.details["nodes"]) == ["method_0003"] and cut.details["rest"] == ["dataset_0001"]
     assert "Get the rest with ids=[dataset_0001]" in cut.text
+
+
+def test_derived_texts_follow_a_rename_without_a_full_pass(writer: Writer, store: Store) -> None:
+    from paperweave.store.derived import edge_texts, node_texts
+
+    renamed = writer.commit("graph-doc: v0.2\nset:\n  method_0001:\n    name: Transformer forecasters\n")
+    assert renamed["status"] == "committed", renamed
+    texts = {n["id"]: n for n in node_texts(store.driver, None)}
+    assert "Transformer forecasters" in texts["exp_0001"]["stored"]  # 邻居的 related 跟着改名
+    # 提交后只重算了受影响的对象；全量重算的结果与库中所存的完全相同
+    assert [n["id"] for n in texts.values() if n["search_text"] != n["stored"]] == []
+    assert [e["eid"] for e in edge_texts(store.driver, None) if e["search_text"] != e["stored"]] == []

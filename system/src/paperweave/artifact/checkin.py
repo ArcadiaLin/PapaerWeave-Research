@@ -162,7 +162,7 @@ def check_in(
     session: str,
     formed_by: str,
     agent: str | None = None,
-    sync: Callable[[], int] | None = None,
+    sync: Callable[[list[str] | None], int] | None = None,
 ) -> dict[str, Any]:
     """校验交上来的文档；``confirm`` 时写入。
 
@@ -497,7 +497,7 @@ def _write(
     session: str,
     formed_by: str,
     agent: str | None,
-    sync: Callable[[], int] | None,
+    sync: Callable[[list[str] | None], int] | None,
 ) -> dict[str, Any]:
     setup_database(store.graph, store.driver, database=store.database)  # 确实要写入时才建约束与索引
     writing = [item for item in items if item.action in ("create", "update")]
@@ -578,7 +578,7 @@ def _write(
     warnings: list[dict[str, str]] = []
     if sync is not None:
         try:
-            sync()
+            sync(list(record.touched))
         except (httpx.HTTPError, ValueError) as exc:
             warnings.append(
                 {"rule": "embedding", "at": record.id, "msg": f"embeddings not synced ({exc}); run make embed"}

@@ -44,7 +44,7 @@ class Context:
     session: str | None = None
     formed_by: str | None = None
     agent: str | None = None
-    sync: Callable[[], int] | None = None
+    sync: Callable[[list[str] | None], int] | None = None  # 补算派生字段：参数是本次触及的节点，None 为全部
     text: str | None = None
     workdir: Workdir | None = None
 

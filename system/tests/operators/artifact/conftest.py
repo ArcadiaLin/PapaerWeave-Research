@@ -131,7 +131,7 @@ def commit_doc(store: Store, text: str, *, user: str = "test", commit: bool = Tr
     root = store.material_root.parent / "maintainer"
     root.mkdir(exist_ok=True)
     (root / "doc.yaml").write_text(text, encoding="utf-8")
-    ctx = Context(store, AT, session="s-maintainer", formed_by=user, workdir=Workdir(root), sync=lambda: sync(store.driver, None, None))
+    ctx = Context(store, AT, session="s-maintainer", formed_by=user, workdir=Workdir(root), sync=lambda touched=None: sync(store.driver, None, None, touched))
     out = COMMIT.call(ctx, {"files": ["doc.yaml"], "message": "test", "dry_run": not commit}).details
     return {**out.get("graph_doc", {}), "status": out["status"]} if "graph_doc" in out else out
 
@@ -144,7 +144,7 @@ class Writer:
         root.mkdir(parents=True, exist_ok=True)
 
     def ctx(self) -> Context:
-        refresh = lambda: sync(self.store.driver, None, None)  # noqa: E731
+        refresh = lambda touched=None: sync(self.store.driver, None, None, touched)  # noqa: E731
         return Context(self.store, AT, session=f"s-{self.name}", formed_by=self.name, workdir=Workdir(self.root), sync=refresh)
 
     def write(self, path: str, text: str) -> str:

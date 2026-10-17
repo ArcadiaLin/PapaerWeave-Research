@@ -6,13 +6,14 @@
 - 带 ``description`` 的边的 ``search_text``（``edge_texts``）与 ``embedding``（``edge_vectors``）：两端的名称、
   关系类型与描述。没有描述的边不进索引。
 
-邻居改名、加边、产物检入都会改变 ``search_text``，所以每次全量重算文本（库小，一次查询），只写回变了的文本，只为
-向量文本变了的对象补算向量。
+**范围。** 提交后只重算受影响的对象：本次触及的节点（新建、修改、增删过边的端点）与它们的一层邻居（邻居的
+``related`` 里有它的名称），以及端点在触及节点中的带描述的边（边文本里有端点的名称或描述开头）。只写回变了的文本，
+只为向量文本变了的对象补算向量。不给范围时全量重算（建库、修复时用）。
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from neo4j import Driver, RoutingControl
@@ -24,12 +25,12 @@ Embed = Callable[[list[str]], list[list[float]]]
 NEIGHBOR_NAMES = 40  # search_text 中邻居名称的上限：ETTh1 这类节点有上百个邻居，名称只取一部分
 
 
-def node_texts(driver: Driver, database: str | None) -> list[dict[str, Any]]:
-    """每个可检索节点的检索文本与向量文本。"""
+def node_texts(driver: Driver, database: str | None, ids: list[str] | None = None) -> list[dict[str, Any]]:
+    """可检索节点的检索文本与向量文本；``ids`` 给出时只算这些节点。"""
     rows = _read(
         driver,
         database,
-        f"""MATCH (n:{SEARCHABLE})
+        f"""MATCH (n:{SEARCHABLE}) WHERE $ids IS NULL OR n.id IN $ids
             OPTIONAL MATCH (k:NameKey)-[:NAMES]->(n) WHERE k.raw <> n.name
             WITH n, collect(DISTINCT k.raw) AS alias
             OPTIONAL MATCH (n)-[r]-(m:{SEARCHABLE}) WHERE type(r) <> 'USED'
@@ -37,6 +38,7 @@ def node_texts(driver: Driver, database: str | None) -> list[dict[str, Any]]:
             OPTIONAL MATCH (n)-[:{FROM}]->(p:Paper)
             RETURN n.id AS id, n.name AS name, n.title AS title, n.abs AS abs, n.description AS description,
                    alias, near, p.name AS paper, n.search_text AS search_text, n.embedding_key AS key""",
+        ids=ids,
     )
     out = []
     for r in rows:
@@ -51,15 +53,18 @@ def node_texts(driver: Driver, database: str | None) -> list[dict[str, Any]]:
     return out
 
 
-def edge_texts(driver: Driver, database: str | None) -> list[dict[str, Any]]:
+def edge_texts(driver: Driver, database: str | None, ids: list[str] | None = None) -> list[dict[str, Any]]:
+    """带描述的边的检索文本；``ids`` 给出时只算一端在其中的边。"""
     rows = _read(
         driver,
         database,
-        f"""MATCH (a)-[r:{'|'.join(INDEXED_RELS)}]->(b) WHERE r.description IS NOT NULL
+        f"""MATCH (a)-[r:{'|'.join(INDEXED_RELS)}]->(b)
+            WHERE r.description IS NOT NULL AND ($ids IS NULL OR a.id IN $ids OR b.id IN $ids)
             RETURN elementId(r) AS eid, a.id AS src, type(r) AS type, b.id AS dst,
                    coalesce(a.name, a.title, left(a.description, 80)) AS a_name,
                    coalesce(b.name, b.title, left(b.description, 80)) AS b_name,
                    r.description AS description, r.search_text AS search_text, r.embedding_key AS key""",
+        ids=ids,
     )
     for r in rows:
         r["stored"] = r["search_text"]
@@ -68,10 +73,13 @@ def edge_texts(driver: Driver, database: str | None) -> list[dict[str, Any]]:
     return rows
 
 
-def sync(driver: Driver, database: str | None, embed: Embed | None) -> int:
-    """补算全部派生字段；``embed`` 为 ``None`` 时只算检索文本。返回补算了向量的对象与边的个数。"""
-    nodes = node_texts(driver, database)
-    edges = edge_texts(driver, database)
+def sync(driver: Driver, database: str | None, embed: Embed | None, touched: Iterable[str] | None = None) -> int:
+    """补算派生字段：``touched`` 给出时只算受影响的对象（见模块说明），否则全部；``embed`` 为 ``None`` 时只算检索
+    文本。返回补算了向量的对象与边的个数。"""
+    ids = None if touched is None else sorted(set(touched))
+    scope = None if ids is None else _with_neighbors(driver, database, ids)
+    nodes = node_texts(driver, database, scope)
+    edges = edge_texts(driver, database, ids)
     _write(
         driver,
         database,
@@ -113,8 +121,20 @@ def sync(driver: Driver, database: str | None, embed: Embed | None) -> int:
     return len(node_rows) + len(edge_rows)
 
 
-def _read(driver: Driver, database: str | None, cypher: str) -> list[dict[str, Any]]:
-    records = driver.execute_query(cypher, database_=database, routing_=RoutingControl.READ).records
+def _with_neighbors(driver: Driver, database: str | None, ids: list[str]) -> list[str]:
+    """``ids`` 与它们的一层可检索邻居（不经 ``USED``，与 ``related`` 的口径相同）。"""
+    rows = _read(
+        driver,
+        database,
+        f"""UNWIND $ids AS id MATCH (n:{SEARCHABLE} {{id: id}})-[r]-(m:{SEARCHABLE}) WHERE type(r) <> 'USED'
+            RETURN DISTINCT m.id AS id""",
+        ids=ids,
+    )
+    return sorted({*ids, *(r["id"] for r in rows)})
+
+
+def _read(driver: Driver, database: str | None, cypher: str, **params: Any) -> list[dict[str, Any]]:
+    records = driver.execute_query(cypher, params, database_=database, routing_=RoutingControl.READ).records
     return [r.data() for r in records]
 
 

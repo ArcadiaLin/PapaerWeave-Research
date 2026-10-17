@@ -127,7 +127,7 @@ def execute(ctx: Context, request: Mapping[str, Any]) -> dict[str, Any]:
             return _summary(out, exc.status)
     if ctx.sync is not None and doc is not None and out["graph_doc"].get("status") == "committed":
         try:
-            ctx.sync()
+            ctx.sync(list(record.touched))
         except Exception as exc:  # noqa: BLE001 —— 派生字段补算失败不影响已完成的提交
             out.setdefault("warnings", []).append(f"search index not updated ({exc}); it is retried on the next commit")
     statuses = {part.get("status") for part in (out.get("graph_doc"), out.get("artifacts")) if part}

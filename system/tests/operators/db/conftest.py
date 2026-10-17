@@ -105,7 +105,7 @@ class Writer:
         root.mkdir(parents=True, exist_ok=True)
 
     def ctx(self) -> Context:
-        refresh = lambda: sync(self.store.driver, None, None)  # noqa: E731
+        refresh = lambda touched=None: sync(self.store.driver, None, None, touched)  # noqa: E731
         return Context(self.store, AT, session=f"s-{self.name}", formed_by=self.name, workdir=Workdir(self.root), sync=refresh)
 
     def call(self, op: str, **params: Any) -> Any:
