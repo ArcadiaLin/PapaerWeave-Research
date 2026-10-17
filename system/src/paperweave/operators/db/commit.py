@@ -7,8 +7,8 @@
   （一次至多一份：``$`` 名只在一份文件内有效），其余按产物文档的头部取类型（:mod:`paperweave.artifact`）。
 - 先对全部文件做一遍检查；任何一份有阻塞项时什么都不写，阻塞项的位置换算成 ``<文件>:<行号>``。都通过时依次写入：
   graph-doc 一个提交、产物文档一个提交。``dry_run: true`` 只检查。
-- graph-doc 写入后另给 ``related_artifacts``（:mod:`paperweave.artifact.related`）与 ``affected_artifacts``：
-  因本次提交新出现可能过期原因的产物（:mod:`paperweave.artifact.affected`），都只是信息。
+- graph-doc 写入后另给 ``related_artifacts``（:mod:`paperweave.artifact.related`）；graph-doc 与产物文档写入后
+  各给 ``affected_artifacts``：因本次提交新出现可能过期原因的产物（:mod:`paperweave.artifact.affected`）。都只是信息。
 - ``message`` 是提交说明，产物文档的 ``update_abstract`` 也用它；改动或删除了他人写的产物行时要给 ``reason``。
 - 写入身份与来源由调用环境给出（登录身份、会话），不是参数。提交后补算检索用的派生字段，失败只提示。
 
@@ -17,14 +17,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from graph_doc import GraphDocError, load
 from graph_vc import ConflictError
 
 from ... import draft
-from ...artifact.affected import affected, watch
+from ...artifact.affected import Snapshot, affected, watch, watch_users
 from ...artifact.checkin import check_in
 from ...artifact.related import related
 from ...commit.reader import Neo4jReader
@@ -34,6 +34,7 @@ from ...commit.translate import Context as CommitContext
 from ...query.dedup import SearchDeduper
 from ...store import ContractError
 from ...store.database import check_versioned, setup_database
+from ...store.store import Store
 from ..base import STRING, STRINGS, Context, Operator, params_of, schema
 
 PARAMETERS = schema(
@@ -111,11 +112,7 @@ def execute(ctx: Context, request: Mapping[str, Any]) -> dict[str, Any]:
 
     # 2. 写入
     if doc is not None and out["graph_doc"]["status"] == "ready":
-        unseen = None  # affected_artifacts 只是提示，算不出来不影响提交
-        try:  # 提交前记下可能受影响的产物当时的 _stale，提交后只报新出现的原因
-            before = watch(store, dry.changeset) if dry.changeset else {}
-        except Exception as exc:  # noqa: BLE001
-            before, unseen = {}, f"affected artifacts not computed ({exc})"
+        before = _watch(out, lambda: watch(store, dry.changeset) if dry.changeset else {})
         try:
             prepared, record = apply(doc.text, store.graph, graph_ctx, message=message, meta={"draft": doc.meta()})
         except ConflictError as exc:
@@ -128,19 +125,17 @@ def execute(ctx: Context, request: Mapping[str, Any]) -> dict[str, Any]:
         out["graph_doc"] = {"file": doc.path, **draft.locate_doc(result(prepared, record, names), doc)}
         if shared := related(store, record.id):
             out["graph_doc"]["related_artifacts"] = shared
-        try:
-            if hit := affected(store, before):
-                out["graph_doc"]["affected_artifacts"] = hit
-        except Exception as exc:  # noqa: BLE001
-            unseen = f"affected artifacts not computed ({exc})"
-        if unseen:
-            out.setdefault("warnings", []).append(unseen)
+        _affected(store, out, "graph_doc", before)
     if artifacts:
+        updated = {i["artifact"] for i in out["artifacts"].get("items", []) if i.get("action") == "update"}
+        before = _watch(out, lambda: watch_users(store, updated) if updated else {})
         try:
             out["artifacts"] = check_in(store, artifacts, message, confirm=True, reason=params.get("reason"), **art_args)
         except ContractError as exc:
             out["artifacts"] = {"status": exc.status, "errors": exc.errors}
             return _summary(out, exc.status)
+        if out["artifacts"].get("status") == "committed":
+            _affected(store, out, "artifacts", before)
     if ctx.sync is not None and doc is not None and out["graph_doc"].get("status") == "committed":
         try:
             ctx.sync(list(record.touched))
@@ -148,6 +143,26 @@ def execute(ctx: Context, request: Mapping[str, Any]) -> dict[str, Any]:
             out.setdefault("warnings", []).append(f"search index not updated ({exc}); it is retried on the next commit")
     statuses = {part.get("status") for part in (out.get("graph_doc"), out.get("artifacts")) if part}
     return _summary(out, "committed" if statuses & {"committed"} else "noop")
+
+
+def _watch(out: dict[str, Any], take: Callable[[], Snapshot]) -> Snapshot | None:
+    """提交前记下可能受影响的产物当时的 ``_stale``（提交后只报新出现的原因）。只是提示：算不出来时记一条警告。"""
+    try:
+        return take()
+    except Exception as exc:  # noqa: BLE001
+        out.setdefault("warnings", []).append(f"affected artifacts not computed ({exc})")
+        return None
+
+
+def _affected(store: Store, out: dict[str, Any], part: str, before: Snapshot | None) -> None:
+    """提交后：``before`` 中的产物因本次提交新出现的可能过期原因，记进 ``out[part]["affected_artifacts"]``。"""
+    if before is None:
+        return
+    try:
+        if hit := affected(store, before):
+            out[part]["affected_artifacts"] = hit
+    except Exception as exc:  # noqa: BLE001
+        out.setdefault("warnings", []).append(f"affected artifacts not computed ({exc})")
 
 
 def _is_graph_doc(text: str) -> bool:

@@ -65,8 +65,12 @@ def test_a_paper_missing_from_the_table_is_uncovered(store: Store, writers: dict
         "| paper_0002 Other | left out: univariate setting | no |",
     )
     claude.write(edit, text)
-    assert claude.check_in(edit, message="Record why paper_0002 is left out.", confirm=True)["status"] == "committed"
+    done = claude.check_in(edit, message="Record why paper_0002 is left out.", confirm=True)
+    assert done["status"] == "committed"
     assert stale(store, ["art_0001"]) == {"art_0001": []}  # 有意不收也是一个留下记录的决定
+    # 产物提交也告诉写者：引用表中一行的产物所引的是旧版本（之前的 stale input 随表不再过期而消失，不算新出现）
+    told = {a["artifact"]: a["reasons"] for a in done["affected_artifacts"]["artifacts"]}
+    assert told == {answer: ["art_0001#method_0002++paper_0001+96+336 superseded"]}
 
 
 def test_get_lists_uses_and_checkout_keeps_notes_in_a_file(store: Store, writers: dict[str, Writer]) -> None:

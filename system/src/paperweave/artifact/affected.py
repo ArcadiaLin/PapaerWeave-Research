@@ -4,9 +4,14 @@
 （:func:`watch`），提交后再算一次（:func:`affected`），只报新出现的原因（按 ``ref`` 与 ``reason`` 比较）。之前
 已经报过的原因（如早先修订过的记录、早已不在表中的论文）不再重复。
 
-候选产物：``USED`` 指向本次触及（含删除）的节点的产物，本次触及或增删过 ``USES`` 的 Experiment 所用数据集上的
-Leaderboard，以及沿 ``USED`` 反向用到这些产物的产物（``stale input`` 由此传递）。这是信息，不是要求：写者可以
-顺手更新，也可以留给读到它的人。
+候选产物：
+
+- graph-doc 提交（:func:`watch`）：``USED`` 指向本次触及（含删除）的节点的产物，本次触及或增删过 ``USES`` 的
+  Experiment 所用数据集上的 Leaderboard；
+- 产物提交（:func:`watch_users`）：引用了本次更新的产物的产物（所引的是旧版本，报 ``superseded``）；
+- 以及沿 ``USED`` 反向用到这些产物的产物（``stale input`` 由此传递）。
+
+这是信息，不是要求：写者可以顺手更新，也可以留给读到它的人。
 """
 
 from __future__ import annotations
@@ -40,10 +45,23 @@ def watch(store: Store, changeset: Changeset) -> Snapshot:
         ids=sorted(nodes),
         datasets=sorted(datasets),
     )
-    direct = sorted({r["id"] for r in rows})
+    return _snapshot(store, {r["id"] for r in rows})
+
+
+def watch_users(store: Store, artifacts: set[str]) -> Snapshot:
+    """提交前：引用了 ``artifacts``（本次要更新的产物）的产物 → 它们当前可能过期的原因。"""
+    rows = store.query(
+        "UNWIND $ids AS id MATCH (a:Artifact)-[:USED]->(:Artifact {id: id}) RETURN DISTINCT a.id AS id",
+        ids=sorted(artifacts),
+    )
+    return _snapshot(store, {r["id"] for r in rows})
+
+
+def _snapshot(store: Store, direct: set[str]) -> Snapshot:
+    """``direct`` 与沿 ``USED`` 反向用到它们的产物 → 它们当前可能过期的原因。"""
     users = store.query(
         """UNWIND $ids AS id MATCH (a:Artifact)-[:USED*1..]->(:Artifact {id: id}) RETURN DISTINCT a.id AS id""",
-        ids=direct,
+        ids=sorted(direct),
     )
     candidates = sorted(set(direct) | {r["id"] for r in users})
     return {a: {_key(r) for r in rs} for a, rs in stale(store, candidates).items()}
@@ -80,4 +98,4 @@ def _text(reason: dict[str, str]) -> str:
     return f"{text} ({reason['experiments']})" if reason["reason"] == "uncovered" else text
 
 
-__all__ = ["LIST_MAX", "Snapshot", "affected", "watch"]
+__all__ = ["LIST_MAX", "Snapshot", "affected", "watch", "watch_users"]
