@@ -344,7 +344,7 @@ def test_an_incomplete_snapshot_is_not_taken_as_done(tmp_path: Path, monkeypatch
         target.mkdir(parents=True)
         (target / "tree").mkdir()
         (target / "log.jsonl").write_text("")
-        (target / "meta.yml").write_text(yaml.safe_dump({"arm": "A0", "counts": {"files": 0}}))
+        (target / "meta.yml").write_text(yaml.safe_dump({"arm": "A0", "counts": {"files": 0, "commits": 1}}))
         exported.append(tag)
 
     monkeypatch.setattr(timeline.export, "export_a0", export_a0)
@@ -379,3 +379,21 @@ def test_a4_version_changes_with_any_content(monkeypatch: pytest.MonkeyPatch) ->
     rows[0]["props"] = [["name", "PatchTST"], ["summary", "a"]]
     rows[1]["kind"] = ["RELATES_TO", "u2", "u1"]  # 方向反了
     assert timeline.version(config, Path("."), "A4") != first
+
+
+@pytest.mark.parametrize(
+    ("meta", "complete"),
+    [
+        ("arm: A0\ncounts:\n", False),  # 旧导出中断在 counts: 之后
+        ("arm: A0\ncounts: {files: 3}\n", False),  # 缺 commits
+        ("arm: A0\ncounts: {files: 3, commits: '2'}\n", False),
+        ("arm: A0\ncounts: {files: 3, commits: true}\n", False),
+        ("arm: A3\ncounts: {files: 3, commits: 2}\n", False),  # 别的组的元数据
+        ("arm: A0\ncounts: {files: 3, commits: 2}\n", True),
+    ],
+)
+def test_snapshot_metadata_is_checked_field_by_field(tmp_path: Path, meta: str, complete: bool) -> None:
+    (tmp_path / "tree").mkdir()
+    (tmp_path / "log.jsonl").write_text("")
+    (tmp_path / "meta.yml").write_text(meta)
+    assert timeline.snapshot_complete(tmp_path, "A0") is complete

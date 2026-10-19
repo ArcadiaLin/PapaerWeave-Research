@@ -743,15 +743,22 @@ def snapshot(config: dict[str, Any], run: Path, arm: str, papers: int) -> None:
 
 
 SNAPSHOT_FILES = {"A0": ("log.jsonl", "tree"), "A4": ("graph.jsonl",)}  # 其余组：graph.jsonl 与 commits.jsonl
+SNAPSHOT_COUNTS = {"A0": ("files", "commits"), "A4": ("nodes", "edges")}  # 其余组：nodes、edges、commits、documents
 
 
 def snapshot_complete(out: Path, arm: str) -> bool:
+    """快照是否完整：``meta.yml`` 是这一组的元数据，``counts`` 中该组的计数齐全且都是非负整数，必需文件都在
+    （旧导出若中断在 ``counts:`` 之后，解析出的 ``counts`` 为 ``None``，不算完整）。"""
     try:
         meta = yaml.safe_load((out / "meta.yml").read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError):
         return False
-    needed = SNAPSHOT_FILES.get(arm, ("graph.jsonl", "commits.jsonl"))
-    return isinstance(meta, dict) and meta.get("arm") == arm and "counts" in meta and all((out / n).exists() for n in needed)
+    if not isinstance(meta, dict) or meta.get("arm") != arm or not isinstance(counts := meta.get("counts"), dict):
+        return False
+    keys = SNAPSHOT_COUNTS.get(arm, ("nodes", "edges", "commits", "documents"))
+    if not all(isinstance(counts.get(k), int) and not isinstance(counts[k], bool) and counts[k] >= 0 for k in keys):
+        return False
+    return all((out / n).exists() for n in SNAPSHOT_FILES.get(arm, ("graph.jsonl", "commits.jsonl")))
 
 
 def _plain(value: Any) -> Any:
