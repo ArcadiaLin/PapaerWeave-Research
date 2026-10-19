@@ -20,6 +20,7 @@
 | | `snapshot` | 检查点快照的格式与读取 |
 | | `source_tables` | 原文结果表的索引 |
 | `harness`：运行框架，可以连库、起子进程 | `timeline` | V3 正式时间线（`config/formal-ltsf.yml`，题库 `~/pw-lab/probes`）：四组种子，按 plan 调度写者会话，版本更新时放入新版本的论文与代码，检查点记库版本、写者暂停、读者作答；只存回答，全部运行结束后统一判分 |
+| | `status` | 一次正式运行的状态（只读）：进程、日志、服务、各组会话进度、正在运行的会话、检查点的版本、快照与读者进度 |
 | | `run` | V2 的一次运行：建立各组起点，调度写者会话，在检查点导出快照、让读者作答 |
 | | `sandbox` | 一次 pi 会话在 bubblewrap 沙箱中运行：只隔离文件系统、不断网；写者看到自己的工作目录（A0 为共享仓库）、论文与固定 commit 的代码（只读），读者两者都没有；A3、A2 的 MCP 服务在沙箱外按登录身份启动（A2 为 `baselines/a2_mcp.py`），A4 经 HTTP 连 Graphiti |
 | | `bridge` | 沙箱内外经 unix socket 的字节转发（A3、A2 的 MCP 服务），只用标准库 |
@@ -33,6 +34,7 @@
 常用入口（在仓库根目录执行）：
 
     uv run python -m pweval.harness.timeline <运行名> [--arms …] [--until N]  # V3 正式时间线（含检查点上的读者）
+    uv run python -m pweval.harness.status <运行名>                       # 正式运行的状态（只读）
     uv run python -m pweval.harness.run <运行名> [--config …]             # V2 的一次运行
     uv run python -m pweval.harness.readers <运行名> --checkpoint K        # 单独让读者作答
     uv run python -m pweval.measure.health <运行名> --checkpoint K         # 库健康度

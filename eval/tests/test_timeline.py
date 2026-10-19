@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -397,3 +398,47 @@ def test_snapshot_metadata_is_checked_field_by_field(tmp_path: Path, meta: str, 
     (tmp_path / "log.jsonl").write_text("")
     (tmp_path / "meta.yml").write_text(meta)
     assert timeline.snapshot_complete(tmp_path, "A0") is complete
+
+
+# ---------------------------------------------------------------- 两个进程写同一个运行目录（监视者单独续跑一组）
+
+_APPENDER = """
+import sys
+from pathlib import Path
+from pweval.harness import timeline
+for i in range(200):
+    timeline.append_jsonl(Path(sys.argv[1]), {"who": sys.argv[2], "i": i, "pad": "x" * 2000})
+    timeline.checkpoint({}, Path(sys.argv[3]), sys.argv[2], i) if i % 20 == 0 else None
+"""
+
+
+def test_two_processes_share_the_records(tmp_path: Path) -> None:
+    run = _run(tmp_path, {})
+    path = run / "sessions.jsonl"
+    script = tmp_path / "append.py"
+    script.write_text(_APPENDER.replace("timeline.checkpoint({}", "timeline.version = lambda *a: 'v'; timeline.checkpoint({}"))
+    procs = [subprocess.Popen([sys.executable, str(script), str(path), who, str(run)]) for who in ("A3", "A2")]
+    assert [p.wait(timeout=60) for p in procs] == [0, 0]
+    records = timeline.read_jsonl(path)
+    assert len(records) == 400 and not list(tmp_path.rglob("*.torn-*"))
+    assert {who: sorted(ks) for who, ks in timeline.checkpoints(run).items()} == {
+        "A2": list(range(0, 200, 20)), "A3": list(range(0, 200, 20))}  # fmt: skip
+
+
+def test_an_arm_runs_in_one_process_at_a_time(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    holder = subprocess.Popen([sys.executable, "-c", (
+        "import sys, time; from pathlib import Path; from pweval.harness import timeline\n"
+        "with timeline._arm_lock(Path(sys.argv[1]), 'A3') as mine:\n"
+        "    print(mine, flush=True); time.sleep(30)\n"), str(run)], stdout=subprocess.PIPE, text=True)  # fmt: skip
+    try:
+        assert holder.stdout.readline().strip() == "True"
+        with timeline._arm_lock(run, "A3") as mine:
+            assert mine is False
+        with timeline._arm_lock(run, "A2") as mine:
+            assert mine is True
+    finally:
+        holder.kill()
+        holder.wait()
+    with timeline._arm_lock(run, "A3") as mine:
+        assert mine is True  # 持有的进程退出，锁随之释放

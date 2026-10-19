@@ -38,6 +38,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -49,7 +50,9 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Sequence
+import traceback
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager, nullcontext
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -77,7 +80,35 @@ A4_WRITE_TOOLS = tuple(f"mcp__Graphiti__{t}" for t in  # A4 读者看不到的 G
                        ("add_memory", "add_triplet", "delete_episode", "delete_entity_edge", "build_communities"))
 SEED_BOARDS = ("02-lb-etth1.md", "03-lb-electricity.md", "04-lb-etth2.md")
 NETWORK = re.compile(r"\b(curl|wget|git\s+(clone|fetch|pull|ls-remote)|pip3?\s+install|uv\s+(pip|add)|https?://)")
-_LOCK = threading.RLock()  # 各组线程共用的记录文件（sessions.jsonl、checkpoints.yml、answers）
+_LOCK = threading.RLock()  # 进程内：各组线程共用的记录文件（sessions.jsonl、checkpoints.yml、answers）与输出
+
+
+@contextmanager
+def _locked(path: Path) -> Iterator[None]:
+    """线程之间与进程之间都互斥地使用记录文件 ``path``（旁边的 ``<文件>.lock`` 上加 flock）。监视者会在一组出错后
+    单独续跑那一组（``--arms A3``），这时两个进程同时写同一个运行目录。同一线程不要对同一文件嵌套使用。"""
+    with _LOCK, open(path.with_name(path.name + ".lock"), "a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+@contextmanager
+def _arm_lock(run: Path, arm: str) -> Iterator[bool]:
+    """一组同时只能由一个进程运行：``<组>/.running.lock`` 上的非阻塞 flock，拿不到就是另一个进程正在跑这一组。"""
+    arm_dir(run, arm).mkdir(parents=True, exist_ok=True)
+    with open(arm_dir(run, arm) / ".running.lock", "a") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 # ---------------------------------------------------------------- 配置与会话序列
@@ -534,8 +565,8 @@ def readers(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, pap
         record = answer(config, timeline, run, arm, papers, probe, box, reader)
         record["version"] = expected
         append_jsonl(path, record)
-        print(f"[{arm} k{papers} {probe['id']}] exit {record['exit']}, {record['seconds']}s, "
-              f"{len(record['answer'])} chars", flush=True)  # fmt: skip
+        emit("READER", arm, k=papers, probe=probe["id"], exit=record["exit"], seconds=record["seconds"],
+             chars=len(record["answer"]))  # fmt: skip
 
     with ThreadPoolExecutor(max_workers=config["runner"].get("reader_workers", 1)) as pool:
         list(pool.map(ask, todo))
@@ -638,19 +669,22 @@ def _append(run: Path, record: dict[str, Any]) -> None:
 def append_jsonl(path: Path, record: dict[str, Any]) -> None:
     """一条记录一次写入、带换行，写完刷到磁盘。进程在写入中被杀，只可能在文件末尾留下半行（:func:`read_jsonl`）。"""
     line = (json.dumps(record, ensure_ascii=False) + "\n").encode()
-    with _LOCK, open(path, "ab") as f:
+    with _locked(path), open(path, "ab") as f:
         f.write(line)
         f.flush()
         os.fsync(f.fileno())
 
 
-def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    """读只追加的记录文件（sessions.jsonl、answers），与追加共用一把锁。
+def read_jsonl(path: Path, *, repair: bool = True) -> list[dict[str, Any]]:
+    """读只追加的记录文件（sessions.jsonl、answers），与追加共用一把锁。``repair=False`` 供运行进程之外的只读查看
+    （:mod:`pweval.harness.status`）：末尾没有换行的一段可能正在写，不动它，也不计入。
 
     - 末尾一段没有换行：若是完整的记录（换行没写上），补上换行；若不完整（进程在追加时被杀），原文另存为
       ``<文件>.torn-<时刻>`` 供审计，文件截到最后一个完整行，之后的追加从干净的行首开始。
     - 中间的行损坏不是追加中断造成的，报错，不静默跳过。"""
-    with _LOCK:
+    if not path.exists():
+        return []
+    with _locked(path) if repair else nullcontext():
         if not path.exists():
             return []
         data = path.read_bytes()
@@ -664,7 +698,7 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
                 records.append(json.loads(line))
             except (json.JSONDecodeError, UnicodeDecodeError) as exc:
                 raise RuntimeError(f"{path}:{number}: damaged record in the middle of the file") from exc
-        if tail:
+        if tail and repair:
             try:
                 records.append(json.loads(tail))
                 with open(path, "ab") as f:
@@ -689,9 +723,9 @@ def _inflight(run: Path, arm: str) -> Path:
 
 
 def checkpoints(run: Path) -> dict[str, dict[int, Any]]:
+    """检查点记录；文件总是整份替换（:func:`_write_atomic`），读时不需要锁。"""
     path = run / "checkpoints.yml"
-    with _LOCK:
-        return yaml.safe_load(path.read_text(encoding="utf-8")) or {} if path.exists() else {}
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {} if path.exists() else {}
 
 
 def checkpoint(config: dict[str, Any], run: Path, arm: str, papers: int) -> None:
@@ -699,7 +733,7 @@ def checkpoint(config: dict[str, Any], run: Path, arm: str, papers: int) -> None
     if arm == "A0":
         _git(arm_dir(run, "A0") / "repo", "tag", "-f", f"checkpoint-{papers}", user="t1")
     head = version(config, run, arm)
-    with _LOCK:  # 读、改、写之间不让别的组插进来
+    with _locked(run / "checkpoints.yml"):  # 读、改、写之间不让别的组（或别的进程）插进来
         data = checkpoints(run)
         data.setdefault(arm, {})[papers] = head
         _write_atomic(run / "checkpoints.yml", yaml.safe_dump(data, sort_keys=True))
@@ -784,6 +818,13 @@ def _record_run(run: Path, config_path: Path, config: dict[str, Any], argv: list
     就拒绝运行，除非给出 ``--allow-config-change``（改动随这次调用记下）。运行框架自身的提交可以变（修正），
     各次的提交都留在记录中。"""
     path = run / "run.yml"
+    with _locked(path):
+        _record_invocation(path, config_path, config, argv, allow_change)
+
+
+def _record_invocation(path: Path, config_path: Path, config: dict[str, Any], argv: list[str],
+                       allow_change: bool) -> None:  # fmt: skip
+    run = path.parent
     record = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {"invocations": []}
 
     def commit(repo: Path) -> dict[str, Any]:
@@ -828,11 +869,23 @@ def preflight(config: dict[str, Any], arms: list[str]) -> list[str]:
 # ---------------------------------------------------------------- 运行
 
 
+def emit(kind: str, arm: str, **fields: Any) -> None:
+    """进度事件，一行一个，供监视者过滤：``<类别> <组> <时刻> 键=值 …``。类别：RUN、SETUP、SESSION、READER、
+    CHECKPOINT、DONE、ERROR（随后是 traceback）、EXIT。含空格的值加引号。"""
+    parts = [kind, arm, datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")]
+    for key, value in fields.items():
+        text = str(value)
+        parts.append(f"{key}={json.dumps(text, ensure_ascii=False) if ' ' in text or not text else text}")
+    with _LOCK:
+        print(" ".join(parts), flush=True)
+
+
 def run_arm(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, until: int | None, reset: bool,
             with_readers: bool = True) -> None:  # fmt: skip
     if 0 not in (checkpoints(run).get(arm) or {}):
         setup(config, timeline, run, arm, reset=reset)
         checkpoint(config, run, arm, 0)
+        emit("SETUP", arm, version=checkpoints(run)[arm][0])
     snapshot(config, run, arm, 0)
     done = _done(run)
     inflight = json.loads(_inflight(run, arm).read_text(encoding="utf-8")) if _inflight(run, arm).exists() else None
@@ -848,9 +901,16 @@ def run_arm(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, unt
                 snapshot(config, run, arm, step["papers"])
                 if with_readers:
                     readers(config, timeline, run, arm, step["papers"])  # 读者答完，下一位写者才开始
+                    expected = len(eligible(timeline, step["papers"]))
+                    answers = f"{len(answered(run, arm, step['papers']))}/{expected}"
+                else:
+                    answers = "skipped"
+                emit("CHECKPOINT", arm, k=step["papers"], version=checkpoints(run)[arm][step["papers"]],
+                     snapshot="ok", answers=answers)  # fmt: skip
             continue
         last_seq = step["seq"]
         if until is not None and step["seq"] > until:
+            emit("DONE", arm, until=until)
             return
         if (arm, step["seq"]) in done:
             continue
@@ -869,9 +929,11 @@ def run_arm(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, unt
         _append(run, record)
         _inflight(run, arm).unlink(missing_ok=True)
         done.add((arm, step["seq"]))
-        net = f", network {len(record['network'])}" if record["network"] else ""
-        print(f"[{arm} {step['seq']:02d}] {step['identity']} {step['type']}: exit {record['exit']}, "
-              f"{record['seconds']}s{net}", flush=True)  # fmt: skip
+        flags = [f for f in ("recovered", "rerun_after_interruption") if record.get(f)]
+        emit("SESSION", arm, seq=step["seq"], identity=step["identity"], type=step["type"], exit=record["exit"],
+             seconds=record["seconds"], network=len(record["network"]), version=record.get("version_after"),
+             **({"flags": ",".join(flags)} if flags else {}))  # fmt: skip
+    emit("DONE", arm, until="end")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -902,11 +964,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     _record_run(run, config_path, config, list(argv) if argv is not None else sys.argv[1:],
                 allow_change=args.allow_config_change)
     timeline = load_timeline(config["probes_repo"])
+    emit("RUN", "-", name=args.name, arms=",".join(arms), pid=os.getpid())
+
+    def guarded(arm: str) -> bool:  # 一组出错只停这一组，其他组照常跑完
+        try:
+            with _arm_lock(run, arm) as mine:
+                if not mine:
+                    emit("ERROR", arm, error="another process is running this arm; not started")
+                    return False
+                run_arm(config, timeline, run, arm, args.until, args.reset, not args.no_readers)
+            return True
+        except BaseException as exc:
+            emit("ERROR", arm, error=f"{type(exc).__name__}: {exc}"[:500])
+            traceback.print_exc()
+            sys.stdout.flush()
+            return False
+
     with ThreadPoolExecutor(max_workers=len(arms)) as pool:
-        futures = [pool.submit(run_arm, config, timeline, run, a, args.until, args.reset, not args.no_readers) for a in arms]
-        for future in futures:
-            future.result()  # 一组出错时报出，其他组照常跑完
-    return 0
+        results = dict(zip(arms, pool.map(guarded, arms), strict=True))
+    failed = [a for a, ok in results.items() if not ok]
+    emit("EXIT", "-", failed=",".join(failed) or "none")
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
