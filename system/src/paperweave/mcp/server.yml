@@ -29,7 +29,7 @@ tools:
 
       Kinds:
       {{kinds}}
-      Artifacts (shared documents sessions edit together): Leaderboard (results of methods on one task, dataset and setting), CompareSettings (whether two results are comparable, setting by setting), Verify (whether a claim holds, with the evidence), Summarize (a cited summary of a topic), Generate (a cited answer or other text), Skill (how to do a kind of task with this store). At most 3 artifacts are mixed into a search unless kind names an artifact type.
+      Artifacts (shared documents sessions edit together): Leaderboard (results of methods on one task, dataset and setting), CompareSettings (whether two results are comparable, setting by setting), Verify (whether a claim holds, with the evidence), Summarize (a cited summary of a topic), Note (your cited write-up for later readers: an answer, a method choice, what you found about an implementation, a plan), Skill (how to do a kind of task with this store). At most 3 artifacts are mixed into a search unless kind names an artifact type.
     parameters:
       query: A name, identifier, id or descriptive words.
       kind: Only these kinds, families (Entity, Concept, Content), artifact types, or relation types; omit for everything.
@@ -79,7 +79,7 @@ tools:
     title: Checkout
     description: |-
       Put what you want to write into your working directory, as files to edit with your own tools and then pass to commit. Nothing in the store changes.
-      - new: [<kind>, ...] gives a blank graph-doc template with one $node per kind, its fields and the relations it can have, with a comment on each; delete what you do not use. An artifact type (Leaderboard, CompareSettings, Verify, Summarize, Generate) gives a blank document of that type.
+      - new: [<kind>, ...] gives a blank graph-doc template with one $node per kind, its fields and the relations it can have, with a comment on each; delete what you do not use. An artifact type (Leaderboard, CompareSettings, Verify, Summarize, Note) gives a blank document of that type.
       - ids of nodes give a graph-doc with those nodes under set, as get shows them: change values to edit them.
       - ids of artifacts check out their current documents (artifacts/<title>.md; a Skill goes to .agents/skills/<name>/SKILL.md) with id and base header lines (do not edit those two lines), plus a hint: version, last editors, and what others changed since your last edit.
     parameters:

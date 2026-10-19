@@ -1,7 +1,7 @@
 """可能过期（``_stale``）、修订标记、只读产物文档与登录身份，在 commit 写的共同产物上检验。
 
 ``_stale`` 在读取时按文档中的引用与 ``USED`` 边上记下的版本核对，不存状态。模块内的测试按顺序共享写入的产物：
-art_0001 是 Leaderboard，之后的 Generate 引用记录或它的行。
+art_0001 是 Leaderboard，之后的 Note 引用记录或它的行。
 """
 
 from __future__ import annotations
@@ -39,9 +39,9 @@ def doc(body: str, section: str = "set") -> str:
     return f"graph-doc: v0.2\n{section}:\n{body}"
 
 
-def generate(writer: Writer, name: str, text: str) -> str:
-    """检入一份 Generate，返回产物 id。"""
-    writer.write(f"{name}.md", f"---\ntype: Generate\ntitle: {name}\nabs: An answer for the tests.\n---\n{text}\n")
+def note(writer: Writer, name: str, text: str) -> str:
+    """检入一份 Note，返回产物 id。"""
+    writer.write(f"{name}.md", f"---\ntype: Note\ntitle: {name}\nabs: An answer for the tests.\n---\n{text}\n")
     done = writer.check_in(f"{name}.md", confirm=True)
     assert done["status"] == "committed", done
     return done["items"][0]["artifact"]
@@ -51,7 +51,7 @@ def test_revisions_of_used_records_mark_artifacts(store: Store, writers: dict[st
     claude = writers["claude"]
     claude.write("board.md", LEADERBOARD)
     assert claude.check_in("board.md", confirm=True)["items"][0]["artifact"] == "art_0001"
-    first = generate(claude, "records", "DLinear is lower on ETTh1 [exp_0001] [dataset_0001].")
+    first = note(claude, "records", "DLinear is lower on ETTh1 [exp_0001] [dataset_0001].")
     assert stale(store, [first]) == {first: []}
 
     entity = doc("  dataset_0001:\n    alias: [ETT-h1]\n    description: Hourly ETT data, a common LTSF benchmark.\n")
@@ -82,7 +82,7 @@ def test_revisions_of_used_records_mark_artifacts(store: Store, writers: dict[st
 
 def test_staleness_follows_inputs(store: Store, writers: dict[str, Writer], tmp_path: Path) -> None:
     board = "art_0001"
-    later = generate(writers["bob"], "row", f"DLinear reaches 0.375 [{ROW}].")
+    later = note(writers["bob"], "row", f"DLinear reaches 0.375 [{ROW}].")
     before = stale(store, [board, later])
     # 表引用的是论文行；表中论文里使用该数据集的实验是它的隐含输入，上一个测试修订了 exp_0001
     assert [(r["ref"], r["reason"]) for r in before[board]] == [("exp_0001", "revised")]
@@ -150,7 +150,7 @@ def test_commit_records_the_signed_in_writer(store: Store, tmp_path: Path) -> No
     assert record.author == USER and record.meta["agent"] == AGENT and record.source == "session:s-login"
 
     (tmp_path / "login.md").write_text(
-        "---\ntype: Generate\ntitle: Login\nabs: A.\n---\nText [exp_0001].\n", encoding="utf-8"
+        "---\ntype: Note\ntitle: Login\nabs: A.\n---\nText [exp_0001].\n", encoding="utf-8"
     )
     written = TOOLS["commit"].call(ctx, {"files": ["login.md"], "message": "New."})
     assert written.details["status"] == "committed", written.details

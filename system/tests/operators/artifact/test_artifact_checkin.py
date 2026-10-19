@@ -137,7 +137,7 @@ def test_reverting_content_makes_a_new_version(store: Store, writers: dict[str, 
 def test_record_reference_pins_the_version(store: Store, writers: dict[str, Writer]) -> None:
     alice = writers["alice"]
     answer = (
-        "---\ntype: Generate\ntitle: DLinear on ETTh1\nabs: Short answer.\n---\n"
+        "---\ntype: Note\ntitle: DLinear on ETTh1\nabs: Short answer.\n---\n"
         "DLinear reaches 0.375 MSE at horizon 96 [art_0001#method_0002++paper_0001+96+336].\n"
     )
     alice.write("answer.md", answer)
@@ -150,7 +150,7 @@ def test_record_reference_pins_the_version(store: Store, writers: dict[str, Writ
     again = alice.check_in("answer.md", message="Answer the ETTh1 question.", confirm=True)
     assert again["status"] == "unchanged" and again["items"][0] == {
         "doc": "answer.md",
-        "type": "Generate",
+        "type": "Note",
         "artifact": "art_0002",
         "action": "existing",
     }
@@ -158,10 +158,10 @@ def test_record_reference_pins_the_version(store: Store, writers: dict[str, Writ
 
 def test_references_must_exist(store: Store, writers: dict[str, Writer]) -> None:
     alice = writers["alice"]
-    bad = "---\ntype: Generate\ntitle: Bad\nabs: Bad refs.\n---\n"
+    bad = "---\ntype: Note\ntitle: Bad\nabs: Bad refs.\n---\n"
     bad += "See [exp_9999].\nAnd [paper_0001::5.2 Comparison::59:70].\n"
     alice.write("bad.md", bad)
-    alice.write("fine.md", "---\ntype: Generate\ntitle: Fine\nabs: Fine.\n---\nSee [exp_0001].\n")
+    alice.write("fine.md", "---\ntype: Note\ntitle: Fine\nabs: Fine.\n---\nSee [exp_0001].\n")
     head = store.graph.head()
     result = alice.check_in("fine.md", "bad.md", confirm=True)
     assert result["status"] == "rejected" and rules(result) == [("reference", "bad.md:6"), ("reference", "bad.md:7")]
@@ -224,9 +224,9 @@ def test_light_rules_warnings_and_notes(store: Store, writers: dict[str, Writer]
     assert entry["notes"]["rows_by_contributor"] == [{"editor": "claude", "rows": 2, "versions": [4]}]
 
 
-def test_generate_stats(writers: dict[str, Writer]) -> None:
+def test_note_stats(writers: dict[str, Writer]) -> None:
     alice = writers["alice"]
-    alice.write("stats.md", "---\ntype: Generate\ntitle: Stats\nabs: Stats.\n---\nOne [exp_0001].\n\nTwo.\n")
+    alice.write("stats.md", "---\ntype: Note\ntitle: Stats\nabs: Stats.\n---\nOne [exp_0001].\n\nTwo.\n")
     assert alice.check_in("stats.md")["items"][0]["stats"] == {"paragraphs": 2, "cited_paragraphs": 1}
 
 

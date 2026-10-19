@@ -134,8 +134,8 @@ def test_blame_and_compare() -> None:
 
 
 def test_since_your_last_edit() -> None:
-    kind = TYPES["Generate"]
-    text = "---\ntype: Generate\ntitle: Notes\nabs: Notes.\n---\nalpha\nbeta\n"
+    kind = TYPES["Note"]
+    text = "---\ntype: Note\ntitle: Notes\nabs: Notes.\n---\nalpha\nbeta\n"
     v1, v2 = parse(text), parse(text.replace("beta", "gamma"))
     versions = [("alice", 1, v1), ("bob", 2, v2)]
     changed = since(blame(kind, versions), blame(kind, versions[:1]), "alice", 1)
@@ -244,11 +244,11 @@ def test_contract_only_types() -> None:
         parse(swapped).header
     )
 
-    generate = "---\ntype: Generate\ntitle: G\nabs: A.\n---\nOne [exp_0001].\n\nTwo.\n"
-    assert TYPES["Generate"].stats(parse(generate)) == {"paragraphs": 2, "cited_paragraphs": 1}
+    note = "---\ntype: Note\ntitle: G\nabs: A.\n---\nOne [exp_0001].\n\nTwo.\n"
+    assert TYPES["Note"].stats(parse(note)) == {"paragraphs": 2, "cited_paragraphs": 1}
 
 
 def test_every_document_type_has_a_blank_template() -> None:
-    for name in ("Leaderboard", "CompareSettings", "Verify", "Summarize", "Generate"):
+    for name in ("Leaderboard", "CompareSettings", "Verify", "Summarize", "Note"):
         doc = parse(TYPES[name].template)  # checkout new: [<type>] 给出的空白文档，头部是合法的 YAML
         assert doc.header["type"] == name

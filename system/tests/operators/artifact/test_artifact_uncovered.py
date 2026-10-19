@@ -42,7 +42,7 @@ def test_a_paper_missing_from_the_table_is_uncovered(store: Store, writers: dict
     claude.write("board.md", LEADERBOARD)
     assert claude.check_in("board.md", confirm=True)["items"][0]["artifact"] == "art_0001"
     assert stale(store, ["art_0001"]) == {"art_0001": []}
-    claude.write("row.md", "---\ntype: Generate\ntitle: row\nabs: Cites a row.\n---\n"
+    claude.write("row.md", "---\ntype: Note\ntitle: row\nabs: Cites a row.\n---\n"
                  "DLinear reaches 0.375 [art_0001#method_0002++paper_0001+96+336].\n")
     answer = claude.check_in("row.md", confirm=True)["items"][0]["artifact"]
 

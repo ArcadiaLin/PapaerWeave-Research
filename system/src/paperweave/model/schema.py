@@ -58,7 +58,7 @@ NAMED = ENTITY | CONCEPT  # name 与 alias 注册为 NameKey
 STUB_KINDS = frozenset(k for k, s in KIND_SPECS.items() if s.stub)
 
 ARTIFACT = "Artifact"  # 只有主 Label，不分 kind；类型记在 ``op`` 上
-ARTIFACT_TYPES = ("Leaderboard", "CompareSettings", "Verify", "Summarize", "Generate", "Skill")
+ARTIFACT_TYPES = ("Leaderboard", "CompareSettings", "Verify", "Summarize", "Note", "Skill")
 SYSTEM_LABELS = frozenset({"NameKey", "Material"})
 
 # ── 节点字段 ──────────────────────────────────────────────────────────
