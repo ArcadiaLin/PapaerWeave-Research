@@ -499,6 +499,31 @@ def test_rowspan_and_colspan_keep_columns_aligned() -> None:
     assert "|  | 3.0 | 4.0 |" in result
 
 
+def test_inline_span_tabular_inside_table_figure() -> None:
+    # LaTeXML renders a \\resizebox-ed tabular as spans; it must still become a table with its spans.
+    html = """
+    <figure class="ltx_table" id="S4.T2">
+      <figcaption class="ltx_caption">Table 2: MSE results.</figcaption>
+      <div class="ltx_inline-block ltx_transformed_outer"><p class="ltx_p"><span class="ltx_text">
+        <span class="ltx_tabular ltx_guessed_headers"><span class="ltx_tbody">
+          <span class="ltx_tr"><span class="ltx_td ltx_th">Dataset</span>
+            <span class="ltx_td ltx_colspan ltx_colspan_2">ETTh1</span></span>
+          <span class="ltx_tr"><span class="ltx_td ltx_rowspan ltx_rowspan_2">Horizon</span>
+            <span class="ltx_td">96</span><span class="ltx_td">192</span></span>
+          <span class="ltx_tr"><span class="ltx_td">0.359</span><span class="ltx_td">0.397</span></span>
+        </span></span>
+      </span></p></div>
+    </figure>
+    """
+
+    result = convert_fragment_to_markdown(html)
+
+    assert "Table:" not in result
+    assert "| Dataset | ETTh1 |  |" in result
+    assert "| Horizon | 96 | 192 |" in result
+    assert "|  | 0.359 | 0.397 |" in result
+
+
 def test_table_cell_pipe_is_escaped() -> None:
     html = '<table class="ltx_tabular"><tr><td>a</td></tr><tr><td>x | y</td></tr></table>'
     assert "| x \\| y |" in convert_fragment_to_markdown(html)

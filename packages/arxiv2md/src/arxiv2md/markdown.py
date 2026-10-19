@@ -46,6 +46,7 @@ def convert_html_to_markdown(html: str, *, remove_refs: bool = False, remove_toc
 
     convert_equation_tables(soup)
     convert_all_mathml_to_latex(soup)
+    convert_span_tabulars(soup)
     fix_tabular_tables(soup)
 
     root = _find_document_root(soup)
@@ -93,6 +94,7 @@ def convert_fragment_to_markdown(html: str, *, remove_inline_citations: bool = F
     _strip_unwanted_elements(soup)
     convert_equation_tables(soup)
     convert_all_mathml_to_latex(soup)
+    convert_span_tabulars(soup)
     fix_tabular_tables(soup)
     if base_url:
         _resolve_image_urls(soup, base_url)
@@ -292,6 +294,28 @@ def unlink_dangling_fragment_links(markdown: str) -> str:
         return match.group(0) if match.group(2) in anchors else match.group(1)
 
     return _FRAGMENT_LINK_RE.sub(_sub, markdown)
+
+
+_SPAN_TABLE_PARTS = {"ltx_tabular": "table", "ltx_thead": "thead", "ltx_tbody": "tbody", "ltx_tfoot": "tfoot",
+                     "ltx_tr": "tr", "ltx_td": "td"}
+_SPAN_RE = re.compile(r"ltx_(row|col)span_(\d+)")
+
+
+def convert_span_tabulars(root: BeautifulSoup) -> None:
+    """Turn LaTeXML's inline tabulars (``<span class="ltx_tabular">`` with span rows and cells) into real tables.
+
+    LaTeXML emits these when a tabular sits inside a box such as ``\resizebox``; without this they reach the
+    serializer as loose spans and every cell ends up on its own line. Spans are encoded in classes
+    (``ltx_colspan_4``) rather than attributes, so they are copied into ``colspan``/``rowspan``.
+    """
+    for tabular in root.find_all("span", class_="ltx_tabular"):
+        parts = [tabular] + [el for el in tabular.find_all("span") if set(el.get("class") or []) & _SPAN_TABLE_PARTS.keys()]
+        for el in parts:
+            classes = el.get("class") or []
+            el.name = next(_SPAN_TABLE_PARTS[c] for c in classes if c in _SPAN_TABLE_PARTS)
+            for c in classes:
+                if m := _SPAN_RE.fullmatch(c):
+                    el[f"{m.group(1)}span"] = m.group(2)
 
 
 def fix_tabular_tables(root: BeautifulSoup) -> None:
