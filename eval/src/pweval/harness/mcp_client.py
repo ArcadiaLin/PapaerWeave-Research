@@ -14,6 +14,8 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import urllib.error
+import urllib.parse
 import urllib.request
 from types import TracebackType
 
@@ -100,7 +102,14 @@ class HttpClient:
             headers["mcp-session-id"] = self.session
         req = urllib.request.Request(self.url, data=json.dumps(body).encode(), headers=headers, method="POST")
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # 本机服务，不走代理
-        with opener.open(req, timeout=self.timeout_s) as resp:
+        try:
+            resp = opener.open(req, timeout=self.timeout_s)
+        except urllib.error.HTTPError as exc:  # urllib 不对 POST 跟随 307/308（Graphiti 把 /mcp/ 转到 /mcp）
+            if exc.code not in (307, 308) or not exc.headers.get("Location"):
+                raise
+            self.url = urllib.parse.urljoin(self.url, exc.headers["Location"])
+            return self._post(body)
+        with resp:
             self.session = resp.headers.get("mcp-session-id") or self.session
             text = resp.read().decode("utf-8")
         if not text.strip():
