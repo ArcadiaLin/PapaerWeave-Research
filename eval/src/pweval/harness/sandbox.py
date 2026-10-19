@@ -207,7 +207,7 @@ def run_session(paths: Paths, arm: Arm, writer: Writer, prompt: str, *, timeout_
                         proc.wait()
                         code = "timeout"
                     else:
-                        killed += kill_long_tools(proc.pid, TOOL_LIMIT_S)
+                        killed += kill_long_tools(proc.pid, TOOL_LIMIT_S, time.monotonic() - started)
         seconds = round(time.monotonic() - started, 1)
     finally:
         for p in bridges:
@@ -222,17 +222,31 @@ def run_session(paths: Paths, arm: Arm, writer: Writer, prompt: str, *, timeout_
 TOOL_LIMIT_S = 600  # 单个 shell 工具命令的时限：超过即终止，pi 收到出错结果后继续（两组相同）
 
 
-def kill_long_tools(root: int, limit_s: int) -> list[dict]:
+def _start_ticks(pid: int) -> int | None:
+    """进程的启动时刻（``/proc/<pid>/stat`` 第 22 项，开机以来的时钟滴答）；进程已不在时为 None。"""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    return int(stat[stat.rindex(")") + 2 :].split()[19])
+
+
+def kill_long_tools(root: int, limit_s: int, root_age_s: float) -> list[dict]:
     """终止沙箱中运行超过 ``limit_s`` 秒的 shell 工具命令（pi 为每次 bash 工具调用起的 ``bash -c``）及其子进程。
-    pilot-2 中一个写者的脚本陷入死循环，没有这个时限就要等到会话超时、整次会话作废。"""
-    rows = subprocess.run(["ps", "-eo", "pid=,ppid=,etimes=,args="], capture_output=True, text=True).stdout
+    pilot-2 中一个写者的脚本陷入死循环，没有这个时限就要等到会话超时、整次会话作废。
+
+    进程年龄按启动滴答相对 ``root``（已运行 ``root_age_s`` 秒）计算，不用 ps 的 etimes：LXC 容器中 /proc/uptime
+    被虚拟化，etimes 对所有进程都溢出成约 41 亿秒，f1 开头因此每次轮询都把正在运行的 shell 命令当作超时终止。"""
+    rows = subprocess.run(["ps", "-eo", "pid=,ppid=,args="], capture_output=True, text=True).stdout
     procs = {}
     for line in rows.splitlines():
-        parts = line.split(None, 3)
-        if len(parts) == 4:
-            procs[int(parts[0])] = (int(parts[1]), int(parts[2]), parts[3])
+        parts = line.split(None, 2)
+        if len(parts) == 3:
+            procs[int(parts[0])] = (int(parts[1]), parts[2])
+    root_ticks = _start_ticks(root)
+    hz = os.sysconf("SC_CLK_TCK")
     children: dict[int, list[int]] = {}
-    for pid, (ppid, _, _) in procs.items():
+    for pid, (ppid, _) in procs.items():
         children.setdefault(ppid, []).append(pid)
 
     def tree(pid: int) -> list[int]:
@@ -242,10 +256,18 @@ def kill_long_tools(root: int, limit_s: int) -> list[dict]:
         return out
 
     killed = []
+    if root_ticks is None:
+        return killed
     for pid in tree(root)[1:]:
-        ppid, age, args = procs[pid]
-        parent = procs.get(ppid, (0, 0, ""))[2]
-        if age > limit_s and re.match(r"(/usr)?(/bin/)?bash -c ", args) and re.search(r"\bpi\b|node", parent):
+        ppid, args = procs[pid]
+        parent = procs.get(ppid, (0, ""))[1]
+        if not (re.match(r"(/usr)?(/bin/)?bash -c ", args) and re.search(r"\bpi\b|node", parent)):
+            continue
+        ticks = _start_ticks(pid)
+        if ticks is None:
+            continue
+        age = round(root_age_s - (ticks - root_ticks) / hz)
+        if age > limit_s:
             for victim in reversed(tree(pid)):
                 with contextlib.suppress(ProcessLookupError):
                     os.kill(victim, signal.SIGKILL)

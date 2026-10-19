@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -155,3 +157,38 @@ def test_a2_starts_the_ablated_server(host: Path) -> None:
     assert command[-1] == str(sandbox.ABLATED_MCP) and sandbox.ABLATED_MCP.exists()
     a3 = sandbox._mcp_command(paths, Arm("A3", host / "papers", neo4j="bolt://x", data=host / "data"), WRITER)
     assert a3[-2:] == ["-m", "paperweave.mcp"] and not any(c.startswith("PAPERWEAVE_ABLATE") for c in a3)
+
+
+def _tool_tree() -> tuple[subprocess.Popen, float]:
+    """一个以 ``node`` 为名的进程，下面起一条 ``bash -c`` 工具命令，形状与 pi 的 bash 工具调用相同。"""
+    started = time.monotonic()
+    root = subprocess.Popen(["bash", "-c", "exec -a node bash -c 'bash -c \"sleep 30; true\" & wait'"])
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        rows = subprocess.run(["ps", "-o", "args=", "--ppid", str(root.pid)], capture_output=True, text=True).stdout
+        if "sleep 30" in rows:
+            break
+        time.sleep(0.05)
+    return root, started
+
+
+def test_a_young_tool_command_is_not_killed() -> None:
+    # f1 开头：LXC 中 ps 的 etimes 对所有进程都溢出（约 41 亿秒），正在运行的 shell 命令每次轮询都被当作超时终止
+    root, started = _tool_tree()
+    try:
+        assert sandbox.kill_long_tools(root.pid, 600, time.monotonic() - started) == []
+    finally:
+        root.kill()
+        root.wait()
+
+
+def test_a_tool_command_over_the_limit_is_killed() -> None:
+    root, started = _tool_tree()
+    try:
+        time.sleep(1.2)
+        killed = sandbox.kill_long_tools(root.pid, 0, time.monotonic() - started)
+        assert [k["command"] for k in killed] == ['bash -c sleep 30; true']
+        assert 0 < killed[0]["seconds"] < 5
+    finally:
+        root.kill()
+        root.wait()
