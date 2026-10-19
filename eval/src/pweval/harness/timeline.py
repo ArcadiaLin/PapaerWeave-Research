@@ -76,8 +76,9 @@ SEED_MESSAGES = (  # 与 seed/README.md 相同，各组一致
     "seed: identity anchors (tasks, datasets) and the seed papers Informer and SCINet",
     "seed: leaderboards for ETTh1, Electricity and ETTh2 with the seed papers rows",
 )
-A4_WRITE_TOOLS = tuple(f"mcp__Graphiti__{t}" for t in  # A4 读者看不到的 Graphiti 工具（写入与删除）
-                       ("add_memory", "add_triplet", "delete_episode", "delete_entity_edge", "build_communities"))
+A4_WRITE_TOOLS = tuple(f"mcp__Graphiti__{t}" for t in  # A4 读者看不到的 Graphiti 工具（写入与删除）；summarize_saga
+                       ("add_memory", "add_triplet", "delete_episode", "delete_entity_edge", "build_communities",
+                        "summarize_saga"))  # 会把摘要与水位写回 saga 节点（graphiti_core Graphiti.summarize_saga）
 SEED_BOARDS = ("02-lb-etth1.md", "03-lb-electricity.md", "04-lb-etth2.md")
 NETWORK = re.compile(r"\b(curl|wget|git\s+(clone|fetch|pull|ls-remote)|pip3?\s+install|uv\s+(pip|add)|https?://)")
 _LOCK = threading.RLock()  # 进程内：各组线程共用的记录文件（sessions.jsonl、checkpoints.yml、answers）与输出
