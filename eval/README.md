@@ -20,8 +20,8 @@
 | | `snapshot` | 检查点快照的格式与读取 |
 | | `source_tables` | 原文结果表的索引 |
 | `harness`：运行框架，可以连库、起子进程 | `run` | 一次运行：建立各组起点，调度写者会话，在检查点导出快照、让读者作答 |
-| | `sandbox` | 一次 pi 会话在 bubblewrap 沙箱中运行：断网，只挂载本写者的工作目录、论文（只读）与 A0 笔记库；A3 的 MCP 服务在沙箱外按登录身份启动 |
-| | `bridge` | 沙箱内外经 unix socket 的字节转发（大模型服务、MCP 服务），只用标准库 |
+| | `sandbox` | 一次 pi 会话在 bubblewrap 沙箱中运行：只隔离文件系统、不断网；写者看到自己的工作目录（A0 为共享仓库）、论文与固定 commit 的代码（只读），读者两者都没有；A3、A2 的 MCP 服务在沙箱外按登录身份启动（A2 为 `baselines/a2_mcp.py`），A4 经 HTTP 连 Graphiti |
+| | `bridge` | 沙箱内外经 unix socket 的字节转发（A3、A2 的 MCP 服务），只用标准库 |
 | | `mcp_client`、`seeding`、`skills` | 经系统的 MCP 入口检入种子产物、为写者放置 skill |
 | | `export` | 检查点快照的导出（A3 经 Cypher，A0 经 git 标签） |
 | | `a0_seed` | 把 A3 检查点 0 的快照渲染成 A0（文件 + git）的笔记库 |

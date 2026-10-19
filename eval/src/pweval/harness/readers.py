@@ -177,10 +177,12 @@ def _ask(paths: Paths, arm: Arm, config: dict[str, Any], probes: dict[str, Any],
     runner = config["runner"]
     if paths.work.exists():  # 中断后重跑：上次的会话目录不留给这一次
         shutil.rmtree(paths.root)
-    prepare(paths, arm, runner["model"], runner["thinking"], runner["context_window"], runner["http_idle_timeout_ms"])
+    from .run import pi_settings
+
+    prepare(paths, arm, **pi_settings(config, llm))
     reader = Writer("reader", probes["reader"]["user"], f"{runner['agent']}/{runner['model']}")
     started = datetime.now(UTC).isoformat(timespec="seconds")
-    result = run_session(paths, arm, reader, text, timeout_s=runner.get("probe_timeout_min", 20) * 60, llm=llm)
+    result = run_session(paths, arm, reader, text, timeout_s=runner.get("probe_timeout_min", 20) * 60)
     events = paths.root / result["events"]
     return {
         "started": started,

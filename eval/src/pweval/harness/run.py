@@ -368,6 +368,20 @@ def export_a3(run: Path, config: dict[str, Any]) -> Path:
     return out
 
 
+def pi_settings(config: dict[str, Any], llm: str) -> dict[str, Any]:
+    """:func:`pweval.harness.sandbox.prepare` 的 pi 设置，取实验配置的 runner。``reserve_tokens`` 缺省为 pi 的默认值
+    16384（pilot-2、pilot-3 的配置没有这一项）；正式运行按 D15 设 32768。"""
+    runner = config["runner"]
+    return {
+        "model": runner["model"],
+        "llm": llm,
+        "thinking": runner["thinking"],
+        "context_window": runner["context_window"],
+        "idle_timeout_ms": runner["http_idle_timeout_ms"],
+        "reserve_tokens": runner.get("reserve_tokens", 16384),
+    }
+
+
 def _session(run: Path, config: dict[str, Any], arm: str, slot: Slot, text: str, llm: str) -> dict[str, Any]:
     spec = config["arms"][arm]
     w = slot.writer
@@ -380,10 +394,7 @@ def _session(run: Path, config: dict[str, Any], arm: str, slot: Slot, text: str,
     else:
         sandbox_arm = Arm("A0", papers, store=run / "A0/store")
     paths = Paths(run / arm / writer.id)
-    runner = config["runner"]
-    prepare(
-        paths, sandbox_arm, runner["model"], runner["thinking"], runner["context_window"], runner["http_idle_timeout_ms"]
-    )
+    prepare(paths, sandbox_arm, **pi_settings(config, llm))
     interrupted: list[str] = []
     if arm == "A0":  # 上一次运行在会话中途被终止时留下的改动：同样存档后丢弃，不留给这个写者
         stale = Path(f"runs/{datetime.now(UTC):%Y%m%dT%H%M%S}.interrupted.leftover.patch")
@@ -391,9 +402,7 @@ def _session(run: Path, config: dict[str, Any], arm: str, slot: Slot, text: str,
     skills_placed = skills.place(paths, sandbox_arm, writer) if arm == "A3" else None
     before = version(run, config, arm)
     started = datetime.now(UTC).isoformat(timespec="seconds")
-    result = run_session(
-        paths, sandbox_arm, writer, text, timeout_s=config["runner"]["session_timeout_min"] * 60, llm=llm
-    )
+    result = run_session(paths, sandbox_arm, writer, text, timeout_s=config["runner"]["session_timeout_min"] * 60)
     record = {
         "arm": arm,
         "index": slot.index,

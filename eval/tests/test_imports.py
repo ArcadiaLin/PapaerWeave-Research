@@ -5,6 +5,9 @@
 - ``measure``（测量）只用标准库、pyyaml、protocol 与 measure 自己：只读快照，不连库，不依赖运行框架；
 - ``harness/bridge.py`` 在沙箱里用系统的 python3 直接运行，只用标准库。
 
+``baselines/`` 不在此列：其中是基线的实现（A2 的消融版 MCP 服务），导入被测系统，由运行框架以子进程启动；
+pweval 不导入它（它不是包，也不在 sys.path 上）。
+
 反方向（系统不导入评测）由 system/tests/test_boundary.py 检查。
 """
 
