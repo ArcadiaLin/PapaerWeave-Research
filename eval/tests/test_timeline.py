@@ -16,12 +16,14 @@ HINTS = {
     "a4": {"WRITE": "Record it as a memory.", "TOOLS": "Use the Graphiti memory tools."},
 }
 IDENTITIES = {"i3-a": {"id": "i3-a", "user": "u@lab.example", "background": "You maintain a benchmark.\n"}}
+READER = {"user": "reader@lab.example", "seed_papers": ["s1"],
+          "prompt": "{question}\n\nAnswer only from the store. {TOOLS}"}  # fmt: skip
 
 
 def test_prompt_fills_the_arm_hints_after_the_background() -> None:
     step = {"seq": 5, "identity": "i3-a", "type": "compare", "writes": "CompareSettings",
             "task": "Are they comparable? {WRITE} {TOOLS}"}  # fmt: skip
-    tl = Timeline([step], IDENTITIES, HINTS)
+    tl = Timeline([step], IDENTITIES, HINTS, READER, [])
     assert timeline.prompt(tl, "A3", step) == (
         "You maintain a benchmark.\n\nAre they comparable? Record it as a CompareSettings artifact. "
         "Use the PaperWeave tools.\n"
@@ -90,3 +92,35 @@ def test_a0_starts_from_the_kit_and_two_seed_commits(tmp_path: Path) -> None:
                                 "setup|Set up the shared repository"]  # fmt: skip
     assert (repo / "AGENTS.md").exists() and (repo / "templates/Note.md").exists()
     assert (repo / ".gitignore").read_text() == "papers/\ncode/\n"
+
+
+def test_probes_count_once_all_their_papers_are_in() -> None:
+    steps = [
+        {"seq": 1, "type": "build", "paper": "p1v1"},
+        {"seq": 2, "type": "build", "paper": "p2v1"},
+        {"type": "checkpoint", "papers": 3},
+        {"seq": 3, "type": "update", "paper": "p2v2", "from": "p2v1"},
+        {"type": "checkpoint", "papers": 4},
+    ]
+    probes = [{"id": "a", "requires": ["s1", "p1v1"]}, {"id": "b", "requires": ["p2v2"]}, {"id": "c", "requires": ["p3v1"]}]
+    tl = Timeline(steps, IDENTITIES, HINTS, READER, probes)
+    assert timeline.papers_at(tl, 3) == {"s1", "p1v1", "p2v1"}
+    assert [p["id"] for p in timeline.eligible(tl, 3)] == ["a"]
+    assert [p["id"] for p in timeline.eligible(tl, 4)] == ["a", "b"]
+    probe = {"id": "a", "question": "Which table?  "}
+    assert timeline.reader_prompt(tl, "A4", probe) == "Which table?\n\nAnswer only from the store. Use the Graphiti memory tools."
+
+
+def test_answer_text_and_usage_come_from_the_event_stream(tmp_path: Path) -> None:
+    def end(content: list, usage: dict) -> str:
+        return json.dumps({"type": "message_end", "message": {"role": "assistant", "content": content, "usage": usage}})
+
+    events = tmp_path / "e.jsonl"
+    events.write_text("\n".join([
+        end([{"type": "toolCall", "name": "mcp__PaperWeave__search", "arguments": {}}], {"input": 10, "cacheRead": 90, "output": 5}),
+        end([{"type": "text", "text": "The answer [paper_0003]."}], {"input": 4, "cacheRead": 100, "output": 20}),
+        end([{"type": "thinking", "thinking": "done"}], {"input": 1, "output": 1}),
+    ]))  # fmt: skip
+    assert timeline.final_text(events) == "The answer [paper_0003]."
+    assert timeline.usage(events) == {"calls": 3, "input": 15, "cacheRead": 190, "output": 26}
+    assert timeline.tool_counts(events) == {"mcp__PaperWeave__search": 1}

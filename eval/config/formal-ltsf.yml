@@ -34,3 +34,4 @@ runner:
   session_timeout_min: 40    # 写者会话（V3 先导 2400 秒）
   probe_timeout_min: 15      # 读者会话（V3 先导 900 秒）
   settle_quiet_s: 60
+  reader_workers: 4          # 一个检查点上同时作答的读者数（只读、互不相干；只缩短时间）。每台 sglang 两组，最多 8 个读者同时

@@ -8,6 +8,7 @@
 - ``tasks/plan.yml``：70 个会话与三个检查点，按顺序；每个会话有身份、类型与任务文字；
 - ``tasks/identities.yml``：10 个写者身份（登录身份与背景，背景接在任务之前）；
 - ``tasks/hints.yml``：任务文字中 ``{WRITE}`` 与 ``{TOOLS}`` 的逐组原文；
+- ``tasks/reader.yml``、``probes/sample.yml``：检查点上的读者与 200 道题（严格规则：金标准依赖的论文全部入库才作答）；
 - ``seed/``：起点。A3、A2 由系统的命令行重放两次提交（锚点与种子论文；三张排行榜），A0 是 ``seed/a0/store``
   的文件分两次 git 提交，A4 是 ``seed/a4/episodes.yaml`` 的 30 条记忆，经 Graphiti 的 MCP 服务逐条写入。
 
@@ -17,12 +18,14 @@
 - ``sessions.jsonl``：每个会话一行（组、序号、类型、身份、退出码、用时、事件流与会话记录、会话前后的库版本、
   联网的命令；A0 另记会话结束时没有提交的改动——留在工作区，下一位写者会看到，不替它提交）；
 - ``checkpoints.yml``：各组每个检查点（0、10、20、30 篇）的库版本；
+- ``answers/<组>/k<篇数>.jsonl``：检查点上读者的回答，一题一行（题号、题面原文、回答原文、库版本、事件流与会话记录、
+  用时、token、工具调用、联网命令）。运行时不判分，全部运行结束后按题号对回冻结的金标准统一判分；
 - ``<组>/``：A3、A2 的材料根目录 ``data/``（论文副本与产物文档）；A0 的共享仓库 ``repo/``；各组的论文副本与
   代码副本；``writers/<身份>/``：写者的沙箱目录（:mod:`pweval.harness.sandbox`）。
 
 论文副本起初没有三篇论文的新版本，版本更新的会话开始前才放进去；代码副本同样（新版本对应的固定 commit）。
 
-各组的存储互不相干，组内按序号逐个运行（写者轮流写），各组同时运行。中断后用同一个运行名重跑，已记录的会话
+各组的存储互不相干，组内按序号逐个运行（写者轮流写；到检查点时写者暂停，读者答完再继续），各组同时运行。中断后用同一个运行名重跑，已记录的会话
 跳过。评测代码不导入被测系统：A3、A2 的库只经命令行、MCP 与 Cypher 读取接触。
 """
 
@@ -61,6 +64,8 @@ SEED_MESSAGES = (  # 与 seed/README.md 相同，各组一致
     "seed: identity anchors (tasks, datasets) and the seed papers Informer and SCINet",
     "seed: leaderboards for ETTh1, Electricity and ETTh2 with the seed papers rows",
 )
+A4_WRITE_TOOLS = tuple(f"mcp__Graphiti__{t}" for t in  # A4 读者看不到的 Graphiti 工具（写入与删除）
+                       ("add_memory", "add_triplet", "delete_episode", "delete_entity_edge", "build_communities"))
 SEED_BOARDS = ("02-lb-etth1.md", "03-lb-electricity.md", "04-lb-etth2.md")
 NETWORK = re.compile(r"\b(curl|wget|git\s+(clone|fetch|pull|ls-remote)|pip3?\s+install|uv\s+(pip|add)|https?://)")
 _LOCK = threading.Lock()
@@ -74,6 +79,8 @@ class Timeline:
     steps: list[dict[str, Any]]  # plan.yml：会话（有 seq）与检查点（type: checkpoint）
     identities: dict[str, dict[str, Any]]
     hints: dict[str, dict[str, str]]  # 组（小写）→ {WRITE, TOOLS}
+    reader: dict[str, Any]  # tasks/reader.yml：读者的登录身份、提示语、种子中的论文
+    probes: list[dict[str, Any]]  # probes/sample.yml 的 200 题，题面与金标准取自 auto.yml、manual-rendered.yml
 
     @property
     def later_versions(self) -> dict[str, str]:
@@ -94,7 +101,33 @@ def load_timeline(probes: Path) -> Timeline:
     steps = yaml.safe_load((probes / "tasks/plan.yml").read_text(encoding="utf-8"))
     identities = {i["id"]: i for i in yaml.safe_load((probes / "tasks/identities.yml").read_text(encoding="utf-8"))}
     hints = yaml.safe_load((probes / "tasks/hints.yml").read_text(encoding="utf-8"))
-    return Timeline(steps, identities, hints)
+    reader = yaml.safe_load((probes / "tasks/reader.yml").read_text(encoding="utf-8"))
+    pool = {}
+    for name in ("auto.yml", "manual-rendered.yml"):
+        pool |= {p["id"]: p for p in yaml.safe_load((probes / "probes" / name).read_text(encoding="utf-8"))}
+    sample = yaml.safe_load((probes / "probes/sample.yml").read_text(encoding="utf-8"))
+    return Timeline(steps, identities, hints, reader, [pool[p["id"]] for p in sample])
+
+
+def papers_at(timeline: Timeline, papers: int) -> set[str]:
+    """检查点 ``papers`` 时库中应有的论文版本：种子，加上这个检查点之前各会话建库与更新的论文。"""
+    present = set(timeline.reader["seed_papers"])
+    for step in timeline.steps:
+        if step["type"] == "checkpoint" and step["papers"] == papers:
+            return present
+        if step["type"] in ("build", "update"):
+            present.add(step["paper"])
+    raise KeyError(f"no checkpoint at {papers} papers")
+
+
+def eligible(timeline: Timeline, papers: int) -> list[dict[str, Any]]:
+    """严格规则（D31）：金标准依赖的论文（``requires``）全部入库的题，金标准不按检查点重算。"""
+    present = papers_at(timeline, papers)
+    return [p for p in timeline.probes if set(p["requires"]) <= present]
+
+
+def reader_prompt(timeline: Timeline, arm: str, probe: dict[str, Any]) -> str:
+    return timeline.reader["prompt"].format(question=probe["question"].strip(), TOOLS=timeline.hints[arm.lower()]["TOOLS"])
 
 
 def prompt(timeline: Timeline, arm: str, step: dict[str, Any]) -> str:
@@ -352,6 +385,147 @@ def network_calls(events: Path) -> list[str]:
     return found
 
 
+# ---------------------------------------------------------------- 检查点上的读者
+
+
+def reader_arm(config: dict[str, Any], run: Path, arm: str, papers: int) -> Arm:
+    """读者看到的库，只读，没有论文与代码。A3、A2：MCP 服务只列不写入的工具，read_evidence 只读产物文档；
+    A0：检查点标签处的仓库副本（只读挂载）；A4：pi 不列出 Graphiti 的写入工具。"""
+    spec = config["arms"][arm]
+    if arm in GRAPH:
+        data = arm_dir(run, arm) / "data"
+        ablate = tuple(spec.get("ablate") or ())
+        return Arm(arm, None, neo4j=spec["neo4j"], data=data, read_only=True, evidence_scope="artifacts", ablate=ablate)
+    if arm == "A0":
+        copy = arm_dir(run, "A0") / "readers" / f"k{papers}" / "repo"
+        if not copy.exists():
+            copy.parent.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["git", "clone", "-q", "--no-hardlinks", str(arm_dir(run, "A0") / "repo"), str(copy)], check=True)
+            _git(copy, "checkout", "-q", f"checkpoint-{papers}")
+        return Arm("A0", None, store=copy, read_only=True)
+    return Arm("A4", None, graphiti=spec["graphiti"], hide_tools=A4_WRITE_TOOLS)
+
+
+def answers_file(run: Path, arm: str, papers: int) -> Path:
+    return run / "answers" / arm / f"k{papers}.jsonl"
+
+
+def answered(run: Path, arm: str, papers: int) -> set[str]:
+    path = answers_file(run, arm, papers)
+    if not path.exists():
+        return set()
+    return {json.loads(line)["probe"] for line in path.read_text(encoding="utf-8").splitlines()}
+
+
+def readers(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, papers: int,
+            only: set[str] | None = None) -> None:  # fmt: skip
+    """检查点上，组 ``arm`` 的读者逐题作答，写者在此期间暂停。只存回答与记录，不判分（判分在全部运行结束后统一进行，
+    按题号对回冻结的金标准）。已存的题跳过；``only`` 只答这些题（试跑，不按有效性筛选）。"""
+    expected = checkpoints(run)[arm][papers]
+    if arm != "A4" and version(config, run, arm) != expected:  # 续跑时库必须仍在检查点上
+        raise RuntimeError(f"{arm}: the store moved past checkpoint {papers} ({expected}) before its readers finished")
+    probes = [p for p in timeline.probes if p["id"] in only] if only else eligible(timeline, papers)
+    todo = [p for p in probes if p["id"] not in answered(run, arm, papers)]
+    if not todo:
+        return
+    if arm == "A4":
+        settle(config)
+    box = reader_arm(config, run, arm, papers)
+    reader = Writer("reader", timeline.reader["user"], f"{config['runner']['agent']}/{config['runner']['model']}")
+    path = answers_file(run, arm, papers)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    def ask(probe: dict[str, Any]) -> None:
+        record = answer(config, timeline, run, arm, papers, probe, box, reader)
+        record["version"] = expected
+        with _LOCK, open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        print(f"[{arm} k{papers} {probe['id']}] exit {record['exit']}, {record['seconds']}s, "
+              f"{len(record['answer'])} chars", flush=True)  # fmt: skip
+
+    with ThreadPoolExecutor(max_workers=config["runner"].get("reader_workers", 1)) as pool:
+        list(pool.map(ask, todo))
+
+
+def answer(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, papers: int, probe: dict[str, Any],
+           box: Arm, reader: Writer) -> dict[str, Any]:  # fmt: skip
+    """一题一次读者会话：回答原文、事件流与会话记录、用时、token、工具调用与联网命令。"""
+    paths = Paths(arm_dir(run, arm) / "readers" / f"k{papers}" / probe["id"])
+    if paths.root.exists():  # 中断后重跑：上次没存下回答的会话目录不留
+        shutil.rmtree(paths.root)
+    runner = config["runner"]
+    prepare(
+        paths,
+        box,
+        model=runner["model"],
+        llm=config["arms"][arm]["llm"],
+        thinking=runner["thinking"],
+        context_window=runner["context_window"],
+        idle_timeout_ms=runner.get("http_idle_timeout_ms"),
+        reserve_tokens=runner["reserve_tokens"],
+    )
+    text = reader_prompt(timeline, arm, probe)
+    started = datetime.now(UTC).isoformat(timespec="seconds")
+    result = run_session(paths, box, reader, text, timeout_s=runner["probe_timeout_min"] * 60)
+    events = paths.root / result["events"]
+    return {
+        "arm": arm,
+        "checkpoint": papers,
+        "probe": probe["id"],
+        "started": started,
+        **result,
+        "events": str(events.relative_to(run)),
+        "session": [str((paths.root / s).relative_to(run)) for s in result["session"]],
+        "llm": config["arms"][arm]["llm"],
+        "prompt": text,
+        "answer": final_text(events),
+        "usage": usage(events),
+        "tools": tool_counts(events),
+        "network": network_calls(events),
+    }
+
+
+def _assistant_messages(events: Path) -> list[dict[str, Any]]:
+    messages = []
+    if not events.exists():
+        return messages
+    for line in events.read_text(encoding="utf-8").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        message = event.get("message") or {}
+        if event.get("type") == "message_end" and message.get("role") == "assistant":
+            messages.append(message)
+    return messages
+
+
+def final_text(events: Path) -> str:
+    """回答：最后一条有文字的助手消息。"""
+    texts = ["".join(c.get("text", "") for c in m.get("content", []) if c.get("type") == "text").strip()
+             for m in _assistant_messages(events)]  # fmt: skip
+    return next((t for t in reversed(texts) if t), "")
+
+
+def usage(events: Path) -> dict[str, int]:
+    """各次模型调用的 token 之和（pi 的 input 不含命中缓存的部分，cacheRead 另计）。"""
+    total = {"calls": 0, "input": 0, "cacheRead": 0, "output": 0}
+    for message in _assistant_messages(events):
+        total["calls"] += 1
+        for key in ("input", "cacheRead", "output"):
+            total[key] += int((message.get("usage") or {}).get(key) or 0)
+    return total
+
+
+def tool_counts(events: Path) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for message in _assistant_messages(events):
+        for call in message.get("content", []):
+            if call.get("type") == "toolCall":
+                counts[call["name"]] = counts.get(call["name"], 0) + 1
+    return counts
+
+
 # ---------------------------------------------------------------- 记录与续跑
 
 
@@ -377,7 +551,7 @@ def checkpoints(run: Path) -> dict[str, dict[int, Any]]:
 
 
 def checkpoint(config: dict[str, Any], run: Path, arm: str, papers: int) -> None:
-    """记下检查点的库版本；A0 另打 git 标签 ``checkpoint-<篇数>``。检查点的快照与读者在后续步骤中接入。"""
+    """记下检查点的库版本；A0 另打 git 标签 ``checkpoint-<篇数>``（读者读这个标签处的副本）。"""
     if arm == "A0":
         _git(arm_dir(run, "A0") / "repo", "tag", "-f", f"checkpoint-{papers}", user="t1")
     head = version(config, run, arm)
@@ -426,7 +600,8 @@ def preflight(config: dict[str, Any], arms: list[str]) -> list[str]:
 # ---------------------------------------------------------------- 运行
 
 
-def run_arm(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, until: int | None, reset: bool) -> None:
+def run_arm(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, until: int | None, reset: bool,
+            with_readers: bool = True) -> None:  # fmt: skip
     if 0 not in (checkpoints(run).get(arm) or {}):
         setup(config, timeline, run, arm, reset=reset)
         checkpoint(config, run, arm, 0)
@@ -437,6 +612,8 @@ def run_arm(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, unt
             if all((arm, s["seq"]) in done for s in timeline.steps if "seq" in s and s["seq"] <= last_seq):
                 if step["papers"] not in (checkpoints(run).get(arm) or {}):
                     checkpoint(config, run, arm, step["papers"])
+                if with_readers:
+                    readers(config, timeline, run, arm, step["papers"])  # 读者答完，下一位写者才开始
             continue
         last_seq = step["seq"]
         if until is not None and step["seq"] > until:
@@ -461,6 +638,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--until", type=int, help="只跑到这个序号（试跑）")
     parser.add_argument("--neo4j", help="覆盖图库地址，如 A3=bolt://localhost:7695")
     parser.add_argument("--reset", action="store_true", help="图库不空时清空（只清配置中这一组的图库）")
+    parser.add_argument("--no-readers", action="store_true", help="检查点上不运行读者（试跑）")
     args = parser.parse_args(argv)
     config_path = Path(args.config).resolve()
     config = load_config(config_path)
@@ -477,7 +655,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     _record_run(run, config_path, config, list(argv) if argv is not None else sys.argv[1:])
     timeline = load_timeline(config["probes_repo"])
     with ThreadPoolExecutor(max_workers=len(arms)) as pool:
-        futures = [pool.submit(run_arm, config, timeline, run, a, args.until, args.reset) for a in arms]
+        futures = [pool.submit(run_arm, config, timeline, run, a, args.until, args.reset, not args.no_readers) for a in arms]
         for future in futures:
             future.result()  # 一组出错时报出，其他组照常跑完
     return 0
