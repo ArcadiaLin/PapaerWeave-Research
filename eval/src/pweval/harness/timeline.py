@@ -10,6 +10,7 @@
 - ``tasks/identities.yml``：10 个写者身份（登录身份与背景，背景接在任务之前）；
 - ``tasks/hints.yml``：任务文字中 ``{WRITE}`` 与 ``{TOOLS}`` 的逐组原文；
 - ``tasks/reader.yml``、``probes/sample.yml``：检查点上的读者与 200 道题（严格规则：金标准依赖的论文全部入库才作答）；
+  另有辅助组的代码题（``manual-rendered.yml`` 中 ``group: auxiliary``），同样作答，单独存放、不进主检验；
 - ``seed/``：起点。A3、A2 由系统的命令行重放两次提交（锚点与种子论文；三张排行榜），A0 是 ``seed/a0/store``
   的文件分两次 git 提交，A4 是 ``seed/a4/episodes.yaml`` 的 30 条记忆，经 Graphiti 的 MCP 服务逐条写入。
 
@@ -54,7 +55,7 @@ import traceback
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, nullcontext
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -122,6 +123,10 @@ class Timeline:
     hints: dict[str, dict[str, str]]  # 组（小写）→ {WRITE, TOOLS}
     reader: dict[str, Any]  # tasks/reader.yml：读者的登录身份、提示语、种子中的论文
     probes: list[dict[str, Any]]  # probes/sample.yml 的 200 题，题面与金标准取自 auto.yml、manual-rendered.yml
+    aux: list[dict[str, Any]] = field(default_factory=list)  # 辅助组的代码题（T16–T18），单独报告
+
+    def group(self, name: str) -> list[dict[str, Any]]:
+        return self.aux if name == "aux" else self.probes
 
     @property
     def later_versions(self) -> dict[str, str]:
@@ -147,7 +152,8 @@ def load_timeline(probes: Path) -> Timeline:
     for name in ("auto.yml", "manual-rendered.yml"):
         pool |= {p["id"]: p for p in yaml.safe_load((probes / "probes" / name).read_text(encoding="utf-8"))}
     sample = yaml.safe_load((probes / "probes/sample.yml").read_text(encoding="utf-8"))
-    return Timeline(steps, identities, hints, reader, [pool[p["id"]] for p in sample])
+    aux = [p for p in pool.values() if p.get("group") == "auxiliary"]
+    return Timeline(steps, identities, hints, reader, [pool[p["id"]] for p in sample], aux)
 
 
 def papers_at(timeline: Timeline, papers: int) -> set[str]:
@@ -161,10 +167,10 @@ def papers_at(timeline: Timeline, papers: int) -> set[str]:
     raise KeyError(f"no checkpoint at {papers} papers")
 
 
-def eligible(timeline: Timeline, papers: int) -> list[dict[str, Any]]:
+def eligible(timeline: Timeline, papers: int, group: str = "main") -> list[dict[str, Any]]:
     """严格规则（D31）：金标准依赖的论文（``requires``）全部入库的题，金标准不按检查点重算。"""
     present = papers_at(timeline, papers)
-    return [p for p in timeline.probes if set(p["requires"]) <= present]
+    return [p for p in timeline.group(group) if set(p["requires"]) <= present]
 
 
 def reader_prompt(timeline: Timeline, arm: str, probe: dict[str, Any]) -> str:
@@ -538,28 +544,31 @@ def reader_arm(config: dict[str, Any], run: Path, arm: str, papers: int) -> Arm:
     return Arm("A4", None, graphiti=spec["graphiti"], hide_tools=A4_WRITE_TOOLS)
 
 
-def answers_file(run: Path, arm: str, papers: int) -> Path:
-    return run / "answers" / arm / f"k{papers}.jsonl"
+GROUPS = ("main", "aux")  # 主检验的 200 题；辅助组（代码题），存在 k<篇数>-aux.jsonl
 
 
-def answered(run: Path, arm: str, papers: int) -> set[str]:
-    return {r["probe"] for r in read_jsonl(answers_file(run, arm, papers))}
+def answers_file(run: Path, arm: str, papers: int, group: str = "main") -> Path:
+    return run / "answers" / arm / (f"k{papers}.jsonl" if group == "main" else f"k{papers}-{group}.jsonl")
+
+
+def answered(run: Path, arm: str, papers: int, group: str = "main") -> set[str]:
+    return {r["probe"] for r in read_jsonl(answers_file(run, arm, papers, group))}
 
 
 def readers(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, papers: int,
-            only: set[str] | None = None) -> None:  # fmt: skip
+            only: set[str] | None = None, group: str = "main") -> None:  # fmt: skip
     """检查点上，组 ``arm`` 的读者逐题作答，写者在此期间暂停。只存回答与记录，不判分（判分在全部运行结束后统一进行，
     按题号对回冻结的金标准）。已存的题跳过；``only`` 只答这些题（试跑，不按有效性筛选）。
 
     先看还有没有题要答，有才核对库仍在检查点上：已答完的检查点在续跑时库早已向前，不能因此报错。"""
-    probes = [p for p in timeline.probes if p["id"] in only] if only else eligible(timeline, papers)
-    todo = [p for p in probes if p["id"] not in answered(run, arm, papers)]
+    probes = [p for p in timeline.group(group) if p["id"] in only] if only else eligible(timeline, papers, group)
+    todo = [p for p in probes if p["id"] not in answered(run, arm, papers, group)]
     if not todo:
         return
     expected = at_checkpoint(config, run, arm, papers)
     box = reader_arm(config, run, arm, papers)
     reader = Writer("reader", timeline.reader["user"], f"{config['runner']['agent']}/{config['runner']['model']}")
-    path = answers_file(run, arm, papers)
+    path = answers_file(run, arm, papers, group)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     def ask(probe: dict[str, Any]) -> None:
@@ -900,14 +909,16 @@ def run_arm(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, unt
                 if step["papers"] not in (checkpoints(run).get(arm) or {}):
                     checkpoint(config, run, arm, step["papers"])
                 snapshot(config, run, arm, step["papers"])
-                if with_readers:
-                    readers(config, timeline, run, arm, step["papers"])  # 读者答完，下一位写者才开始
-                    expected = len(eligible(timeline, step["papers"]))
-                    answers = f"{len(answered(run, arm, step['papers']))}/{expected}"
-                else:
-                    answers = "skipped"
+                answers = {}
+                for group in GROUPS:
+                    if with_readers:
+                        readers(config, timeline, run, arm, step["papers"], group=group)  # 读者答完，下一位写者才开始
+                        expected = len(eligible(timeline, step["papers"], group))
+                        answers[group] = f"{len(answered(run, arm, step['papers'], group))}/{expected}"
+                    else:
+                        answers[group] = "skipped"
                 emit("CHECKPOINT", arm, k=step["papers"], version=checkpoints(run)[arm][step["papers"]],
-                     snapshot="ok", answers=answers)  # fmt: skip
+                     snapshot="ok", answers=answers["main"], aux=answers["aux"])  # fmt: skip
             continue
         last_seq = step["seq"]
         if until is not None and step["seq"] > until:

@@ -116,6 +116,24 @@ def test_probes_count_once_all_their_papers_are_in() -> None:
     assert timeline.reader_prompt(tl, "A4", probe) == "Which table?\n\nAnswer only from the store. Use the Graphiti memory tools."
 
 
+def test_auxiliary_probes_follow_the_same_rule_and_go_to_their_own_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """辅助组的代码题按同样的严格规则作答，存在 k<篇数>-aux.jsonl，不混进主检验的回答。"""
+    steps = [{"seq": 1, "type": "build", "paper": "p1v1"}, {"type": "checkpoint", "papers": 3}]
+    tl = Timeline(steps, IDENTITIES, HINTS, READER, [{"id": "m", "requires": ["s1"]}],
+                  [{"id": "x", "requires": ["p1v1"]}, {"id": "y", "requires": ["p9v1"]}])  # fmt: skip
+    assert [p["id"] for p in timeline.eligible(tl, 3, "aux")] == ["x"]
+    run = _run(tmp_path, {"A3": {0: "commit_000002", 3: "commit_000005"}})
+    monkeypatch.setattr(timeline, "version", lambda *a: "commit_000005")
+    monkeypatch.setattr(timeline, "reader_arm", lambda *a: None)
+    monkeypatch.setattr(timeline, "answer", lambda *a: {"probe": a[5]["id"], "exit": 0, "seconds": 1, "answer": ""})
+    config = {"runner": {"agent": "pi", "model": "m"}}
+    for group in timeline.GROUPS:
+        timeline.readers(config, tl, run, "A3", 3, group=group)
+    assert timeline.answered(run, "A3", 3) == {"m"}
+    assert timeline.answered(run, "A3", 3, "aux") == {"x"}
+    assert timeline.answers_file(run, "A3", 3, "aux").name == "k3-aux.jsonl"
+
+
 def test_answer_text_and_usage_come_from_the_event_stream(tmp_path: Path) -> None:
     def end(content: list, usage: dict) -> str:
         return json.dumps({"type": "message_end", "message": {"role": "assistant", "content": content, "usage": usage}})

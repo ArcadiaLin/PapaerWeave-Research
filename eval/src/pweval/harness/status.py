@@ -79,12 +79,13 @@ def report(config: dict, timeline: tl.Timeline, run: Path, log: Path) -> list[st
         for k, head in sorted((checkpoints.get(arm) or {}).items()):
             snap = run / "snapshots" / arm / f"k{k}"
             parts = [f"version {head}", f"snapshot {'ok' if tl.snapshot_complete(snap, arm) else 'missing'}"]
-            if k:
-                answers = tl.read_jsonl(tl.answers_file(run, arm, k), repair=False)
+            for group in tl.GROUPS if k else ():
+                answers = tl.read_jsonl(tl.answers_file(run, arm, k, group), repair=False)
+                label = "answers" if group == "main" else group
                 try:
-                    parts.append(f"answers {len(answers)}/{len(tl.eligible(timeline, k))}")
+                    parts.append(f"{label} {len(answers)}/{len(tl.eligible(timeline, k, group))}")
                 except KeyError:  # 不在 plan 中的检查点（试跑时手动记的）
-                    parts.append(f"answers {len(answers)} (not a plan checkpoint)")
+                    parts.append(f"{label} {len(answers)} (not a plan checkpoint)")
             out.append(f"  k{k}: " + ", ".join(parts))
     return out
 
