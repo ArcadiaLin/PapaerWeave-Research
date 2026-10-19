@@ -270,3 +270,112 @@ def test_resuming_with_a_changed_config_is_refused(tmp_path: Path, monkeypatch: 
     invocations = yaml.safe_load((run / "run.yml").read_text())["invocations"]
     assert [i["config"]["arms"]["A3"]["neo4j"] for i in invocations] == ["bolt://a", "bolt://a", "bolt://b"]
     assert invocations[0]["config"]["probes_repo"] == str(probes)
+
+
+# ---------------------------------------------------------------- 复审 2026-10-19 的三条与 A4 的内容指纹
+
+
+def _a0_repo(tmp_path: Path) -> Path:
+    run = tmp_path / "run"
+    repo = run / "A0/repo"
+    repo.mkdir(parents=True)
+    (repo / ".gitignore").write_text("papers/\n")
+    (repo / "note.md").write_text("v1\n")
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "x"], check=True)
+    return run
+
+
+def test_a0_worktree_fingerprint_sees_content_not_just_status(tmp_path: Path) -> None:
+    """前一会话留下 ` M note.md`，这一会话再改它而不提交：git status 前后相同，内容指纹不同。"""
+    run = _a0_repo(tmp_path)
+    repo = run / "A0/repo"
+    (repo / "note.md").write_text("v2\n")
+    status, before = timeline._a0_status(run), timeline._a0_worktree(run)
+    (repo / "note.md").write_text("v3\n")
+    assert timeline._a0_status(run) == status and timeline._a0_worktree(run) != before
+    (repo / "new.md").write_text("a\n")
+    untracked = timeline._a0_worktree(run)
+    (repo / "new.md").write_text("b\n")
+    assert timeline._a0_worktree(run) != untracked  # 未跟踪文件的内容也在内
+    (repo / "papers").mkdir()
+    (repo / "papers/x.md").write_text("ignored\n")
+    assert timeline._a0_worktree(run) == timeline._a0_worktree(run) != untracked
+    assert timeline._a0_status(run) == [" M note.md", "?? new.md"]  # 仓库自己的索引没有被动过
+
+
+def test_a_torn_last_line_is_set_aside_and_the_log_stays_appendable(tmp_path: Path) -> None:
+    path = tmp_path / "sessions.jsonl"
+    path.write_bytes(b'{"arm": "A3", "seq": 1}\n{"arm": "A3", "se')
+    assert timeline.read_jsonl(path) == [{"arm": "A3", "seq": 1}]
+    assert path.read_bytes() == b'{"arm": "A3", "seq": 1}\n'
+    (torn,) = tmp_path.glob("sessions.jsonl.torn-*")
+    assert torn.read_bytes() == b'{"arm": "A3", "se'
+    timeline.append_jsonl(path, {"arm": "A3", "seq": 2})
+    assert [r["seq"] for r in timeline.read_jsonl(path)] == [1, 2]
+
+
+def test_a_complete_last_line_without_newline_is_kept(tmp_path: Path) -> None:
+    path = tmp_path / "k10.jsonl"
+    path.write_bytes('{"probe": "a"}\n{"probe": "é"}'.encode())
+    assert [r["probe"] for r in timeline.read_jsonl(path)] == ["a", "é"]
+    timeline.append_jsonl(path, {"probe": "c"})
+    assert [r["probe"] for r in timeline.read_jsonl(path)] == ["a", "é", "c"]
+
+
+def test_damage_in_the_middle_of_a_log_is_an_error(tmp_path: Path) -> None:
+    path = tmp_path / "sessions.jsonl"
+    path.write_bytes(b'{"seq": 1}\n{"seq"\n{"seq": 3}\n')
+    with pytest.raises(RuntimeError, match=":2: damaged record"):
+        timeline.read_jsonl(path)
+
+
+def test_an_incomplete_snapshot_is_not_taken_as_done(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run = tmp_path / "run"
+    out = run / "snapshots/A0/k10"
+    out.mkdir(parents=True)
+    (out / "meta.yml").write_text("")  # 导出中断留下的空元数据
+    (run / "snapshots/A0/k10.partial").mkdir()
+    exported = []
+
+    def export_a0(store: Path, tag: str, target: Path) -> None:
+        target.mkdir(parents=True)
+        (target / "tree").mkdir()
+        (target / "log.jsonl").write_text("")
+        (target / "meta.yml").write_text(yaml.safe_dump({"arm": "A0", "counts": {"files": 0}}))
+        exported.append(tag)
+
+    monkeypatch.setattr(timeline.export, "export_a0", export_a0)
+    timeline.snapshot({"arms": {"A0": {}}}, run, "A0", 10)
+    assert exported == ["checkpoint-10"] and timeline.snapshot_complete(out, "A0")
+    assert len(list((run / "snapshots/A0").glob("k10.invalid-*"))) == 1
+    assert not (run / "snapshots/A0/k10.partial").exists()
+    timeline.snapshot({"arms": {"A0": {}}}, run, "A0", 10)
+    assert exported == ["checkpoint-10"]  # 完整的快照不再导出
+
+
+def test_a4_version_changes_with_any_content(monkeypatch: pytest.MonkeyPatch) -> None:
+    """只改实体摘要也会改变 A4 的版本（复审指出指纹参与决定是否重跑会话）。"""
+    rows = [
+        {"what": "node", "id": "u1", "kind": ["Entity", "Method"], "props": [["name", "PatchTST"], ["summary", "a"]]},
+        {"what": "edge", "id": "e1", "kind": ["RELATES_TO", "u1", "u2"], "props": [["fact", "x"]]},
+    ]
+
+    class Driver(_FakeDriver):
+        def execute_query(self, query: str, **params: object) -> SimpleNamespace:
+            return SimpleNamespace(records=rows)
+
+    monkeypatch.setattr(timeline.export, "driver", lambda uri: Driver(0))
+    monkeypatch.setattr(timeline, "settle", lambda config: None)
+    config = {"arms": {"A4": {"neo4j": "bolt://x", "group_id": "formal"}}}
+    first = timeline.version(config, Path("."), "A4")
+    assert first.startswith("nodes=1 edges=1 sha256=")
+    rows[0]["props"] = [["summary", "a"], ["name", "PatchTST"]]  # 顺序不同、内容相同
+    assert timeline.version(config, Path("."), "A4") == first
+    rows[0]["props"] = [["name", "PatchTST"], ["summary", "b"]]
+    assert timeline.version(config, Path("."), "A4") != first
+    rows[0]["props"] = [["name", "PatchTST"], ["summary", "a"]]
+    rows[1]["kind"] = ["RELATES_TO", "u2", "u1"]  # 方向反了
+    assert timeline.version(config, Path("."), "A4") != first

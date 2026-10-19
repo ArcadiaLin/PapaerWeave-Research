@@ -38,6 +38,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -45,6 +46,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Sequence
@@ -259,8 +261,8 @@ def _seed_graph(config: dict[str, Any], run: Path, arm: str, seed: Path, *, rese
         raise SystemExit(f"{arm}: the seed should end at commit_000002, the store is at {head}")
 
 
-def _git(repo: Path, *args: str, user: str | None = None) -> str:
-    env = {"PATH": "/usr/bin:/bin", "HOME": str(repo)}
+def _git(repo: Path, *args: str, user: str | None = None, env: dict[str, str] | None = None) -> str:
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(repo), **(env or {})}
     if user:
         env |= {"GIT_AUTHOR_NAME": user, "GIT_AUTHOR_EMAIL": user, "GIT_COMMITTER_NAME": user,
                 "GIT_COMMITTER_EMAIL": user}  # fmt: skip
@@ -338,18 +340,18 @@ def sandbox_arm(config: dict[str, Any], run: Path, arm: str) -> Arm:
     return Arm("A4", papers, code=code, graphiti=spec["graphiti"])
 
 
-A4_FINGERPRINT = (
-    "MATCH (n {group_id: $g}) WITH count(n) AS nodes, max(n.created_at) AS last_node "
-    "OPTIONAL MATCH ()-[r {group_id: $g}]->() "
-    "RETURN nodes, count(r) AS rels, sum(CASE WHEN r.expired_at IS NULL THEN 0 ELSE 1 END) AS expired, "
-    "last_node, max(r.created_at) AS last_rel"
+A4_CONTENT = (  # group 的全部节点与边，属性去掉嵌入（嵌入由内容算出，且体量大）
+    "MATCH (n {group_id: $g}) RETURN 'node' AS what, n.uuid AS id, labels(n) AS kind, "
+    "[k IN keys(n) WHERE NOT k ENDS WITH 'embedding' | [k, n[k]]] AS props "
+    "UNION ALL MATCH (a)-[r {group_id: $g}]->(b) RETURN 'edge' AS what, r.uuid AS id, [type(r), a.uuid, b.uuid] AS kind, "
+    "[k IN keys(r) WHERE NOT k ENDS WITH 'embedding' | [k, r[k]]] AS props"
 )
 
 
 def version(config: dict[str, Any], run: Path, arm: str) -> str | None:
-    """库的版本：A3、A2 为分支头的提交 id，A0 为仓库的 HEAD。A4 没有版本，取 group 的指纹：节点数、边数、失效的
-    边数与最近的创建时刻（Cypher 直接读 Graphiti 的库），先等排队的记忆处理完。指纹看不出只改了实体摘要的情况，
-    但新增、删除与使事实失效都会改变它。"""
+    """库的版本：A3、A2 为分支头的提交 id，A0 为仓库的 HEAD。A4 没有版本，取 group 的内容指纹：先等排队的记忆
+    处理完，再用 Cypher 读出全部节点与边（去掉嵌入），对排序后的内容取 sha256。任何属性的改动（包括实体摘要、
+    事实失效）都会改变它。"""
     if arm in GRAPH:
         return export.head(config["arms"][arm]["neo4j"])
     if arm == "A0":
@@ -357,13 +359,33 @@ def version(config: dict[str, Any], run: Path, arm: str) -> str | None:
     settle(config)
     spec = config["arms"]["A4"]
     with export.driver(spec["neo4j"]) as d:
-        r = d.execute_query(A4_FINGERPRINT, g=spec["group_id"]).records[0]
-    last = max((str(t) for t in (r["last_node"], r["last_rel"]) if t is not None), default="-")
-    return f"nodes={r['nodes']} rels={r['rels']} expired={r['expired']} last={last}"
+        rows = d.execute_query(A4_CONTENT, g=spec["group_id"]).records
+    content = sorted(json.dumps([r["what"], r["id"], sorted(r["kind"]) if r["what"] == "node" else r["kind"],
+                                 sorted(r["props"])], default=str) for r in rows)  # fmt: skip
+    nodes = sum(r["what"] == "node" for r in rows)
+    digest = hashlib.sha256("\n".join(content).encode()).hexdigest()[:16]
+    return f"nodes={nodes} edges={len(rows) - nodes} sha256={digest}"
 
 
 def _a0_status(run: Path) -> list[str]:
     return _git(arm_dir(run, "A0") / "repo", "status", "--porcelain").splitlines()
+
+
+def _a0_worktree(run: Path) -> str:
+    """A0 工作区的内容指纹：暂存区的树，以及把工作区全部改动（已修改、已暂存、未跟踪，不含忽略的）加进去之后的树。
+    ``git status`` 只给出文件名与状态，同一文件被再次修改时看不出来。两棵树都在临时索引上算，不动仓库自己的索引
+    （只在对象库中多出几个不被引用的对象）。"""
+    repo = arm_dir(run, "A0") / "repo"
+    index = repo / _git(repo, "rev-parse", "--git-path", "index").strip()
+    with tempfile.TemporaryDirectory() as tmp:
+        scratch = Path(tmp) / "index"
+        if index.exists():
+            shutil.copy(index, scratch)
+        env = {"GIT_INDEX_FILE": str(scratch)}
+        staged = _git(repo, "write-tree", env=env).strip()
+        _git(repo, "add", "-A", env=env)
+        worktree = _git(repo, "write-tree", env=env).strip()
+    return f"index={staged} worktree={worktree}"
 
 
 def session(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, step: dict[str, Any]) -> dict[str, Any]:
@@ -387,7 +409,7 @@ def session(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, ste
     inflight = {"seq": step["seq"], "started": datetime.now(UTC).isoformat(timespec="seconds"),
                 "started_epoch": time.time(), "version_before": before}  # fmt: skip
     if arm == "A0":
-        inflight["uncommitted_before"] = _a0_status(run)
+        inflight["worktree_before"] = _a0_worktree(run)
     _write_atomic(_inflight(run, arm), json.dumps(inflight, ensure_ascii=False))
     result = run_session(paths, box, writer, prompt(timeline, arm, step), timeout_s=runner["session_timeout_min"] * 60)
     return _session_record(config, run, arm, step, writer, paths, inflight, result)
@@ -412,17 +434,18 @@ def _session_record(config: dict[str, Any], run: Path, arm: str, step: dict[str,
     }
     if arm == "A0":
         record["uncommitted"] = _a0_status(run)  # 留在工作区，下一位写者会看到，不替它提交
+        record["worktree"] = _a0_worktree(run)
     return record
 
 
 def recover(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, step: dict[str, Any],
             inflight: dict[str, Any]) -> dict[str, Any] | None:  # fmt: skip
-    """运行框架在会话中途或记账之前退出后，续跑到这个会话时：库没有变（A0 的工作区也没有变）就返回 ``None``，
+    """运行框架在会话中途或记账之前退出后，续跑到这个会话时：库没有变（A0 的工作区内容也没有变）就返回 ``None``，
     照常重跑（基础设施中断）；库变了就不重跑——同一任务在已改变的库上再做一次会留下重复的贡献——把这次会话按
     ``exit: interrupted`` 照实记账，事件流与会话记录有多少记多少。"""
     unchanged = version(config, run, arm) == inflight["version_before"]
     if arm == "A0":
-        unchanged = unchanged and _a0_status(run) == inflight["uncommitted_before"]
+        unchanged = unchanged and _a0_worktree(run) == inflight["worktree_before"]
     if unchanged:
         return None
     writer = writer_of(config, timeline.identities[step["identity"]])
@@ -488,10 +511,7 @@ def answers_file(run: Path, arm: str, papers: int) -> Path:
 
 
 def answered(run: Path, arm: str, papers: int) -> set[str]:
-    path = answers_file(run, arm, papers)
-    if not path.exists():
-        return set()
-    return {json.loads(line)["probe"] for line in path.read_text(encoding="utf-8").splitlines()}
+    return {r["probe"] for r in read_jsonl(answers_file(run, arm, papers))}
 
 
 def readers(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, papers: int,
@@ -513,8 +533,7 @@ def readers(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, pap
     def ask(probe: dict[str, Any]) -> None:
         record = answer(config, timeline, run, arm, papers, probe, box, reader)
         record["version"] = expected
-        with _LOCK, open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        append_jsonl(path, record)
         print(f"[{arm} k{papers} {probe['id']}] exit {record['exit']}, {record['seconds']}s, "
               f"{len(record['answer'])} chars", flush=True)  # fmt: skip
 
@@ -609,15 +628,53 @@ def _recorded(run: Path, arm: str, seq: int) -> bool:
 
 
 def _done(run: Path) -> set[tuple[str, int]]:
-    path = run / "sessions.jsonl"
-    if not path.exists():
-        return set()
-    return {(r["arm"], r["seq"]) for r in map(json.loads, path.read_text(encoding="utf-8").splitlines())}
+    return {(r["arm"], r["seq"]) for r in read_jsonl(run / "sessions.jsonl")}
 
 
 def _append(run: Path, record: dict[str, Any]) -> None:
-    with _LOCK, open(run / "sessions.jsonl", "a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    append_jsonl(run / "sessions.jsonl", record)
+
+
+def append_jsonl(path: Path, record: dict[str, Any]) -> None:
+    """一条记录一次写入、带换行，写完刷到磁盘。进程在写入中被杀，只可能在文件末尾留下半行（:func:`read_jsonl`）。"""
+    line = (json.dumps(record, ensure_ascii=False) + "\n").encode()
+    with _LOCK, open(path, "ab") as f:
+        f.write(line)
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def read_jsonl(path: Path) -> list[dict[str, Any]]:
+    """读只追加的记录文件（sessions.jsonl、answers），与追加共用一把锁。
+
+    - 末尾一段没有换行：若是完整的记录（换行没写上），补上换行；若不完整（进程在追加时被杀），原文另存为
+      ``<文件>.torn-<时刻>`` 供审计，文件截到最后一个完整行，之后的追加从干净的行首开始。
+    - 中间的行损坏不是追加中断造成的，报错，不静默跳过。"""
+    with _LOCK:
+        if not path.exists():
+            return []
+        data = path.read_bytes()
+        body, newline, tail = data.rpartition(b"\n")
+        lines = body.split(b"\n") if newline else []
+        if not newline:
+            tail = data
+        records = []
+        for number, line in enumerate(lines, 1):
+            try:
+                records.append(json.loads(line))
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise RuntimeError(f"{path}:{number}: damaged record in the middle of the file") from exc
+        if tail:
+            try:
+                records.append(json.loads(tail))
+                with open(path, "ab") as f:
+                    f.write(b"\n")
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+                path.with_name(f"{path.name}.torn-{stamp}").write_bytes(tail)
+                with open(path, "r+b") as f:
+                    f.truncate(len(data) - len(tail))
+        return records
 
 
 def _write_atomic(path: Path, text: str) -> None:
@@ -659,21 +716,42 @@ def at_checkpoint(config: dict[str, Any], run: Path, arm: str, papers: int) -> s
 def snapshot(config: dict[str, Any], run: Path, arm: str, papers: int) -> None:
     """检查点的快照 ``snapshots/<组>/k<篇数>/``，供事后的库健康度审计与判分核对（库在两条时间线之间要清空）。
     A3、A2：Cypher 读出的节点、边与提交，加产物文档；A0：检查点标签下的文件树与提交列表；A4：group 的节点与边。
-    ``meta.yml`` 最后写，有它才算导出完成；没有就删掉重导。"""
+
+    先导出到 ``k<篇数>.partial/``，完整之后整个目录改名为 ``k<篇数>/``（同一文件系统内的改名是原子的）：
+    ``k<篇数>/`` 存在即导出完成。跳过之前仍核对它的 ``meta.yml`` 与必需文件；不合格的另存为 ``.invalid-<时刻>``
+    后重导，不静默接受。"""
     out = run / "snapshots" / arm / f"k{papers}"
-    if (out / "meta.yml").exists():
-        return
     if out.exists():
-        shutil.rmtree(out)
+        if snapshot_complete(out, arm):
+            return
+        out.rename(out.with_name(f"{out.name}.invalid-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}"))
+    partial = out.with_name(f"{out.name}.partial")
+    if partial.exists():
+        shutil.rmtree(partial)
     spec = config["arms"][arm]
     if arm == "A0":  # 按标签导出，与仓库当前状态无关
-        export.export_a0(arm_dir(run, "A0") / "repo", f"checkpoint-{papers}", out)
-        return
-    at_checkpoint(config, run, arm, papers)
-    if arm in GRAPH:
-        export.export_a3(spec["neo4j"], arm_dir(run, arm) / "data", out, arm=arm)
+        export.export_a0(arm_dir(run, "A0") / "repo", f"checkpoint-{papers}", partial)
     else:
-        export.export_graphiti(spec["neo4j"], spec["group_id"], out)
+        at_checkpoint(config, run, arm, papers)
+        if arm in GRAPH:
+            export.export_a3(spec["neo4j"], arm_dir(run, arm) / "data", partial, arm=arm)
+        else:
+            export.export_graphiti(spec["neo4j"], spec["group_id"], partial)
+    if not snapshot_complete(partial, arm):
+        raise RuntimeError(f"{arm}: snapshot of checkpoint {papers} is incomplete: {partial}")
+    os.replace(partial, out)
+
+
+SNAPSHOT_FILES = {"A0": ("log.jsonl", "tree"), "A4": ("graph.jsonl",)}  # 其余组：graph.jsonl 与 commits.jsonl
+
+
+def snapshot_complete(out: Path, arm: str) -> bool:
+    try:
+        meta = yaml.safe_load((out / "meta.yml").read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return False
+    needed = SNAPSHOT_FILES.get(arm, ("graph.jsonl", "commits.jsonl"))
+    return isinstance(meta, dict) and meta.get("arm") == arm and "counts" in meta and all((out / n).exists() for n in needed)
 
 
 def _plain(value: Any) -> Any:
