@@ -1,7 +1,8 @@
-"""V3 正式时间线的一次运行：建立四组的起点（种子），按题库的会话序列逐个运行写者会话，在检查点记下库的版本。
+"""V3 正式时间线的一次运行：建立四组的起点（种子），按题库的会话序列逐个运行写者会话，在检查点记下库的版本、
+导出快照、让读者作答。
 
     python -m pweval.harness.timeline <运行名> [--config eval/config/formal-ltsf.yml] [--arms A3,A2,A0,A4]
-        [--until <序号>] [--neo4j A3=bolt://…,A2=…] [--reset]
+        [--until <序号>] [--neo4j A3=bolt://…,A2=…] [--reset] [--no-readers] [--allow-config-change]
 
 会话序列、身份与任务文字由题库仓库（``probes_repo``）给出，各组相同（tmps/probes/writer-tasks.md）：
 
@@ -14,10 +15,12 @@
 
 运行目录 ``<workdir_root>/<运行名>/``：
 
-- ``run.yml``：配置，以及每次调用的时间、参数、仓库与题库的提交、pi 的版本；
+- ``run.yml``：每次调用的时间、参数、实际生效的配置、仓库与题库的提交、pi 的版本（续跑时配置或题库变了即拒绝）；
 - ``sessions.jsonl``：每个会话一行（组、序号、类型、身份、退出码、用时、事件流与会话记录、会话前后的库版本、
   联网的命令；A0 另记会话结束时没有提交的改动——留在工作区，下一位写者会看到，不替它提交）；
-- ``checkpoints.yml``：各组每个检查点（0、10、20、30 篇）的库版本；
+- ``checkpoints.yml``：各组每个检查点（0、10、20、30 篇）的库版本（A4 为 group 的指纹，见 :func:`version`）；
+- ``snapshots/<组>/k<篇数>/``：检查点的快照（:func:`snapshot`），供事后的库健康度审计与判分核对；
+- ``<组>/inflight.json``：正在运行的写者会话与它开始前的库版本，记账后删除（:func:`recover`）；
 - ``answers/<组>/k<篇数>.jsonl``：检查点上读者的回答，一题一行（题号、题面原文、回答原文、库版本、事件流与会话记录、
   用时、token、工具调用、联网命令）。运行时不判分，全部运行结束后按题号对回冻结的金标准统一判分；
 - ``<组>/``：A3、A2 的材料根目录 ``data/``（论文副本与产物文档）；A0 的共享仓库 ``repo/``；各组的论文副本与
@@ -25,14 +28,18 @@
 
 论文副本起初没有三篇论文的新版本，版本更新的会话开始前才放进去；代码副本同样（新版本对应的固定 commit）。
 
-各组的存储互不相干，组内按序号逐个运行（写者轮流写；到检查点时写者暂停，读者答完再继续），各组同时运行。中断后用同一个运行名重跑，已记录的会话
-跳过。评测代码不导入被测系统：A3、A2 的库只经命令行、MCP 与 Cypher 读取接触。
+各组的存储互不相干，组内按序号逐个运行（写者轮流写；到检查点时写者暂停，读者答完再继续），各组同时运行。
+
+中断后用同一个运行名重跑：已记账的会话、已导出的快照、已答的题跳过；中断时正在运行的会话，库没变就重跑，变了就
+按中断记账、不重跑；检查点上还有工作（快照、读者）时先核对库仍在检查点版本。评测代码不导入被测系统：A3、A2 的库
+只经命令行、MCP 与 Cypher 读取接触，A4 的库经 Graphiti 的 MCP 服务与 Cypher 读取接触。
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import socket
@@ -68,7 +75,7 @@ A4_WRITE_TOOLS = tuple(f"mcp__Graphiti__{t}" for t in  # A4 读者看不到的 G
                        ("add_memory", "add_triplet", "delete_episode", "delete_entity_edge", "build_communities"))
 SEED_BOARDS = ("02-lb-etth1.md", "03-lb-electricity.md", "04-lb-etth2.md")
 NETWORK = re.compile(r"\b(curl|wget|git\s+(clone|fetch|pull|ls-remote)|pip3?\s+install|uv\s+(pip|add)|https?://)")
-_LOCK = threading.Lock()
+_LOCK = threading.RLock()  # 各组线程共用的记录文件（sessions.jsonl、checkpoints.yml、answers）
 
 
 # ---------------------------------------------------------------- 配置与会话序列
@@ -199,6 +206,8 @@ def bring_version(config: dict[str, Any], timeline: Timeline, run: Path, arm: st
 
 def setup(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, *, reset: bool) -> None:
     """组的起点：论文与代码副本，以及种子。已记录检查点 0 的组不再建立。"""
+    if any(a == arm for a, _ in _done(run)):  # 检查点 0 没有记录却已有会话：记录有误，不能重建（--reset 会清库）
+        raise SystemExit(f"{arm}: sessions are recorded in {run} but checkpoint 0 is not; refusing to rebuild the start")
     later = set(timeline.later_versions)
     initial = sorted(p.name for p in config["corpus_papers"].iterdir() if p.is_dir() and p.name not in later)
     copy_papers(config, papers_of(run, arm), initial)
@@ -209,7 +218,7 @@ def setup(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, *, re
     elif arm == "A0":
         _seed_a0(run, seed)
     else:
-        _seed_a4(config, seed)
+        _seed_a4(config, seed, reset=reset)
 
 
 def _system_env(config: dict[str, Any], run: Path, arm: str) -> dict[str, str]:
@@ -277,9 +286,23 @@ def _seed_a0(run: Path, seed: Path) -> None:
         _git(repo, "commit", "-q", "-m", message, user=SEED_USER)
 
 
-def _seed_a4(config: dict[str, Any], seed: Path) -> None:
-    """30 条种子记忆逐条写入 Graphiti，每条之后等它处理完（服务按 group 串行处理排队的记忆）。"""
+def _seed_a4(config: dict[str, Any], seed: Path, *, reset: bool) -> None:
+    """30 条种子记忆逐条写入 Graphiti，每条之后等它处理完（服务按 group 串行处理排队的记忆）。
+
+    写入前 group 必须为空：Graphiti 服务与 group 跨运行共用，换运行名或种子写到一半中断，都会留下旧内容。
+    不逐条续写：种子中断后用 ``--reset`` 清空这个 group，从头写入，四组才从同一起点出发。"""
     spec = config["arms"]["A4"]
+    settle(config)  # 上次中断时排队的记忆先处理完，否则清空之后它们还会落进库
+    with export.driver(spec["neo4j"]) as d:
+        nodes = d.execute_query("MATCH (n {group_id: $g}) RETURN count(n) AS n", g=spec["group_id"]).records[0]["n"]
+        if nodes:
+            if not reset:
+                raise SystemExit(f"A4: group {spec['group_id']!r} holds {nodes} nodes; pass --reset to clear it")
+            if urlsplit(spec["neo4j"]).port in PROTECTED:
+                raise SystemExit(f"refusing to clear {spec['neo4j']}")
+            query = "MATCH (n {group_id: $g}) WITH n LIMIT 5000 DETACH DELETE n RETURN count(*) AS c"
+            while d.execute_query(query, g=spec["group_id"]).records[0]["c"]:
+                pass
     episodes = yaml.safe_load((seed / "a4/episodes.yaml").read_text(encoding="utf-8"))
     with HttpClient(spec["graphiti"]) as client:
         for e in episodes:
@@ -315,16 +338,37 @@ def sandbox_arm(config: dict[str, Any], run: Path, arm: str) -> Arm:
     return Arm("A4", papers, code=code, graphiti=spec["graphiti"])
 
 
+A4_FINGERPRINT = (
+    "MATCH (n {group_id: $g}) WITH count(n) AS nodes, max(n.created_at) AS last_node "
+    "OPTIONAL MATCH ()-[r {group_id: $g}]->() "
+    "RETURN nodes, count(r) AS rels, sum(CASE WHEN r.expired_at IS NULL THEN 0 ELSE 1 END) AS expired, "
+    "last_node, max(r.created_at) AS last_rel"
+)
+
+
 def version(config: dict[str, Any], run: Path, arm: str) -> str | None:
-    """库的版本：A3、A2 为分支头的提交 id，A0 为仓库的 HEAD；A4 没有版本，记时刻。"""
+    """库的版本：A3、A2 为分支头的提交 id，A0 为仓库的 HEAD。A4 没有版本，取 group 的指纹：节点数、边数、失效的
+    边数与最近的创建时刻（Cypher 直接读 Graphiti 的库），先等排队的记忆处理完。指纹看不出只改了实体摘要的情况，
+    但新增、删除与使事实失效都会改变它。"""
     if arm in GRAPH:
         return export.head(config["arms"][arm]["neo4j"])
     if arm == "A0":
         return _git(arm_dir(run, "A0") / "repo", "rev-parse", "HEAD").strip()
-    return datetime.now(UTC).isoformat(timespec="seconds")
+    settle(config)
+    spec = config["arms"]["A4"]
+    with export.driver(spec["neo4j"]) as d:
+        r = d.execute_query(A4_FINGERPRINT, g=spec["group_id"]).records[0]
+    last = max((str(t) for t in (r["last_node"], r["last_rel"]) if t is not None), default="-")
+    return f"nodes={r['nodes']} rels={r['rels']} expired={r['expired']} last={last}"
+
+
+def _a0_status(run: Path) -> list[str]:
+    return _git(arm_dir(run, "A0") / "repo", "status", "--porcelain").splitlines()
 
 
 def session(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, step: dict[str, Any]) -> dict[str, Any]:
+    """一个写者会话。开始前把序号与库版本写进 ``<组>/inflight.json``（原子替换），会话记入 ``sessions.jsonl``
+    之后才删掉；中断后续跑时据此判断这个会话是否已经改了库（:func:`recover`）。"""
     writer = writer_of(config, timeline.identities[step["identity"]])
     box = sandbox_arm(config, run, arm)
     paths = Paths(arm_dir(run, arm) / "writers" / writer.id)
@@ -339,29 +383,62 @@ def session(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, ste
         idle_timeout_ms=runner.get("http_idle_timeout_ms"),
         reserve_tokens=runner["reserve_tokens"],
     )
-    if arm == "A4":
-        settle(config)  # 前一个会话写入的记忆处理完，这个写者才开始
-    before = version(config, run, arm)
-    started = datetime.now(UTC).isoformat(timespec="seconds")
+    before = version(config, run, arm)  # A4：前一个会话写入的记忆处理完，这个写者才开始
+    inflight = {"seq": step["seq"], "started": datetime.now(UTC).isoformat(timespec="seconds"),
+                "started_epoch": time.time(), "version_before": before}  # fmt: skip
+    if arm == "A0":
+        inflight["uncommitted_before"] = _a0_status(run)
+    _write_atomic(_inflight(run, arm), json.dumps(inflight, ensure_ascii=False))
     result = run_session(paths, box, writer, prompt(timeline, arm, step), timeout_s=runner["session_timeout_min"] * 60)
+    return _session_record(config, run, arm, step, writer, paths, inflight, result)
+
+
+def _session_record(config: dict[str, Any], run: Path, arm: str, step: dict[str, Any], writer: Writer, paths: Paths,
+                    inflight: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:  # fmt: skip
+    events = paths.root / result["events"] if result["events"] else None
     record = {
         "arm": arm,
         "seq": step["seq"],
         "type": step["type"],
         "identity": writer.id,
-        "started": started,
+        "started": inflight["started"],
         **result,
-        "events": str((paths.root / result["events"]).relative_to(run)),
+        "events": str(events.relative_to(run)) if events else None,
         "session": [str((paths.root / s).relative_to(run)) for s in result["session"]],
         "llm": config["arms"][arm]["llm"],
-        "version_before": before,
+        "version_before": inflight["version_before"],
         "version_after": version(config, run, arm),
-        "network": network_calls(paths.root / result["events"]),
+        "network": network_calls(events) if events else [],
     }
     if arm == "A0":
-        status = _git(arm_dir(run, "A0") / "repo", "status", "--porcelain")
-        record["uncommitted"] = status.splitlines()
+        record["uncommitted"] = _a0_status(run)  # 留在工作区，下一位写者会看到，不替它提交
     return record
+
+
+def recover(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, step: dict[str, Any],
+            inflight: dict[str, Any]) -> dict[str, Any] | None:  # fmt: skip
+    """运行框架在会话中途或记账之前退出后，续跑到这个会话时：库没有变（A0 的工作区也没有变）就返回 ``None``，
+    照常重跑（基础设施中断）；库变了就不重跑——同一任务在已改变的库上再做一次会留下重复的贡献——把这次会话按
+    ``exit: interrupted`` 照实记账，事件流与会话记录有多少记多少。"""
+    unchanged = version(config, run, arm) == inflight["version_before"]
+    if arm == "A0":
+        unchanged = unchanged and _a0_status(run) == inflight["uncommitted_before"]
+    if unchanged:
+        return None
+    writer = writer_of(config, timeline.identities[step["identity"]])
+    paths = Paths(arm_dir(run, arm) / "writers" / writer.id)
+    since = inflight["started_epoch"]
+    runs = sorted((p for p in (paths.root / "runs").glob("*.jsonl") if p.stat().st_mtime >= since),
+                  key=lambda p: p.stat().st_mtime)  # fmt: skip
+    sessions = sorted(p for p in (paths.home / "sessions").rglob("*.jsonl") if p.stat().st_mtime >= since)
+    result = {
+        "exit": "interrupted",
+        "seconds": None,
+        "events": str(runs[-1].relative_to(paths.root)) if runs else None,
+        "session": [str(p.relative_to(paths.root)) for p in sessions],
+        "tool_kills": [],
+    }
+    return {**_session_record(config, run, arm, step, writer, paths, inflight, result), "recovered": True}
 
 
 def network_calls(events: Path) -> list[str]:
@@ -420,16 +497,14 @@ def answered(run: Path, arm: str, papers: int) -> set[str]:
 def readers(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, papers: int,
             only: set[str] | None = None) -> None:  # fmt: skip
     """检查点上，组 ``arm`` 的读者逐题作答，写者在此期间暂停。只存回答与记录，不判分（判分在全部运行结束后统一进行，
-    按题号对回冻结的金标准）。已存的题跳过；``only`` 只答这些题（试跑，不按有效性筛选）。"""
-    expected = checkpoints(run)[arm][papers]
-    if arm != "A4" and version(config, run, arm) != expected:  # 续跑时库必须仍在检查点上
-        raise RuntimeError(f"{arm}: the store moved past checkpoint {papers} ({expected}) before its readers finished")
+    按题号对回冻结的金标准）。已存的题跳过；``only`` 只答这些题（试跑，不按有效性筛选）。
+
+    先看还有没有题要答，有才核对库仍在检查点上：已答完的检查点在续跑时库早已向前，不能因此报错。"""
     probes = [p for p in timeline.probes if p["id"] in only] if only else eligible(timeline, papers)
     todo = [p for p in probes if p["id"] not in answered(run, arm, papers)]
     if not todo:
         return
-    if arm == "A4":
-        settle(config)
+    expected = at_checkpoint(config, run, arm, papers)
     box = reader_arm(config, run, arm, papers)
     reader = Writer("reader", timeline.reader["user"], f"{config['runner']['agent']}/{config['runner']['model']}")
     path = answers_file(run, arm, papers)
@@ -545,9 +620,21 @@ def _append(run: Path, record: dict[str, Any]) -> None:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def _write_atomic(path: Path, text: str) -> None:
+    """先写临时文件再替换：读者（另一组的线程，或中断后的续跑）只会看到旧的或新的完整内容，不会看到写了一半的。"""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _inflight(run: Path, arm: str) -> Path:
+    return arm_dir(run, arm) / "inflight.json"
+
+
 def checkpoints(run: Path) -> dict[str, dict[int, Any]]:
     path = run / "checkpoints.yml"
-    return yaml.safe_load(path.read_text(encoding="utf-8")) or {} if path.exists() else {}
+    with _LOCK:
+        return yaml.safe_load(path.read_text(encoding="utf-8")) or {} if path.exists() else {}
 
 
 def checkpoint(config: dict[str, Any], run: Path, arm: str, papers: int) -> None:
@@ -555,31 +642,87 @@ def checkpoint(config: dict[str, Any], run: Path, arm: str, papers: int) -> None
     if arm == "A0":
         _git(arm_dir(run, "A0") / "repo", "tag", "-f", f"checkpoint-{papers}", user="t1")
     head = version(config, run, arm)
-    with _LOCK:
+    with _LOCK:  # 读、改、写之间不让别的组插进来
         data = checkpoints(run)
         data.setdefault(arm, {})[papers] = head
-        (run / "checkpoints.yml").write_text(yaml.safe_dump(data, sort_keys=True), encoding="utf-8")
+        _write_atomic(run / "checkpoints.yml", yaml.safe_dump(data, sort_keys=True))
 
 
-def _record_run(run: Path, config_path: Path, config: dict[str, Any], argv: list[str]) -> None:
-    """``run.yml``：配置（第一次调用时），以及每次调用的时间、参数、仓库与题库的提交、pi 的版本。种子与会话
-    可以分几次调用完成，期间运行框架若有改动，各次调用的提交都留在记录中。"""
+def at_checkpoint(config: dict[str, Any], run: Path, arm: str, papers: int) -> str:
+    """库必须仍在检查点 ``papers`` 的版本上（读者与快照要看的是检查点时的库）；返回这个版本。"""
+    expected = checkpoints(run)[arm][papers]
+    if (now := version(config, run, arm)) != expected:
+        raise RuntimeError(f"{arm}: the store moved past checkpoint {papers} ({expected} → {now})")
+    return expected
+
+
+def snapshot(config: dict[str, Any], run: Path, arm: str, papers: int) -> None:
+    """检查点的快照 ``snapshots/<组>/k<篇数>/``，供事后的库健康度审计与判分核对（库在两条时间线之间要清空）。
+    A3、A2：Cypher 读出的节点、边与提交，加产物文档；A0：检查点标签下的文件树与提交列表；A4：group 的节点与边。
+    ``meta.yml`` 最后写，有它才算导出完成；没有就删掉重导。"""
+    out = run / "snapshots" / arm / f"k{papers}"
+    if (out / "meta.yml").exists():
+        return
+    if out.exists():
+        shutil.rmtree(out)
+    spec = config["arms"][arm]
+    if arm == "A0":  # 按标签导出，与仓库当前状态无关
+        export.export_a0(arm_dir(run, "A0") / "repo", f"checkpoint-{papers}", out)
+        return
+    at_checkpoint(config, run, arm, papers)
+    if arm in GRAPH:
+        export.export_a3(spec["neo4j"], arm_dir(run, arm) / "data", out, arm=arm)
+    else:
+        export.export_graphiti(spec["neo4j"], spec["group_id"], out)
+
+
+def _plain(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {k: _plain(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_plain(v) for v in value]
+    return str(value) if isinstance(value, Path) else value
+
+
+TIMING_ONLY = ("reader_workers",)  # 只影响用时的配置项，续跑时可以改
+
+
+def _comparable(config: dict[str, Any]) -> dict[str, Any]:
+    runner = {k: v for k, v in config.get("runner", {}).items() if k not in TIMING_ONLY}
+    return {**config, "runner": runner}
+
+
+def _record_run(run: Path, config_path: Path, config: dict[str, Any], argv: list[str], *,
+                allow_change: bool = False) -> None:  # fmt: skip
+    """``run.yml``：每次调用追加一条——时间、参数、实际生效的配置（含 ``--neo4j`` 的覆盖）、仓库与题库的提交、
+    pi 的版本。种子与会话可以分几次调用完成。续跑时生效的配置（只影响用时的项除外）或题库的提交与第一次不同，
+    就拒绝运行，除非给出 ``--allow-config-change``（改动随这次调用记下）。运行框架自身的提交可以变（修正），
+    各次的提交都留在记录中。"""
     path = run / "run.yml"
-    record = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {
-        "config": str(config_path), "config_text": config_path.read_text(encoding="utf-8"), "invocations": []}  # fmt: skip
+    record = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {"invocations": []}
 
     def commit(repo: Path) -> dict[str, Any]:
         head = _git(repo, "rev-parse", "HEAD").strip()
         return {"commit": head, "dirty": bool(_git(repo, "status", "--porcelain", "--untracked-files=no").strip())}
 
+    effective, probes = _plain(config), commit(config["probes_repo"])
+    if record["invocations"]:
+        first = record["invocations"][0]
+        changed = [name for name, a, b in (("config", _comparable(first.get("config", {})), _comparable(effective)),
+                                           ("probes repo", first.get("probes"), probes)) if a != b]  # fmt: skip
+        if changed and not allow_change:
+            raise SystemExit(f"{run}: {' and '.join(changed)} differ from the first invocation; "
+                             "pass --allow-config-change to continue with them")  # fmt: skip
     record["invocations"].append({
         "started": datetime.now(UTC).isoformat(timespec="seconds"),
         "argv": argv,
+        "config_file": str(config_path),
+        "config": effective,
         "repo": commit(REPO),
-        "probes": commit(config["probes_repo"]),
+        "probes": probes,
         "pi": pi_version(),
     })  # fmt: skip
-    path.write_text(yaml.safe_dump(record, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    _write_atomic(path, yaml.safe_dump(record, allow_unicode=True, sort_keys=False))
 
 
 def preflight(config: dict[str, Any], arms: list[str]) -> list[str]:
@@ -605,13 +748,19 @@ def run_arm(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, unt
     if 0 not in (checkpoints(run).get(arm) or {}):
         setup(config, timeline, run, arm, reset=reset)
         checkpoint(config, run, arm, 0)
+    snapshot(config, run, arm, 0)
     done = _done(run)
+    inflight = json.loads(_inflight(run, arm).read_text(encoding="utf-8")) if _inflight(run, arm).exists() else None
+    if inflight and (arm, inflight["seq"]) in done:  # 记账之后、删掉之前退出
+        _inflight(run, arm).unlink()
+        inflight = None
     last_seq = 0
     for step in timeline.steps:
         if step["type"] == "checkpoint":
             if all((arm, s["seq"]) in done for s in timeline.steps if "seq" in s and s["seq"] <= last_seq):
                 if step["papers"] not in (checkpoints(run).get(arm) or {}):
                     checkpoint(config, run, arm, step["papers"])
+                snapshot(config, run, arm, step["papers"])
                 if with_readers:
                     readers(config, timeline, run, arm, step["papers"])  # 读者答完，下一位写者才开始
             continue
@@ -622,8 +771,18 @@ def run_arm(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, unt
             continue
         if step["type"] == "update":
             bring_version(config, timeline, run, arm, step["paper"])
-        record = session(config, timeline, run, arm, step)
+        record = None
+        if inflight and inflight["seq"] == step["seq"]:
+            record = recover(config, timeline, run, arm, step, inflight)
+            rerun_of, inflight = (inflight if record is None else None), None
+        else:
+            rerun_of = None
+        if record is None:
+            record = session(config, timeline, run, arm, step)
+            if rerun_of:
+                record["rerun_after_interruption"] = rerun_of
         _append(run, record)
+        _inflight(run, arm).unlink(missing_ok=True)
         done.add((arm, step["seq"]))
         net = f", network {len(record['network'])}" if record["network"] else ""
         print(f"[{arm} {step['seq']:02d}] {step['identity']} {step['type']}: exit {record['exit']}, "
@@ -636,9 +795,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--config", default=str(CONFIG))
     parser.add_argument("--arms", default=",".join(ARMS))
     parser.add_argument("--until", type=int, help="只跑到这个序号（试跑）")
-    parser.add_argument("--neo4j", help="覆盖图库地址，如 A3=bolt://localhost:7695")
-    parser.add_argument("--reset", action="store_true", help="图库不空时清空（只清配置中这一组的图库）")
+    parser.add_argument("--neo4j", help="覆盖图库地址，如 A3=bolt://localhost:7695（A4 为 Graphiti 的库）")
+    parser.add_argument("--reset", action="store_true",
+                        help="起点建立前库不空时清空（A3、A2 清整个图库，A4 清配置中的 group）；已有会话记录的组拒绝重建")
     parser.add_argument("--no-readers", action="store_true", help="检查点上不运行读者（试跑）")
+    parser.add_argument("--allow-config-change", action="store_true",
+                        help="续跑时允许生效的配置或题库提交与第一次调用不同（改动记入 run.yml）")
     args = parser.parse_args(argv)
     config_path = Path(args.config).resolve()
     config = load_config(config_path)
@@ -652,7 +814,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("services are not reachable:\n" + "\n".join(problems))
     run = config["workdir_root"] / args.name
     run.mkdir(parents=True, exist_ok=True)
-    _record_run(run, config_path, config, list(argv) if argv is not None else sys.argv[1:])
+    _record_run(run, config_path, config, list(argv) if argv is not None else sys.argv[1:],
+                allow_change=args.allow_config_change)
     timeline = load_timeline(config["probes_repo"])
     with ThreadPoolExecutor(max_workers=len(arms)) as pool:
         futures = [pool.submit(run_arm, config, timeline, run, a, args.until, args.reset, not args.no_readers) for a in arms]

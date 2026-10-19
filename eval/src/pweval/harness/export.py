@@ -2,6 +2,7 @@
 
     export_a3(uri, data_root, out)   # Cypher 直接读库，按 graph_model_v2 写明的标签与属性
     export_a0(store, tag, out)       # git 标签下的文件树与提交列表
+    export_graphiti(uri, group, out) # A4：Graphiti 库中一个 group 的节点与边
     head(uri)                        # 分支头的提交 id
 
     python -m pweval.harness.export <运行名> [--config …]   # A3 的当前状态 → <运行目录>/checkpoints/head/A3/（试跑）
@@ -23,7 +24,7 @@ import yaml
 
 VERSION_LABELS = ("Commit", "Branch", "IdCounter")
 VERSION_RELS = ("TOUCHED", "PARENT")
-DERIVED = ("embedding", "embedding_key")
+DERIVED = ("embedding", "embedding_key", "name_embedding", "fact_embedding")  # 后两个是 Graphiti 的
 
 
 def driver(uri: str):
@@ -41,8 +42,8 @@ def head(uri: str, branch: str = "main") -> str | None:
     return rows[0]["head"] if rows else None
 
 
-def export_a3(uri: str, data_root: Path, out: Path) -> dict[str, Any]:
-    """把库导出到 ``out``（必须不存在或为空）；返回 ``meta``。"""
+def export_a3(uri: str, data_root: Path, out: Path, *, arm: str = "A3") -> dict[str, Any]:
+    """把库导出到 ``out``（必须不存在或为空）；返回 ``meta``。A2 的库结构相同，``arm`` 只记在 meta 中。"""
     _empty(out)
     with driver(uri) as d:
         nodes = d.execute_query(
@@ -78,7 +79,7 @@ def export_a3(uri: str, data_root: Path, out: Path) -> dict[str, Any]:
             shutil.copy2(data_root / path, target)
             documents += 1
     meta = {
-        "arm": "A3",
+        "arm": arm,
         "uri": uri,
         "branches": {r["name"]: r["head"] for r in branch},
         "exported_at": datetime.now(UTC).isoformat(timespec="seconds"),
@@ -110,6 +111,36 @@ def export_a0(store: Path, tag: str, out: Path) -> dict[str, Any]:
         "head": commits[-1]["id"] if commits else None,
         "exported_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "counts": {"files": files, "commits": len(commits)},
+    }
+    (out / "meta.yml").write_text(yaml.safe_dump(meta, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    return meta
+
+
+def export_graphiti(uri: str, group: str, out: Path) -> dict[str, Any]:
+    """A4：Graphiti 的库中 ``group`` 的全部节点（记忆、实体、社区）与边，按 uuid，去掉嵌入。"""
+    _empty(out)
+    with driver(uri) as d:
+        nodes = d.execute_query(
+            "MATCH (n {group_id: $g}) RETURN n.uuid AS id, labels(n) AS labels, properties(n) AS props", g=group
+        ).records
+        edges = d.execute_query(
+            "MATCH (a)-[e {group_id: $g}]->(b) RETURN a.uuid AS src, type(e) AS type, b.uuid AS dst, "
+            "properties(e) AS props",
+            g=group,
+        ).records
+    node_rows = sorted(({"node": r["id"], "labels": sorted(r["labels"]), "props": _clean(r["props"])} for r in nodes),
+                       key=lambda x: x["node"])
+    edge_rows = sorted(({"edge": [r["src"], r["type"], r["dst"]], "props": _clean(r["props"])} for r in edges),
+                       key=lambda x: (*x["edge"], _dump(x["props"])))
+    with open(out / "graph.jsonl", "w", encoding="utf-8") as f:
+        for row in [*node_rows, *edge_rows]:
+            f.write(_dump(row) + "\n")
+    meta = {
+        "arm": "A4",
+        "uri": uri,
+        "group": group,
+        "exported_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "counts": {"nodes": len(node_rows), "edges": len(edge_rows)},
     }
     (out / "meta.yml").write_text(yaml.safe_dump(meta, sort_keys=False, allow_unicode=True), encoding="utf-8")
     return meta

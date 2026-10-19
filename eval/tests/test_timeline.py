@@ -1,12 +1,16 @@
-"""正式时间线的组装：任务文字的占位符、代码副本中新版本的仓库、联网命令的审计、A0 的起点。"""
+"""正式时间线：任务文字的占位符、代码副本中新版本的仓库、联网命令的审计、A0 的起点、有效题、续跑与并发记账。"""
 
 from __future__ import annotations
 
 import json
 import subprocess
+import threading
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from pweval.harness import timeline
 from pweval.harness.timeline import Timeline
@@ -124,3 +128,145 @@ def test_answer_text_and_usage_come_from_the_event_stream(tmp_path: Path) -> Non
     assert timeline.final_text(events) == "The answer [paper_0003]."
     assert timeline.usage(events) == {"calls": 3, "input": 15, "cacheRead": 190, "output": 26}
     assert timeline.tool_counts(events) == {"mcp__PaperWeave__search": 1}
+
+
+# ---------------------------------------------------------------- 续跑与并发（审核 2026-10-19 的五条）
+
+
+def _run(tmp_path: Path, checkpoints: dict) -> Path:
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "checkpoints.yml").write_text(yaml.safe_dump(checkpoints))
+    return run
+
+
+def test_a_finished_checkpoint_does_not_block_resuming(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """k10 答完、写者继续之后中断：续跑经过 k10 时不核对版本（库早已向前）；还有题没答时才核对。"""
+    probes = [{"id": "a", "requires": ["s1"]}, {"id": "b", "requires": ["s1"]}]
+    tl = Timeline([{"type": "checkpoint", "papers": 10}], IDENTITIES, HINTS, READER, probes)
+    run = _run(tmp_path, {"A3": {0: "commit_000002", 10: "commit_000020"}})
+    monkeypatch.setattr(timeline, "version", lambda *a: "commit_000031")
+    (run / "answers/A3").mkdir(parents=True)
+    (run / "answers/A3/k10.jsonl").write_text('{"probe": "a"}\n{"probe": "b"}\n')
+    timeline.readers({}, tl, run, "A3", 10)  # 没有题要答：不报错
+    (run / "answers/A3/k10.jsonl").write_text('{"probe": "a"}\n')
+    with pytest.raises(RuntimeError, match="moved past checkpoint 10"):
+        timeline.readers({}, tl, run, "A3", 10)
+
+
+def test_checkpoints_are_never_read_half_written(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """一组写检查点时，另一组读到的总是完整内容（读到空文件会误以为没有检查点 0，从而重建起点）。"""
+    run = _run(tmp_path, {"A3": {0: "commit_000002"}})
+    monkeypatch.setattr(timeline, "version", lambda *a: "v")
+    stop = threading.Event()
+
+    def write() -> None:
+        for k in range(300):
+            timeline.checkpoint({}, run, "A2", k)
+        stop.set()
+
+    writer = threading.Thread(target=write)
+    writer.start()
+    reads = 0
+    while not stop.is_set():
+        assert timeline.checkpoints(run)["A3"] == {0: "commit_000002"}
+        reads += 1
+    writer.join()
+    assert reads and len(timeline.checkpoints(run)["A2"]) == 300
+    assert not list(run.glob("*.tmp"))
+
+
+def _resume_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, now: str) -> tuple[Path, Timeline, list]:
+    step = {"seq": 1, "identity": "i3-a", "type": "build", "paper": "p1v1", "task": "Add it. {TOOLS}"}
+    tl = Timeline([step], IDENTITIES, HINTS, READER, [])
+    run = _run(tmp_path, {"A3": {0: "commit_000002"}})
+    started = time.time() - 60
+    (run / "A3").mkdir()
+    inflight = {"seq": 1, "started": "t", "started_epoch": started, "version_before": "commit_000002"}
+    (run / "A3/inflight.json").write_text(json.dumps(inflight))
+    events = run / "A3/writers/i3-a/runs/20261019T120000.jsonl"
+    events.parent.mkdir(parents=True)
+    events.write_text("")
+    calls: list = []
+    monkeypatch.setattr(timeline, "version", lambda *a: now)
+    monkeypatch.setattr(timeline, "snapshot", lambda *a: None)
+    monkeypatch.setattr(timeline, "session", lambda *a: calls.append(a) or {
+        "arm": "A3", "seq": 1, "exit": 0, "seconds": 1.0, "network": []})  # fmt: skip
+    return run, tl, calls
+
+
+def test_a_session_that_changed_the_store_is_not_rerun(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """写者已提交、会话尚未记账时中断：续跑不再跑一遍，按中断记账，事件流取中断前那一份。"""
+    run, tl, calls = _resume_setup(tmp_path, monkeypatch, now="commit_000003")
+    config = {"arms": {"A3": {"llm": "http://llm"}}, "runner": {"agent": "pi", "model": "m"}}
+    timeline.run_arm(config, tl, run, "A3", None, False, with_readers=False)
+    assert calls == []
+    (record,) = [json.loads(line) for line in (run / "sessions.jsonl").read_text().splitlines()]
+    assert record["exit"] == "interrupted" and record["recovered"] is True
+    assert record["version_before"] == "commit_000002" and record["version_after"] == "commit_000003"
+    assert record["events"] == "A3/writers/i3-a/runs/20261019T120000.jsonl"
+    assert not (run / "A3/inflight.json").exists()
+
+
+def test_a_session_that_left_the_store_unchanged_is_rerun(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run, tl, calls = _resume_setup(tmp_path, monkeypatch, now="commit_000002")
+    timeline.run_arm({}, tl, run, "A3", None, False, with_readers=False)
+    assert len(calls) == 1
+    (record,) = [json.loads(line) for line in (run / "sessions.jsonl").read_text().splitlines()]
+    assert record["rerun_after_interruption"]["version_before"] == "commit_000002"
+    assert not (run / "A3/inflight.json").exists()
+
+
+class _FakeDriver:
+    def __init__(self, nodes: int) -> None:
+        self.nodes, self.queries = nodes, []
+
+    def __enter__(self) -> _FakeDriver:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        pass
+
+    def execute_query(self, query: str, **params: object) -> SimpleNamespace:
+        self.queries.append(query)
+        return SimpleNamespace(records=[{"n": self.nodes}])
+
+
+def test_a4_seed_needs_an_empty_group(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Graphiti 的服务与 group 跨运行共用：group 不空时不写种子，除非 --reset。"""
+    fake = _FakeDriver(nodes=42)
+    monkeypatch.setattr(timeline.export, "driver", lambda uri: fake)
+    monkeypatch.setattr(timeline, "settle", lambda config: None)
+    config = {"arms": {"A4": {"neo4j": "bolt://localhost:7698", "group_id": "formal", "graphiti": "http://x"}}}
+    with pytest.raises(SystemExit, match="holds 42 nodes"):
+        timeline._seed_a4(config, tmp_path, reset=False)
+    assert not any("DELETE" in q for q in fake.queries)
+
+
+def test_the_start_is_not_rebuilt_once_sessions_are_recorded(tmp_path: Path) -> None:
+    run = _run(tmp_path, {})
+    (run / "sessions.jsonl").write_text('{"arm": "A3", "seq": 1}\n')
+    tl = Timeline([], IDENTITIES, HINTS, READER, [])
+    with pytest.raises(SystemExit, match="refusing to rebuild"):
+        timeline.setup({}, tl, run, "A3", reset=True)
+
+
+def test_resuming_with_a_changed_config_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    probes = tmp_path / "probes"
+    probes.mkdir()
+    for args in (["init", "-q"], ["commit", "-q", "--allow-empty", "-m", "x"]):
+        subprocess.run(["git", "-C", str(probes), "-c", "user.name=t", "-c", "user.email=t", *args], check=True)
+    monkeypatch.setattr(timeline, "pi_version", lambda: "pi 1.2.0")
+    run = _run(tmp_path, {})
+    config_file = tmp_path / "c.yml"
+    config_file.write_text("x: 1\n")
+    config = {"probes_repo": probes, "arms": {"A3": {"neo4j": "bolt://a"}}, "runner": {"model": "m", "reader_workers": 4}}
+    timeline._record_run(run, config_file, config, ["f1"])
+    timeline._record_run(run, config_file, {**config, "runner": {"model": "m", "reader_workers": 2}}, ["f1"])
+    moved = {**config, "arms": {"A3": {"neo4j": "bolt://b"}}}
+    with pytest.raises(SystemExit, match="config differ"):
+        timeline._record_run(run, config_file, moved, ["f1"])
+    timeline._record_run(run, config_file, moved, ["f1"], allow_change=True)
+    invocations = yaml.safe_load((run / "run.yml").read_text())["invocations"]
+    assert [i["config"]["arms"]["A3"]["neo4j"] for i in invocations] == ["bolt://a", "bolt://a", "bolt://b"]
+    assert invocations[0]["config"]["probes_repo"] == str(probes)
