@@ -24,6 +24,22 @@ def _age(seconds: float) -> str:
     return f"{seconds / 60:.0f} min" if seconds < 7200 else f"{seconds / 3600:.1f} h"
 
 
+THREAD_LIMIT = 8012  # LXC 容器的线程（pid）上限，设在容器外层，容器内看不到（用户告知）
+
+
+def threads() -> str:
+    """容器内当前与峰值的线程数（cgroup 的 pids.current、pids.peak），对照容器的上限。"""
+    def read(name: str) -> str:
+        try:
+            return Path("/sys/fs/cgroup", name).read_text().strip()
+        except OSError:
+            return "?"
+
+    current, peak = read("pids.current"), read("pids.peak")
+    warn = " — HIGH" if current.isdigit() and int(current) > 6500 else ""
+    return f"threads: {current} now, {peak} peak (container limit ~{THREAD_LIMIT}){warn}"
+
+
 def report(config: dict, timeline: tl.Timeline, run: Path, log: Path) -> list[str]:
     out = [f"run {run}"]
     pids = subprocess.run(["pgrep", "-f", f"pweval.harness.timeline {run.name}( |$)"], capture_output=True, text=True)
@@ -33,6 +49,7 @@ def report(config: dict, timeline: tl.Timeline, run: Path, log: Path) -> list[st
         errors = sum(line.startswith("ERROR ") for line in lines)
         out.append(f"log {log.name}: last write {_age(time.time() - log.stat().st_mtime)} ago, {errors} ERROR lines")
         out += [f"  {line}" for line in [x for x in lines if x.split(" ", 1)[0].isupper()][-3:]]
+    out.append(threads())
     problems = tl.preflight(config, list(tl.ARMS))
     out.append("services: " + ("all reachable" if not problems else "; ".join(problems)))
     sessions = tl.read_jsonl(run / "sessions.jsonl", repair=False)
