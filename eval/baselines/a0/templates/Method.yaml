@@ -1,0 +1,14 @@
+# A Method node. Save as store/nodes/method/<id>.yaml; fill in and delete what you do not use.
+id: method_NNNN                    # next free number for this kind (look at the existing files)
+kind: Method
+name:                           # the main name (required)
+alias: []                       # other names it goes by, a list
+description: |                  # what it is, in your own words, readable on its own; no numbers (required)
+  ...
+extra:                          # other details as key: value lines (venue, authors, cited_as, caveat ...)
+  key: value
+stub:                           # true when only mentioned, not yet described: the name is enough; add identities if known, so others find it
+BROADER:                        # a broader concept of the same kind: Concept → Concept
+  <target id>:
+RELATES_TO:                     # any other relation; description says which: any node → any node; requires description
+  <target id>:

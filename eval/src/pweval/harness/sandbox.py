@@ -118,7 +118,7 @@ def prepare(
     llm: str,
     thinking: str,
     context_window: int,
-    idle_timeout_ms: int,
+    idle_timeout_ms: int | None,
     reserve_tokens: int,
 ) -> None:
     """建立会话的工作目录与 pi 的 agent 目录：模型配置、设置、MCP 登记，都写在本会话的 ``HOME`` 中（用户级配置，
@@ -146,17 +146,16 @@ def prepare(
         raise ValueError(f"{model} is not in {host_agent / 'models.json'}")
     models["providers"] = {provider: entry}
     _write_json(agent / "models.json", models)
-    _write_json(
-        agent / "settings.json",
-        {
-            "defaultProvider": provider,
-            "defaultModel": model_id,
-            "modelThinkingLevels": {model: thinking},
-            "httpIdleTimeoutMs": idle_timeout_ms,
-            "compaction": {"reserveTokens": reserve_tokens},
-            "sessionDir": "/home/agent/sessions",
-        },
-    )
+    settings = {
+        "defaultProvider": provider,
+        "defaultModel": model_id,
+        "modelThinkingLevels": {model: thinking},
+        "compaction": {"reserveTokens": reserve_tokens},
+        "sessionDir": "/home/agent/sessions",
+    }
+    if idle_timeout_ms is not None:  # 不设时用 pi 的默认值（V3 先导如此）
+        settings["httpIdleTimeoutMs"] = idle_timeout_ms
+    _write_json(agent / "settings.json", settings)
     servers = {}
     if arm.name in GRAPH:
         servers["PaperWeave"] = {

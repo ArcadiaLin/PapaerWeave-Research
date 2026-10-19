@@ -5,6 +5,7 @@
         text = client.call("CheckIn", {"artifact_doc": [...], "update_abstract": "..."})
 
 服务进程的环境（库地址、``PAPERWEAVE_WORKDIR``、``PAPERWEAVE_USER`` 等）由调用者给出；stdio 上逐行 JSON-RPC。
+:class:`HttpClient` 是同样用法的 HTTP 版（streamable HTTP），给 A4 的种子经 Graphiti 的 MCP 服务写入。
 工具结果是文本，:func:`status` 与 :func:`field` 只按行取顶层键，不解析结果的结构。
 """
 
@@ -13,6 +14,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import urllib.request
 from types import TracebackType
 
 PROTOCOL = "2025-06-18"
@@ -63,6 +65,52 @@ class Client:
         self.proc.stdin.flush()
 
 
+class HttpClient:
+    """streamable HTTP 上的 MCP 客户端：每个请求一次 POST，回复是 JSON 或 SSE（取其中 ``data:`` 行的 JSON）；
+    初始化时服务给出的 ``mcp-session-id`` 随之后的请求带上。"""
+
+    def __init__(self, url: str, *, name: str = "t1", timeout_s: float = 300) -> None:
+        self.url, self.name, self.timeout_s, self.next_id = url, name, timeout_s, 0
+        self.session: str | None = None
+
+    def __enter__(self) -> HttpClient:
+        info = {"name": self.name, "version": "1"}
+        self._post({"jsonrpc": "2.0", "id": self._id(), "method": "initialize",
+                    "params": {"protocolVersion": PROTOCOL, "capabilities": {}, "clientInfo": info}})  # fmt: skip
+        self._post({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        return self
+
+    def __exit__(self, kind: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None) -> None:
+        return None
+
+    def call(self, tool: str, arguments: dict) -> str:
+        msg = self._post({"jsonrpc": "2.0", "id": self._id(), "method": "tools/call",
+                          "params": {"name": tool, "arguments": arguments}})  # fmt: skip
+        if msg is None or "error" in msg:
+            raise RuntimeError(f"{tool}: {msg}")
+        return "\n".join(c.get("text", "") for c in msg["result"].get("content", []))
+
+    def _id(self) -> int:
+        self.next_id += 1
+        return self.next_id
+
+    def _post(self, body: dict) -> dict | None:
+        headers = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
+        if self.session:
+            headers["mcp-session-id"] = self.session
+        req = urllib.request.Request(self.url, data=json.dumps(body).encode(), headers=headers, method="POST")
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # 本机服务，不走代理
+        with opener.open(req, timeout=self.timeout_s) as resp:
+            self.session = resp.headers.get("mcp-session-id") or self.session
+            text = resp.read().decode("utf-8")
+        if not text.strip():
+            return None
+        if resp.headers.get("Content-Type", "").startswith("text/event-stream"):
+            data = [line[5:].strip() for line in text.splitlines() if line.startswith("data:")]
+            return json.loads(data[-1]) if data else None
+        return json.loads(text)
+
+
 def field(text: str, name: str) -> str | None:
     """工具结果中顶层键 ``name`` 的值（同一行内的标量）。"""
     m = re.search(rf"^{re.escape(name)}: (\S+)", text, re.M)
@@ -73,4 +121,4 @@ def status(text: str) -> str | None:
     return field(text, "status")
 
 
-__all__ = ["Client", "field", "status"]
+__all__ = ["Client", "HttpClient", "field", "status"]

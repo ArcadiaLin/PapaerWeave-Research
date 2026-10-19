@@ -1,0 +1,66 @@
+# A4 Graphiti 的配置（正式运行；由先导配置移来，只换了库与 group）。LLM 是本机 sglang 30001（qwen3.8-27b，serve.py
+# 关掉思考），嵌入是 8002，库是 neo4j-a4（bolt 7698）。
+# 实体类型取 PaperWeave 的 11 种 kind 与说明（同 schema 的对照）；关系不限定，用 Graphiti 默认的事实抽取。
+server:
+  transport: "http"
+  host: "127.0.0.1"
+  port: 8765
+
+llm:
+  provider: "openai"
+  model: "qwen3.8-27b"
+  max_tokens: 8192
+  structured_output_mode: "json_schema"
+  providers:
+    openai:
+      api_key: "local"
+      api_url: "http://localhost:30001/v1"
+      organization_id: ""
+
+embedder:
+  provider: "openai"
+  model: "qwen3-embedding-8b"
+  dimensions: 1024
+  providers:
+    openai:
+      api_key: "local"
+      api_url: "http://localhost:8002/v1"
+      organization_id: ""
+
+database:
+  provider: "neo4j"
+  providers:
+    neo4j:
+      uri: "bolt://localhost:7698"
+      username: "neo4j"
+      password: "password"
+      database: "neo4j"
+      use_parallel_runtime: false
+
+graphiti:
+  group_id: "formal"
+  episode_id_prefix: ""
+  user_id: "formal"
+  entity_types:
+    - name: "Paper"
+      description: "A paper's bibliographic object"
+    - name: "Dataset"
+      description: "Data itself, or a named benchmark suite"
+    - name: "Code"
+      description: "A code repository"
+    - name: "Model"
+      description: "Released weights or a checkpoint, or a model called through an API; a method a paper trains and compares is a Method"
+    - name: "Tool"
+      description: "Software, a library or a service that is not a model"
+    - name: "Method"
+      description: "A method or method family (variants and configurations are not separate entities)"
+    - name: "Task"
+      description: "A research task"
+    - name: "Issue"
+      description: "A research problem"
+    - name: "Experiment"
+      description: "One group of experiments a paper reports (one research question)"
+    - name: "Claim"
+      description: "One claim by a paper's authors, with the context it needs"
+    - name: "Contribution"
+      description: "One contribution a paper states for itself"

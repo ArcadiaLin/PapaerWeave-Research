@@ -1,0 +1,28 @@
+# An Experiment node. Save as store/nodes/experiment/<id>.yaml; fill in and delete what you do not use.
+id: exp_NNNN                    # next free number for this kind (look at the existing files)
+kind: Experiment
+paper:                          # the id of the paper it comes from (required)
+anchor: []                      # the paper's line ranges it rests on, like ["120:135", "210:214"], quoted (required)
+figures: []                     # tables and figures it covers, main one first, like [S4.T3, A1.T8]
+description: |                  # what it is, in your own words, readable on its own; no numbers (required)
+  ...
+extra:                          # other details as key: value lines (venue, authors, cited_as, caveat ...)
+  key: value
+EVALUATES:                      # a method (or model, code, tool) compared in the experiment: Experiment → Code | Model | Tool | Method; requires role
+  <target id>:        # properties: role, result
+    role:                       # target | baseline (required)
+    result:                     # own (the authors ran it) | cited (copied from another paper) | unstated
+USES:                           # data (or code, model, tool) the experiment uses: Experiment → Dataset | Code | Model | Tool
+  <target id>:        # properties: role, printed_as
+    role:                       # evaluation_data | training_data | analysis_input | tooling | retrieval_corpus
+    printed_as:                 # the name as printed in the paper, like ECL
+ON_TASK:                        # the task the experiment is on: Experiment → Task
+  <target id>:
+SUPPORTS:                       # evidence for a claim: Experiment | Claim → Claim
+  <target id>:
+OPPOSES:                        # evidence against a claim: Experiment | Claim → Claim
+  <target id>:
+ABOUT:                          # what the content is about (the method proposed, a dataset, ...): Content → any node
+  <target id>:
+RELATES_TO:                     # any other relation; description says which: any node → any node; requires description
+  <target id>:

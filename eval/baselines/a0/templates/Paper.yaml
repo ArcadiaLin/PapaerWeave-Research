@@ -1,0 +1,17 @@
+# A Paper node. Save as store/nodes/paper/<id>.yaml; fill in and delete what you do not use.
+id: paper_NNNN                    # next free number for this kind (look at the existing files)
+kind: Paper
+name:                           # the main name (required)
+alias: []                       # other names it goes by, a list
+identities: []                  # external identities <namespace>:<value>, namespaces arxiv, doi, s2, url
+year:                           # publication year
+material:                       # the paper's Markdown file, relative to the material root
+description: |                  # what it is, in your own words, readable on its own; no numbers
+  ...
+extra:                          # other details as key: value lines (venue, authors, cited_as, caveat ...)
+  key: value
+stub:                           # true when only mentioned, not yet described: the name is enough; add identities if known, so others find it
+CITES:                          # the paper cites another; description says what for: Paper → Paper; requires description
+  <target id>:
+RELATES_TO:                     # any other relation; description says which: any node → any node; requires description
+  <target id>:

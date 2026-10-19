@@ -1,0 +1,17 @@
+# A Dataset node. Save as store/nodes/dataset/<id>.yaml; fill in and delete what you do not use.
+id: dataset_NNNN                    # next free number for this kind (look at the existing files)
+kind: Dataset
+name:                           # the main name (required)
+alias: []                       # other names it goes by, a list
+identities: []                  # external identities <namespace>:<value>, namespaces arxiv, doi, s2, url
+description: |                  # what it is, in your own words, readable on its own; no numbers
+  ...
+extra:                          # other details as key: value lines (venue, authors, cited_as, caveat ...)
+  key: value
+stub:                           # true when only mentioned, not yet described: the name is enough; add identities if known, so others find it
+PART_OF:                        # a subset, or a member of a benchmark suite: Dataset → Dataset
+  <target id>:
+FOR_TASK:                       # a task the dataset serves: Dataset → Task
+  <target id>:
+RELATES_TO:                     # any other relation; description says which: any node → any node; requires description
+  <target id>:

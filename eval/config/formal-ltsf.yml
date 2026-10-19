@@ -1,0 +1,36 @@
+# V3 正式时间线（pweval.harness.timeline）：30 篇长期预测论文、10 个写者身份、70 个会话、四组。
+# 会话序列、身份、任务文字与逐组的提示都在题库仓库（probes_repo）中，由 scripts/tasks.py 生成并经用户确认
+# （tmps/probes/writer-tasks.md，决策 D25–D30）；这里只放运行所需的位置与服务。
+
+probes_repo: ~/pw-lab/probes          # tasks/plan.yml、tasks/identities.yml、tasks/hints.yml、seed/
+corpus_papers: ~/pw-lab/data/formal/papers   # 30 篇（含三篇的早期版本）的 Markdown；只读，复制进各组
+code: ~/pw-lab/code                   # scripts/code_dirs.py 导出的固定 commit 代码；只读，复制进各组
+workdir_root: ~/pw-lab/runs           # 运行目录 <workdir_root>/<运行名>/
+
+# 各组：图库、大模型服务（D16：A3 与 A0 用 30000，A2 与 A4 用 30001）。
+arms:
+  A3:
+    neo4j: bolt://localhost:7696
+    llm: http://192.168.163.112:30000/v1
+  A2:
+    neo4j: bolt://localhost:7697
+    llm: http://192.168.163.112:30001/v1
+    ablate: [dedup, revision, stale, affected]   # 同 schema 的裸图：四项机制全关
+  A0:
+    llm: http://192.168.163.112:30000/v1
+  A4:
+    graphiti: http://127.0.0.1:8765/mcp/
+    graphiti_log: ~/pw-lab/runs/graphiti.log   # Graphiti 服务的日志：安静 settle_quiet_s 秒即视为处理完排队的记忆
+    group_id: formal
+    llm: http://192.168.163.112:30001/v1
+
+runner:
+  agent: pi                  # 默认配置：自带系统提示与内置工具
+  model: sglang/qwen3.8-27b
+  thinking: medium           # pi 的默认思考级别（V3 先导未改）
+  context_window: 262144     # D14：sglang 实际支持的上下文
+  reserve_tokens: 32768      # D15：压缩时预留，摘要上限 0.8 倍
+  http_idle_timeout_ms: null # pi 默认
+  session_timeout_min: 40    # 写者会话（V3 先导 2400 秒）
+  probe_timeout_min: 15      # 读者会话（V3 先导 900 秒）
+  settle_quiet_s: 60
