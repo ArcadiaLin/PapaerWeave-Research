@@ -82,6 +82,12 @@ without looking wrong.
 - **Intents are the workload root.** Six research intents I1–I6 generate writer
   tasks, reader probes, and the retrieval surface. They are a workload, not a
   capability checklist.
+- **Code is evidence too.** A paper's official code repository, pinned to a
+  commit, is source material alongside the paper text: probe gold may cite code
+  lines, and the store is to let writers anchor to code (agreed 2026-10-18;
+  the data-model change awaits a design review). Reading code and recording
+  configurations or protocol differences is in scope; running code and
+  reproducing results stay with external agents and are not stored.
 - **Classical mechanisms, adapted.** Each mechanism has a DB predecessor (entity
   resolution, provenance, view invalidation, coexisting alternatives,
   check-out/check-in, dataspaces). The contribution is adapting them to agent
@@ -292,13 +298,15 @@ Current documents (these hold the agreed details):
 - `docs/designs/v2/evaluation_draft.md` — evaluation: E1–E3, arms, workload,
   metrics, plan, risks, open items.
 - `docs/designs/v3/` — current system design: `data_model.md` and `tools.md`
-  (the MCP tools and artifact types), plus `evaluation.md`, the V3 additions to
-  the evaluation. Where they conflict with V2, V3 holds.
+  (the MCP tools and artifact types), `evaluation.md`, the V3 additions to
+  the evaluation, and `intents.md`, the workload root (I1–I6 with writer
+  tasks, artifact types, probe templates, and the role of code evidence).
+  Where they conflict with V2, V3 holds.
 - `docs/designs/v2/` — background system design that V3 revises:
   `graph_model_v2.md`, `commit_contract.md`, `operators.md`, `draft_files.md`,
   `versioning_interfaces.md`, `extraction_principles.md`, and
-  `intents_decompose.md`, still the workload root (I1–I6, writer tasks, reader
-  probes, retrieval surface).
+  `intents_decompose.md` (the V2 intent data flows and access contracts,
+  background to `v3/intents.md`).
 - `docs/decisions/2026-10-17-pilot-mandate.md` — what the agent decides alone
   and what it confirms with the user during the pilot.
 - `docs/experiments/2026-10-17-v3-rpc-lab.md` — the V3 lab rounds with pi.
