@@ -4,7 +4,7 @@ kind: Experiment
 paper:                          # the id of the paper it comes from (required)
 anchor: []                      # the paper's line ranges it rests on, like ["120:135", "210:214"], quoted (required)
 figures: []                     # tables and figures it covers, main one first, like [S4.T3, A1.T8]
-description: |                  # what it is, in your own words, readable on its own; no numbers (required)
+description: |                  # what it is, in your own words, readable on its own (required)
   ...
 extra:                          # other details as key: value lines (venue, authors, cited_as, caveat ...)
   key: value

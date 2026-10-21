@@ -87,7 +87,7 @@ FIELD_GLOSS = {
     "name": "the main name",
     "alias": "other names it goes by, a list",
     "identities": "external identities <namespace>:<value>, namespaces arxiv, doi, s2, url",
-    "description": "what it is, in your own words, readable on its own; no numbers",
+    "description": "what it is, in your own words, readable on its own",
     "extra": "other details as key: value lines (venue, authors, cited_as, caveat ...)",
     "stub": "true when only mentioned, not yet described: the name is enough; add identities if known, so others find it",
     "year": "publication year",

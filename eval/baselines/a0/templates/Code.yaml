@@ -4,7 +4,7 @@ kind: Code
 name:                           # the main name (required)
 alias: []                       # other names it goes by, a list
 identities: []                  # external identities <namespace>:<value>, namespaces arxiv, doi, s2, url
-description: |                  # what it is, in your own words, readable on its own; no numbers
+description: |                  # what it is, in your own words, readable on its own
   ...
 extra:                          # other details as key: value lines (venue, authors, cited_as, caveat ...)
   key: value
