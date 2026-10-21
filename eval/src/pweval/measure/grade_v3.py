@@ -65,7 +65,7 @@ from .names import NOT_METHOD, Names, Tables, load, load_judged, load_tables
 PROBES_REPO = Path("~/pw-lab/probes").expanduser()
 RUNS_ROOT = Path("~/pw-lab/runs").expanduser()
 MAIN_CHECKPOINT = 30  # 参照组（C、D、P）与检查点无关，按主检查点的库判
-RUNAWAY_EXITS = ("timeout",)  # 触发安全上限的退出（300 次工具调用的上限落地后加上它的退出码）
+RUNAWAY_EXITS = ("timeout", "tool-limit")  # 触发安全上限的退出：60 分钟、300 次工具调用
 
 
 def runaway(record: dict[str, Any]) -> bool:

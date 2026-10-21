@@ -153,7 +153,7 @@ $$
   H2–H4 作为次要比较，报效应量与置信区间。
 - **分层报告：** 按题型、层级（单篇、两跳、多跳、分歧）与意图分开报告；失控率与成本并列。
 - **主图：** 横轴为检查点，纵轴为题分；P 画成参照带，$\pm\delta$ 画成阴影，各组一条线。另一张图为库层指标随检查点的变化。
-- 〔提议，拟 D35〕**开发题与保留题：** 按题型分层，把题对半分开。开发题用于诊断与优化 A3；保留题封存，直到定版后的正式运行。f1 的回答只在开发题上判分。2026-10-21 的 10 道抽查题已经看过分数，划入开发题。
+- 〔已否决 2026-10-21〕**不划分开发题与保留题**（原提议 D35）。题集整体用于诊断、优化与正式检验；论文中如实说明 A3 的优化看过哪些题的分数。
 
 ## 7 运行协议（f1 的教训）
 
@@ -161,7 +161,7 @@ $$
 
 1. 〔已确认 2026-10-21〕**串行推进，每组独占一台推理服务。** 一组运行时独占一台服务，跑完再推进下一组；两台服务可以各跑一组。f1 中 22 次写者超时有 7 次来自同台负载；同台约 4 个其他会话时，每次调用慢 2–5 倍。
    - 两台服务的硬件、sglang 版本与模型权重保持一致，记入 `run.yml`；评测期间不升级、不换权重。两台不一致时，用时不跨服务比较。
-   - 要比较成本的组（P 与写者组的读者）并发数相同。C 的用时不进成本比较，按服务的容量开到 12 路（10-21 定；见 §10.3）。
+   - 要比较成本的组（P 与写者组的读者）并发数相同，定为 4 路（10-21 定）：P 的试跑中一个跨论文的长会话约占 KV 缓存的 15%–17%，4 路时长会话同时运行仍留在缓存中，未缓存输入的计数不受挤占影响。这个并发进入运行配置（`runner.workers_by_group`），续跑时改动会被拒绝。C、D 的用时不进成本比较，按服务的容量开到 12 路（10-21 定；见 §10.3）。
 2. 〔已确认 2026-10-21〕**C、D、P 先于写者组运行。** 这三组只依赖冻结的题库、语料与模型，不依赖任何写者的产出（P 每个检查点给哪些论文由计划表决定），可以在写者时间线之前跑完。顺序与规模：
 
    | 顺序 | 组 | 题数 | 作答方式 | 用途 |
@@ -172,16 +172,18 @@ $$
    | 4 | 写者组 | — | 每组时间线 → 检查点快照 → 读者 | 被检验的组；A3 定版后再跑 |
 
    - **前提：** 读者协议（第 3 条的提示语与 Final answer 段、第 4 条的安全上限、第 5 条断网）以及第 1 条的并发与服务配置先冻结。在此之前跑的 C、D、P 只算开发数据；读者协议之后若有改动，C、D、P 要重跑。
-   - **先跑不等于先看分：** 只存回答（同 D32）。C、D 检验的是题本身（闭卷可答的题、依据不足的题、过严的判分说明），可以先判；P 先只判开发题，保留题等定版后统一判。
+   - **先跑不等于先看分：** 只存回答（同 D32）。C、D 检验的是题本身（闭卷可答的题、依据不足的题、过严的判分说明），可以先判；P 同样跑完即判（不划分开发题与保留题，见 §6）。
 3. 〔已确认 2026-10-21〕**读者提示语与 Final answer 段。** 所有读者（A0、A2、A3、A4、P、D、C）都用同一结构的提示语：题面原文，一句按条件替换的说明，末尾一段 Final answer 格式要求。
 
    | 条件 | 说明句（草稿） |
    | --- | --- |
    | 写者组 | Answer only from what the shared store records; source passages can be read through the anchors the store records. Cite the ids, files or anchors your answer rests on. Do not change the store. `{TOOLS}` |
-   | P | Answer only from the papers in papers/ (papers/<arXiv id with version>/paper.md). Cite the papers and lines your answer rests on. |
+   | P | Answer only from the papers in papers/ (papers/<arXiv id with version>/paper.md; one directory per paper version, read-only). Cite the papers and lines your answer rests on. No store is available. Where the question refers to "the store" or "the papers in the store", it means these papers.（10-21 实现时的定稿；环境说明见第 5 条） |
    | D | （段落放在题面之后）Answer only from the passages above. Cite the lines your answer rests on. |
    | C | No papers, store or tools are available. Answer from what you know. |
 
+   - **引用与 Final answer 段分开：** 〔10-21 实现〕要求引用的组带 Final answer 段时，格式要求前另加一句“Give the citations in the body of your reply; the Final answer section holds only the fields below.”，以免读者把引用写进字段，使名称无法归一。要点题没有 Final answer 段，也就没有这一句。
+   - **D 的偏离：** ref1 中 D 的说明句漏掉了“Cite the lines your answer rests on.”，已跑完不重跑；D 不参与成本比较，也不报引用可核对率（见 `docs/experiments/f2/2026-10-21-ref1-D-paragraphs.md`）。
    - **Final answer 段：** 〔已确认 2026-10-21〕自动题要求在回答末尾给出固定字段。字段只取每题 `scoring` 计分所需的部分，不多不少；由脚本按题型生成，所有条件同一份，只规定填哪些字段，不透露答案。要点题（T2、手写的 T8、T9–T11、T14）不要求格式，照常自由作答。提示语中统一写作“End your reply with a section headed `Final answer`, exactly in this form:”，后接该题型的模板：
 
      | 题型 | 模板 | 对应的计分依据（`scoring`） |
@@ -205,17 +207,20 @@ $$
      名称经别名表归一。缺少这一段、正则解析失败或名称无法归一时，转由判分子代理读全文判定。格式遵从率与解析失败率按组报告。
    - 现在的 `tasks/reader.yml` 是冻结材料，按 `store_only` 写成；新提示语在新一轮冻结时替换它。
 4. 〔已确认 2026-10-21〕**不设回答时限，只设防失控的安全上限：单题 60 分钟或 300 次工具调用，先到者为准。** f1 的超时读者没有空转（完全重复的调用占比中位 0%），只是先收齐材料最后才写，15 分钟截断时 `answer` 只剩一句过程话。取消时限后它们能答完；安全上限只防循环调用与无休止的压缩。触发上限的题见 §5.1。单条 shell 命令仍限 10 分钟。
+   - 实现（10-21）：运行器每 15 秒检查一次，会话超过 60 分钟退出码记 `timeout`；事件流中的工具调用（`tool_execution_start`，并行调用各算一次）超过 300 次即终止，退出码记 `tool-limit`（配置项 `runner.probe_timeout_min`、`runner.max_tool_calls`）。两者判分时都算失控。按 15 秒检查，实际可能比上限多出几次调用才停。
    - 〔已确认 2026-10-21〕**单次回复的输出上限调到 98304 token，所有组统一**（配置项 `runner.max_output_tokens`；宿主机的模型配置为 32768）。C、D 不带工具，只有一次回复，思考与答案都在其中：C 的试跑中 1/10 题思考约 10 万字后撞上 32768，回答为空（`stopReason: length`）。f1 中带工具的读者没有一次撞上过 32768，所以对写者组的读者几乎没有影响；A4 有 3 个写者会话“输出触顶”，也是这个上限。
    - 回答记录增加 `stop` 字段（最后一条回复的结束原因：`stop`、`length`、`error` 等）。仍撞上上限的题记 0 分，与失控的题一并单列。
 5. 〔已确认 2026-10-21〕**断网，并在任务文字与读者提示语中明说。** 写者与读者的沙箱都断网，只经转发保留模型调用与各组库服务的通道。这同时解决两个问题：各组取得的外部内容不等（f1 中 A0 有 38 个写者会话联网，A3 3 个、A2 2 个、A4 1 个），以及各组的 Neo4j 端口对所有写者都可达。
    - **环境说明（草稿，与第 6 条合为一段）：** “You are working in a sandbox for a test. There is no network access: any network command (curl, wget, pip install, git clone, web search) will fail. Python 3 is available with the standard library and PyYAML only; nothing else can be installed. Use only what is available locally.” 所有组、写者与读者同一段。
+   - **实现（10-21）：** 这段文字即 `eval/src/pweval/harness/sandbox.py` 的 `ENV_NOTE`。P 的提示语已接在末尾；C、D 不带工具，没有加；写者任务与写者组的读者提示语在写者时间线定版时接上。
    - **放在哪里：** 〔已确认 2026-10-21〕接在每个写者任务与每条读者提示语的末尾，不改 pi 的系统提示，保持默认配置（`AGENTS.md`）。先例是 D29 在找实现的任务文字中写明“代码在 `code/` 中读，不要从网上取”。
    - **实现：** 沙箱改为 `--unshare-net`。推理服务与 Graphiti 改走 unix socket 转发，沙箱内的 pi 连本地转发端口；A3、A2 的 MCP 服务已经经 unix socket 转发（D30），不受影响。转发后各组的模型调用与库读写要先冒烟测试。
    - **审计照旧：** 联网命令仍从轨迹中统计，记为“尝试联网”，按组报告；断网后它们只会失败，不再影响答案。
    - 告诉 agent 它在测试环境中，可能改变它的行为，但各组相同，论文中写明。
 6. 〔已确认 2026-10-21〕**沙箱提供 PyYAML，并在环境说明中写明（第 5 条）。** f1 中 A0 约 36 次 `pip install pyyaml` 全部失败，对 A0 的 YAML 存储是一个小的系统性不利；断网后安装一定失败，所以这一条是必需的。实现：把固定版本的 PyYAML 放进一个只读目录，挂进沙箱并设 `PYTHONPATH`，所有组相同；版本记入 `run.yml`。
+   - 已实现（10-21）：PyYAML 6.0.3 为沙箱中的系统 python3（3.11）安装在 `~/pw-lab/sandbox-site/pyyaml-6.0.3`（含 libyaml 扩展，目录只读），挂到 `/opt/t1/site`，`PYTHONPATH=/opt/t1/site`；`run.yml` 的 `sandbox_python` 记包名与目录内容的 SHA-256；目录缺失时拒绝运行。ref1 的 C、D 运行在这之前，沙箱中没有 PyYAML，但两组不带工具，不受影响。
 7. 〔已确认 2026-10-21〕**写者工作目录逐会话快照**：每个写者会话前后存一份工作目录（`work/`、`home/`），与库的版本一起，可以恢复到任意会话之前。f1 没有做，中间状态无法恢复。
-8. 〔已确认 2026-10-21〕**分层开发循环：** 库层审计（便宜、确定性）→ 固定快照上用开发题跑读者 → A3 定版后才跑完整时间线。每轮几小时，不必每次跑两三天。
+8. 〔已确认 2026-10-21〕**分层开发循环：** 库层审计（便宜、确定性）→ 固定快照上跑读者 → A3 定版后才跑完整时间线。每轮几小时，不必每次跑两三天。
 9. 〔已确认 2026-10-21〕**写读分离。** 时间线只写；检查点导出快照，读者事后在快照上离线作答。这样读者不再挤占写者，改了读取接口只需重跑读者。A4 的快照能否恢复成可读的 Graphiti 库，要先核实。
 
 ## 8 工作负载中的机制场景
@@ -320,7 +325,7 @@ T3 的段落大，是因为要给出各候选方法所在的整张表。
 
 ### 10.2 P 原文组
 
-状态：〔提议〕，未实现。P 原文组相当于 A0 不写笔记、直接 grep 原文作答：没有写者阶段，读者面对的只有论文原文。下列事实于 2026-10-21 核实（f1 与 `eval/` 的现状）。
+状态：已实现（`eval/src/pweval/harness/refs.py`，`pweval-refs <运行名> --groups P`），10-21 在 k10 上试跑；正式运行待启动。P 原文组相当于 A0 不写笔记、直接 grep 原文作答：没有写者阶段，读者面对的只有论文原文。下列事实于 2026-10-21 核实（f1 与 `eval/` 的现状）。
 
 **输入**
 
@@ -333,18 +338,21 @@ T3 的段落大，是因为要给出各候选方法所在的整张表。
 **作答**
 
 - 读者：pi 1.2.0，与其他读者同一模型与思考级别，默认的内置工具（read、bash 等）。沙箱与写者组的读者相同，只是 `/work` 下只有 `papers/`。
-- 提示语：按 §7 第 3 条，题面原文，加 P 的说明句（含目录说明：论文在 `papers/<带版本号的 arXiv 编号>/paper.md`）与 Final answer 段。
-- 并发与其他读者相同；不设时限，安全上限见 §7 第 4 条。先于写者组运行（§7 第 2 条）。
-- 次数：P 组与写者无关，每个检查点只需一套回答。〔提议〕跑 2 次，与“每题取两条时间线的均值”对齐。
+- 提示语：按 §7 第 3 条，题面原文，加 P 的说明句（含目录说明：论文在 `papers/<带版本号的 arXiv 编号>/paper.md`）与 Final answer 段，末尾接共用的环境说明（§7 第 5 条）。不给论文清单与日期，与写者组的读者一样只有论文目录；按日期筛选的题只能从 arXiv 编号推断。
+- 辅助题（T16–T18 代码题）也作答、另存，但不给代码目录，与写者组的读者相同（10-21 定）。它量出“只有论文时代码题能答多少”，不进 H1。
+- 并发：4 路，与写者组的读者相同（§7 第 1 条）；使用另一台推理服务，与 C、D 不共用（配置项 `llm_by_group`）。不设时限，安全上限见 §7 第 4 条。先于写者组运行（§7 第 2 条）。
+- 次数：〔已确认 2026-10-21〕每个检查点跑 1 次。检查点按 10 → 20 → 30 篇的顺序依次作答，一个检查点答完再进下一个。
+- 断网的实现：沙箱不共享网络（`Arm.isolated_llm`）；沙箱外的转发把 unix socket 接到推理服务，沙箱内的 pi 连本地回环端口。
+- 材料核对：每个检查点的论文先复制到临时目录再改名，已有副本逐文件与语料比对 SHA-256，不一致即拒绝运行；逐文件的哈希写在 `<运行>/P/papers/k<篇数>.manifest.json`，每条回答记录清单的哈希 `papers_manifest_sha256`。
 
 **输出与审计**
 
-- 写到 `<运行>/answers/P/k<篇数>.jsonl`，字段与其他读者相同（`arm` 记为 `P`）。
+- 写到 `<运行>/answers/P/k<篇数>.jsonl`（辅助题为 `k<篇数>-aux.jsonl`），字段与其他读者相同（`arm` 记为 `P`，`checkpoint` 记篇数）。
 - 另记每题打开或检索过的论文与行数（从 read 调用与 shell 命令中统计），用于成本账本：P 没有建库成本，但每个读者都要自己找一遍；库的成本只付一次，由所有读者分摊。
 
 **与现有代码的关系**
 
-- 先导的读者框架（`eval/src/pweval/harness/readers.py`）有 `with_papers` 条件，给的是“库 + 论文”，不是 P 组。P 组要新增一种没有库、只挂载论文的读者条件，并放进正式运行框架（`timeline.py`）的读者阶段。
+- 先导的读者框架（`eval/src/pweval/harness/readers.py`）有 `with_papers` 条件，给的是“库 + 论文”，不是 P 组。P 组实现在参照组的运行器 `refs.py` 中，复用 `timeline.py` 的 `papers_at`、`eligible` 与回答记录的格式。
 
 **怎么读结果**
 
@@ -427,7 +435,7 @@ python -m pweval.harness.refs ref1 --groups C [--reps 1] [--probes main|aux|all]
 1. §2.2 的锚点规则：只读已记录锚点，是否放宽上下文；A0、A4 的锚点能否机械地收集。
 2. D 段落组的取段规则，以及各题型依据是否充分（§10.1）。
 3. 是否补一条单写者时间线（§3）。
-4. 拟 D35：开发题与保留题的划分。
+4. （已否决，原 D35：开发题与保留题的划分，见 §6。）
 5. §7 第 3 条各说明句与 Final answer 字段的定稿；第 9 条中 A4 快照能否恢复为可读的 Graphiti 库。
 6. 判分方案（`tmps/probes/grading-plan.md`）第 10 节。
 7. §8.2 受控版本测试的题数、伪造哪篇论文，是否与主时间线一起跑。

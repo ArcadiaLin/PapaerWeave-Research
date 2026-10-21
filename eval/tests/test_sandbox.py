@@ -147,6 +147,32 @@ def test_readers_get_no_papers_and_no_code(host: Path) -> None:
             assert mounts["/work"] == ("--ro-bind", str(host / "store"))  # 检查点处的副本，只读
 
 
+def test_an_isolated_reader_has_no_network_and_reaches_the_model_through_a_socket(host: Path) -> None:
+    paths = Paths(host / "run/P/k10/rep1/q")
+    arm = Arm("P", host / "papers", read_only=True, isolated_llm=SETTINGS["llm"])
+    sandbox.prepare(paths, arm, **SETTINGS)
+    provider = json.loads((paths.home / ".pi/agent/models.json").read_text())["providers"]["sglang"]
+    assert provider["baseUrl"] == f"http://127.0.0.1:{sandbox.LLM_PORT}/v1"  # 沙箱内的回环端口，路径保留
+    args = sandbox._bwrap(paths, arm, WRITER)
+    assert "--unshare-all" in args and "--share-net" not in args
+    mounts = _mounts(args)
+    assert mounts["/work/papers"] == ("--ro-bind", str(host / "papers"))
+    assert mounts["/run/t1"] == ("--bind", str(paths.sock)) and "/opt/t1/bridge.py" in mounts
+    assert mounts[sandbox.SITE_DIR] == ("--ro-bind", str(sandbox.SITE))  # PyYAML（§7 第 6 条），所有组相同
+    assert args[args.index("PYTHONPATH") + 1] == sandbox.SITE_DIR
+    assert "/work/code" not in mounts
+    with pytest.raises(ValueError, match="forwards to"):  # 转发目标与模型配置必须一致
+        sandbox.prepare(paths, Arm("P", None, isolated_llm="http://192.0.2.9:1/v1"), **SETTINGS)
+
+
+def test_tool_calls_are_counted_from_the_event_stream(tmp_path: Path) -> None:
+    events = tmp_path / "e.jsonl"
+    rows = [{"type": "tool_execution_start", "toolName": "bash"}, {"type": "tool_execution_end"},
+            {"type": "tool_execution_start", "toolName": "read"}, {"type": "message_end"}]  # fmt: skip
+    events.write_text("".join(json.dumps(r, separators=(",", ":")) + "\n" for r in rows))
+    assert sandbox.tool_calls(events) == 2
+
+
 def test_a4_registers_graphiti_over_http(host: Path) -> None:
     paths = Paths(host / "run/A4/w")
     arm = Arm("A4", host / "papers", code=host / "code", graphiti="http://127.0.0.1:8765/mcp/")

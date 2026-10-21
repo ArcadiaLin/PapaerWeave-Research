@@ -163,7 +163,7 @@ def test_points_and_extraction_fallback() -> None:
 
 def test_runaway_answers_score_zero_and_keep_a_content_score() -> None:
     probe = auto("T4", {"methods": ["DLinear"]})
-    for capped in ({"exit": "timeout"}, {"stop": "length"}):
+    for capped in ({"exit": "timeout"}, {"exit": "tool-limit"}, {"stop": "length"}):
         row = grade(record(fa("DLinear")) | capped, probe, NAMES, TABLES, {})
         assert row["score"] == 0.0 and row["content_score"] == 1.0 and row["flags"][0] == "runaway"
     row = grade(record("cut off") | {"exit": "timeout"}, probe, NAMES, TABLES, {})

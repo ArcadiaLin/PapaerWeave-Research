@@ -1,6 +1,7 @@
 """沙箱内外的转发，只用标准库（沙箱里用系统的 python3 直接运行这个文件，不导入 t1）。
 
-沙箱内外经挂载进去的 unix socket 转发（运行框架现在只用它接 A3、A2 的 MCP 服务；沙箱不断网，大模型服务由 pi 直接连接）：
+沙箱内外经挂载进去的 unix socket 转发：A3、A2 的 MCP 服务；断网的沙箱（``Arm.isolated_llm``，目前是 P 原文组）中的大模型服务。
+其余沙箱不断网，大模型服务由 pi 直接连接。
 
     unix-to-tcp  <sock> <host:port>      沙箱外：socket 上的每个连接转到 TCP（如大模型服务）
     tcp-to-unix  <host:port> <sock>      沙箱内：回环地址上的 TCP 连接转到 socket

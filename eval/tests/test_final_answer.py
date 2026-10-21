@@ -130,7 +130,25 @@ def test_closed_book_prompt_has_question_note_and_format() -> None:
     manual = {"id": "M-T2-x", "template": "T2", "gold": {"points": []}, "question": "Q?"}
     assert "Final answer" not in reader_prompt("C", manual)
     with pytest.raises(NotImplementedError):
-        reader_prompt("P", probe)
+        reader_prompt("X", probe)
+
+
+def test_originals_prompt_says_where_the_papers_are_and_that_the_network_is_cut() -> None:
+    from pweval.harness.refs import CITE_OUTSIDE_FORMAT, P_NOTE
+
+    text = reader_prompt("P", auto("T1", {}))
+    assert text.startswith("Q?\n\n") and P_NOTE in text and FORMATS["T1"] in text
+    from pweval.harness.sandbox import ENV_NOTE
+
+    assert "papers/<arXiv id with version>/paper.md" in P_NOTE
+    assert text.rstrip().endswith(ENV_NOTE) and "PyYAML" in ENV_NOTE  # 共用的环境说明在末尾（§7 第 5 条）
+    assert ENV_NOTE not in reader_prompt("C", auto("T1", {}))
+    assert "Cite the papers and lines your answer rests on." in P_NOTE  # §7 第 3 条的说明句
+    # 引用放在正文、Final answer 段只放字段：紧接在格式要求之前；要点题没有格式，也就没有这一句
+    assert text.index(CITE_OUTSIDE_FORMAT) < text.index("End your reply with")
+    manual = {"id": "M-T2-x", "template": "T2", "gold": {"points": []}, "question": "Q?"}
+    assert "Cite the papers" in reader_prompt("P", manual) and CITE_OUTSIDE_FORMAT not in reader_prompt("P", manual)
+    assert CITE_OUTSIDE_FORMAT not in reader_prompt("C", auto("T1", {}))
 
 
 @pytest.mark.skipif(not (PROBES_REPO / "probes/sample.yml").exists(), reason="题库仓库不在本机")

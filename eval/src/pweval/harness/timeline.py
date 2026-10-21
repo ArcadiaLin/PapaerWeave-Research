@@ -66,7 +66,7 @@ import yaml
 from ..paths import EVAL, REPO
 from . import export
 from .mcp_client import HttpClient
-from .sandbox import GRAPH, Arm, Paths, Writer, pi_version, prepare, run_session
+from .sandbox import GRAPH, Arm, Paths, Writer, pi_version, prepare, run_session, site_record
 
 CONFIG = EVAL / "config/formal-ltsf.yml"
 A0_KIT = EVAL / "baselines/a0"  # A0 的约定（AGENTS.md）与模板，内容与 A3 的工具说明、空白模板对等
@@ -822,7 +822,7 @@ def _plain(value: Any) -> Any:
     return str(value) if isinstance(value, Path) else value
 
 
-TIMING_ONLY = ("reader_workers",)  # 只影响用时的配置项，续跑时可以改
+TIMING_ONLY = ("reader_workers",)  # 只影响用时的配置项，续跑时可以改。workers_by_group 不在其中：P 的成本进比较，并发影响缓存命中
 
 
 def _comparable(config: dict[str, Any]) -> dict[str, Any]:
@@ -866,6 +866,7 @@ def _record_invocation(path: Path, config_path: Path, config: dict[str, Any], ar
         "repo": commit(REPO),
         "probes": probes,
         "pi": pi_version(),
+        "sandbox_python": site_record(),
     })  # fmt: skip
     _write_atomic(path, yaml.safe_dump(record, allow_unicode=True, sort_keys=False))
 

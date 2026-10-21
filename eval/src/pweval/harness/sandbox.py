@@ -24,6 +24,7 @@ A3、A2 的 MCP 服务在沙箱外：沙箱内登记的只是一条转发命令�
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -33,13 +34,36 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from ..paths import REPO
 
 BRIDGE = Path(__file__).with_name("bridge.py")
 ABLATED_MCP = REPO / "eval/baselines/a2_mcp.py"  # A2：关掉机制的 PaperWeave MCP 服务
 GRAPH = ("A3", "A2")  # 经 PaperWeave MCP 进入库的组
+LLM_PORT = 18080  # 断网的沙箱内，pi 连这个回环端口，转发到沙箱外的大模型服务
 PI_DIR = "/opt/pi"  # 托管安装的 pi：当前版本的 release 目录只读挂到这里
+# V3 §7 第 6 条：沙箱中的 python3 另有固定版本的 PyYAML（为系统 python3 安装，只读），所有组相同
+SITE = Path("~/pw-lab/sandbox-site/pyyaml-6.0.3").expanduser()
+SITE_DIR = "/opt/t1/site"
+# V3 §7 第 5 条：所有组的写者任务与读者提示语末尾的环境说明（断网与可用的 Python）
+ENV_NOTE = (
+    "You are working in a sandbox for a test. There is no network access: any network command (curl, wget, pip\n"
+    "install, git clone, web search) will fail. Python 3 is available with the standard library and PyYAML only;\n"
+    "nothing else can be installed. Use only what is available locally."
+)
+
+
+def site_record() -> dict[str, str]:
+    """记入 ``run.yml``：挂进沙箱的 Python 包（按 dist-info 的名称）与目录内容的 SHA-256。"""
+    if not SITE.is_dir():
+        return {"missing": str(SITE)}
+    files = sorted(f for f in SITE.rglob("*") if f.is_file())
+    digest = hashlib.sha256()
+    for f in files:
+        digest.update(f"{f.relative_to(SITE)}\0".encode() + hashlib.sha256(f.read_bytes()).digest())
+    packages = ",".join(sorted(d.name.removesuffix(".dist-info") for d in SITE.glob("*.dist-info")))
+    return {"path": str(SITE), "packages": packages, "sha256": digest.hexdigest()}
 
 
 def pi_install(launcher: str | None = None) -> tuple[Path | None, str]:
@@ -96,6 +120,7 @@ class Arm:
     ablate: tuple[str, ...] = ()  # A2：关掉的机制（dedup、revision、stale、affected）
     graphiti: str | None = None  # A4：Graphiti MCP 服务的地址
     pi_args: tuple[str, ...] = ()  # 附加给 pi 的参数，例如参照组的 --no-tools（docs/designs/v3/evaluation.md §10）
+    isolated_llm: str | None = None  # 断网（--unshare-net）时大模型服务的地址：经 unix socket 转发进沙箱（V3 §7 第 5 条）
 
 
 @dataclass(frozen=True)
@@ -143,7 +168,12 @@ def prepare(
     host_agent = Path(os.environ.get("PI_CODING_AGENT_DIR", Path.home() / ".pi/agent")).expanduser()
     models = json.loads((host_agent / "models.json").read_text(encoding="utf-8"))
     entry = models["providers"][provider]
-    entry["baseUrl"] = llm
+    if arm.isolated_llm is not None:
+        if arm.isolated_llm != llm:
+            raise ValueError(f"isolated arm forwards to {arm.isolated_llm}, but the model is configured for {llm}")
+        entry["baseUrl"] = f"http://127.0.0.1:{LLM_PORT}{urlsplit(llm).path}"
+    else:
+        entry["baseUrl"] = llm
     limits = {"contextWindow": context_window} | ({"maxTokens": max_tokens} if max_tokens else {})
     entry["models"] = [m | limits for m in entry["models"] if m["id"] == model_id]
     if not entry["models"]:
@@ -174,22 +204,35 @@ def prepare(
     _write_json(agent / "mcp.json", {"mcpServers": servers})
 
 
-def run_session(paths: Paths, arm: Arm, writer: Writer, prompt: str, *, timeout_s: int) -> dict:
-    """在沙箱中跑一次 pi 会话。返回退出码、用时与这次会话的记录文件；pi 的 JSON 事件流写到 ``<root>/runs/``。"""
+def run_session(paths: Paths, arm: Arm, writer: Writer, prompt: str, *, timeout_s: int,
+                max_tool_calls: int | None = None) -> dict:  # fmt: skip
+    """在沙箱中跑一次 pi 会话。返回退出码、用时与这次会话的记录文件；pi 的 JSON 事件流写到 ``<root>/runs/``。
+
+    安全上限（V3 §7 第 4 条）：会话超过 ``timeout_s`` 秒退出码记 ``timeout``；给出 ``max_tool_calls`` 时，工具调用
+    （事件流中的 ``tool_execution_start``）超过它即终止，退出码记 ``tool-limit``。两者都每 15 秒检查一次。"""
     stamp = time.strftime("%Y%m%dT%H%M%S")
     runs = paths.root / "runs"
     runs.mkdir(exist_ok=True)
+    if not SITE.is_dir():
+        raise FileNotFoundError(f"the sandbox Python packages are missing: {SITE} (V3 §7 第 6 条)")
     sessions = paths.home / "sessions"
     before = set(sessions.rglob("*.jsonl"))
     # 转发进程与它启动的 MCP 服务的 stderr 写到会话目录（MCP 服务另有自己的日志 paperweave.log）
     stderr = open(paths.root / "bridge.err", "ab")  # noqa: SIM115
     bridges = []
+    socks = []
     if arm.name in GRAPH:
         mcp = ["unix-exec", str(paths.sock / "mcp.sock"), "--", *_mcp_command(paths, arm, writer)]
         bridges.append(_spawn(mcp, stderr))
+        socks.append(paths.sock / "mcp.sock")
+    if arm.isolated_llm is not None:
+        target = urlsplit(arm.isolated_llm)
+        bridges.append(_spawn(["unix-to-tcp", str(paths.sock / "llm.sock"), f"{target.hostname}:{target.port or 80}"],
+                              stderr))  # fmt: skip
+        socks.append(paths.sock / "llm.sock")
     try:
-        if bridges:
-            _wait_for(paths.sock / "mcp.sock")
+        if socks:
+            _wait_for(*socks)
         started = time.monotonic()
         exclude = ["--exclude-tools", ",".join(arm.hide_tools)] if arm.name == "A4" and arm.hide_tools else []
         command = [pi_install()[1], "-p", "--offline", "--approve", "--mode", "json", *exclude, *arm.pi_args]
@@ -203,6 +246,8 @@ def run_session(paths: Paths, arm: Arm, writer: Writer, prompt: str, *, timeout_
             stdin.write_text(prompt, encoding="utf-8")
         else:
             command.append(prompt)
+        if arm.isolated_llm is not None:  # 沙箱内先起回环端口到 socket 的转发，端口可连后再换成 pi
+            command = ["bash", "-c", ISOLATED_START, "bash", *command]
         killed: list[dict] = []
         with (
             open(runs / f"{stamp}.jsonl", "wb") as out,
@@ -224,6 +269,10 @@ def run_session(paths: Paths, arm: Arm, writer: Writer, prompt: str, *, timeout_
                         proc.kill()
                         proc.wait()
                         code = "timeout"
+                    elif max_tool_calls is not None and tool_calls(runs / f"{stamp}.jsonl") > max_tool_calls:
+                        proc.kill()
+                        proc.wait()
+                        code = "tool-limit"
                     else:
                         killed += kill_long_tools(proc.pid, TOOL_LIMIT_S, time.monotonic() - started)
         seconds = round(time.monotonic() - started, 1)
@@ -237,6 +286,17 @@ def run_session(paths: Paths, arm: Arm, writer: Writer, prompt: str, *, timeout_
     return {"exit": code, "seconds": seconds, "events": f"runs/{stamp}.jsonl", "session": session, "tool_kills": killed}
 
 
+def tool_calls(events: Path) -> int:
+    """事件流中到目前为止的工具调用次数（并行的调用各算一次）。"""
+    with open(events, "rb") as f:
+        return f.read().count(b'"type":"tool_execution_start"')
+
+
+ISOLATED_START = (
+    f"python3 /opt/t1/bridge.py tcp-to-unix 127.0.0.1:{LLM_PORT} /run/t1/llm.sock & "
+    f"until (: >/dev/tcp/127.0.0.1/{LLM_PORT}) 2>/dev/null; do sleep 0.05; done; "
+    'exec "$@"'
+)
 ARG_LIMIT = 100_000  # 字节；单个命令行参数的上限是 131072 字节（Linux MAX_ARG_STRLEN），D 的长材料会超过
 TOOL_LIMIT_S = 600  # 单个 shell 工具命令的时限：超过即终止，pi 收到出错结果后继续（两组相同）
 
@@ -299,7 +359,7 @@ def _bwrap(paths: Paths, arm: Arm, writer: Writer) -> list[str]:
     work = arm.store if arm.name == "A0" else paths.work
     assert work is not None
     args = [
-        "bwrap", "--unshare-all", "--share-net", "--die-with-parent", "--clearenv",
+        "bwrap", "--unshare-all", *(() if arm.isolated_llm else ("--share-net",)), "--die-with-parent", "--clearenv",
         "--ro-bind", "/usr", "/usr",
         "--symlink", "usr/bin", "/bin", "--symlink", "usr/lib", "/lib",
         "--symlink", "usr/lib64", "/lib64", "--symlink", "usr/sbin", "/sbin",
@@ -308,8 +368,9 @@ def _bwrap(paths: Paths, arm: Arm, writer: Writer) -> list[str]:
         *(["--ro-bind", str(pi_dir), PI_DIR] if (pi_dir := pi_install()[0]) else []),
         "--ro-bind" if arm.read_only and arm.name == "A0" else "--bind", str(work), "/work",
         "--bind", str(paths.home), "/home/agent",
+        "--ro-bind", str(SITE), SITE_DIR,
     ]  # fmt: skip
-    if arm.name in GRAPH:
+    if arm.name in GRAPH or arm.isolated_llm:
         args += ["--ro-bind", str(BRIDGE), "/opt/t1/bridge.py", "--bind", str(paths.sock), "/run/t1"]
     for source, target in ((arm.papers, "/work/papers"), (arm.code, "/work/code")):
         if source is not None:
@@ -320,6 +381,7 @@ def _bwrap(paths: Paths, arm: Arm, writer: Writer) -> list[str]:
         "PATH": f"{node}/bin:/usr/bin",
         "LANG": "C.UTF-8",
         "TERM": "dumb",
+        "PYTHONPATH": SITE_DIR,
         "GIT_AUTHOR_NAME": writer.user,
         "GIT_AUTHOR_EMAIL": writer.user,
         "GIT_COMMITTER_NAME": writer.user,

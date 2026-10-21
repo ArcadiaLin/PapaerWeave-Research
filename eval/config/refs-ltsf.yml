@@ -8,6 +8,8 @@ code: ~/pw-lab/code                          # D 的代码依据（仓库@提交
 workdir_root: ~/pw-lab/runs                  # 运行目录 <workdir_root>/<运行名>/
 
 llm: http://192.168.163.112:30000/v1   # 每组独占一台推理服务（§7 第 1 条）；--llm 可以覆盖
+llm_by_group:                           # 组单独的推理服务：P 与 C、D 不共用（--llm 覆盖时全部组都用 --llm）
+  P: http://192.168.163.112:30001/v1
 reps: 2                                 # 每题作答次数，与“每题取两条时间线的均值”对齐
 
 runner:
@@ -19,4 +21,7 @@ runner:
   max_output_tokens: 98304   # 单次回复的输出上限（宿主机为 32768）：C、D 只有一次回复，思考与答案都在其中（§7 第 4 条）
   http_idle_timeout_ms: null
   probe_timeout_min: 60      # 防失控的上限，不是回答时限
+  max_tool_calls: 300        # 防失控的上限：工具调用超过即终止（与 60 分钟先到者为准；C、D 不带工具，用不到）
   reader_workers: 12         # C 组按 12 路并发（10-21 定；C 的用时不进成本比较）
+  workers_by_group:
+    P: 4                     # P 是带工具的完整 agent 运行，成本进比较，与写者组的读者同一并发；4 路时长会话都留在 KV 缓存中（10-21 定）
