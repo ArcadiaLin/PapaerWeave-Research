@@ -21,7 +21,11 @@
   联网的命令；A0 另记会话结束时没有提交的改动——留在工作区，下一位写者会看到，不替它提交）；
 - ``checkpoints.yml``：各组每个检查点（0、10、20、30 篇）的库版本（A4 为 group 的指纹，见 :func:`version`）；
 - ``snapshots/<组>/k<篇数>/``：检查点的快照（:func:`snapshot`），供事后的库健康度审计与判分核对；
+- ``backups/<组>/k<篇数>/``：A3、A2 在检查点上的库备份（:func:`backup`：Neo4j 的离线 dump 与材料根目录），读者事后
+  在检查点的库上作答用；
 - ``<组>/inflight.json``：正在运行的写者会话与它开始前的库版本，记账后删除（:func:`recover`）；
+- ``<组>/session-snapshots/<序号>-{before,after}-<时刻>.tar.gz``：每个写者会话（每次尝试）前后的工作目录与 ``home/``
+  （:func:`workdir_snapshot`）；
 - ``answers/<组>/k<篇数>.jsonl``：检查点上读者的回答，一题一行（题号、题面原文、回答原文、库版本、事件流与会话记录、
   用时、token、工具调用、联网命令）。运行时不判分，全部运行结束后按题号对回冻结的金标准统一判分；
 - ``<组>/``：A3、A2 的材料根目录 ``data/``（论文副本与产物文档）；A0 的共享仓库 ``repo/``；各组的论文副本与
@@ -29,11 +33,14 @@
 
 论文副本起初没有三篇论文的新版本，版本更新的会话开始前才放进去；代码副本同样（新版本对应的固定 commit）。
 
+写者的沙箱断网（V3 §7 第 5 条）：大模型服务与 A4 的 Graphiti 经转发进入，任务文字末尾接环境说明（``ENV_NOTE``）。
+
 各组的存储互不相干，组内按序号逐个运行（写者轮流写；到检查点时写者暂停，读者答完再继续），各组同时运行。
 
 中断后用同一个运行名重跑：已记账的会话、已导出的快照、已答的题跳过；中断时正在运行的会话，库没变就重跑，变了就
-按中断记账、不重跑；检查点上还有工作（快照、读者）时先核对库仍在检查点版本。评测代码不导入被测系统：A3、A2 的库
-只经命令行、MCP 与 Cypher 读取接触，A4 的库经 Graphiti 的 MCP 服务与 Cypher 读取接触。
+按中断记账、不重跑；检查点上还有工作（快照、备份、读者）时先核对库仍在检查点版本。评测代码不导入被测系统：A3、A2
+的库只经命令行、MCP 与 Cypher 读取接触，A4 的库经 Graphiti 的 MCP 服务与 Cypher 读取接触；检查点备份另经 docker
+停启图库的容器、用同一镜像的 ``neo4j-admin`` 离线 dump。
 """
 
 from __future__ import annotations
@@ -48,6 +55,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 import time
@@ -66,7 +74,7 @@ import yaml
 from ..paths import EVAL, REPO
 from . import export
 from .mcp_client import HttpClient
-from .sandbox import GRAPH, Arm, Paths, Writer, pi_version, prepare, run_session, site_record
+from .sandbox import ENV_NOTE, GRAPH, Arm, Paths, Writer, pi_version, prepare, run_session, site_record
 
 CONFIG = EVAL / "config/formal-ltsf.yml"
 A0_KIT = EVAL / "baselines/a0"  # A0 的约定（AGENTS.md）与模板，内容与 A3 的工具说明、空白模板对等
@@ -178,13 +186,13 @@ def reader_prompt(timeline: Timeline, arm: str, probe: dict[str, Any]) -> str:
 
 
 def prompt(timeline: Timeline, arm: str, step: dict[str, Any]) -> str:
-    """身份背景 + 任务文字（``{WRITE}`` 按会话的产物类型、``{TOOLS}`` 按组替换）。"""
+    """身份背景 + 任务文字（``{WRITE}`` 按会话的产物类型、``{TOOLS}`` 按组替换）+ 环境说明（V3 §7 第 5 条，各组相同）。"""
     hint = timeline.hints[arm.lower()]
     task = step["task"].replace("{WRITE}", hint["WRITE"].format(type=step.get("writes", "")))
     task = task.replace("{TOOLS}", hint["TOOLS"])
     if "{" in task:
         raise ValueError(f"unfilled placeholder in session {step['seq']}: {task}")
-    return f"{timeline.identities[step['identity']]['background'].strip()}\n\n{task.strip()}\n"
+    return f"{timeline.identities[step['identity']]['background'].strip()}\n\n{task.strip()}\n\n{ENV_NOTE}\n"
 
 
 def writer_of(config: dict[str, Any], identity: dict[str, Any]) -> Writer:
@@ -368,14 +376,18 @@ def settle(config: dict[str, Any], limit_s: int = 3600) -> None:
 
 
 def sandbox_arm(config: dict[str, Any], run: Path, arm: str) -> Arm:
+    """写者的沙箱，断网（V3 §7 第 5 条）：大模型服务经转发；A3、A2 的 MCP 服务本来就经 socket；A4 的 Graphiti 经转发。"""
     spec = config["arms"][arm]
-    papers, code = papers_of(run, arm), arm_dir(run, arm) / "code"
+    papers, code, llm = papers_of(run, arm), arm_dir(run, arm) / "code", spec["llm"]
     if arm in GRAPH:
         data = arm_dir(run, arm) / "data"
-        return Arm(arm, papers, code=code, neo4j=spec["neo4j"], data=data, ablate=tuple(spec.get("ablate") or ()))
+        return Arm(arm, papers, code=code, neo4j=spec["neo4j"], data=data, ablate=tuple(spec.get("ablate") or ()),
+                   isolated_llm=llm)  # fmt: skip
     if arm == "A0":
-        return Arm("A0", papers, code=code, store=arm_dir(run, "A0") / "repo")
-    return Arm("A4", papers, code=code, graphiti=spec["graphiti"])
+        return Arm("A0", papers, code=code, store=arm_dir(run, "A0") / "repo", isolated_llm=llm)
+    graphiti = urlsplit(spec["graphiti"])
+    return Arm("A4", papers, code=code, graphiti=spec["graphiti"], isolated_llm=llm,
+               isolated_tcp=(f"{graphiti.hostname}:{graphiti.port}",))  # fmt: skip
 
 
 A4_CONTENT = (  # group 的全部节点与边，属性去掉嵌入（嵌入由内容算出，且体量大）
@@ -446,7 +458,8 @@ def session(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, ste
     )
     before = version(config, run, arm)  # A4：前一个会话写入的记忆处理完，这个写者才开始
     inflight = {"seq": step["seq"], "started": datetime.now(UTC).isoformat(timespec="seconds"),
-                "started_epoch": time.time(), "version_before": before}  # fmt: skip
+                "started_epoch": time.time(), "version_before": before,
+                "workdir_before": workdir_snapshot(run, arm, step["seq"], paths, "before")}  # fmt: skip
     if arm == "A0":
         inflight["worktree_before"] = _a0_worktree(run)
     _write_atomic(_inflight(run, arm), json.dumps(inflight, ensure_ascii=False))
@@ -469,6 +482,8 @@ def _session_record(config: dict[str, Any], run: Path, arm: str, step: dict[str,
         "llm": config["arms"][arm]["llm"],
         "version_before": inflight["version_before"],
         "version_after": version(config, run, arm),
+        "workdir_before": inflight.get("workdir_before"),
+        "workdir_after": workdir_snapshot(run, arm, step["seq"], paths, "after"),
         "network": network_calls(events) if events else [],
     }
     if arm == "A0":
@@ -477,11 +492,35 @@ def _session_record(config: dict[str, Any], run: Path, arm: str, step: dict[str,
     return record
 
 
+def workdir_snapshot(run: Path, arm: str, seq: int, paths: Paths, when: str) -> dict[str, str]:
+    """V3 §7 第 7 条：写者会话前（``before``）或后（``after``）的工作目录（A0 为共享仓库，含 ``.git``）与 ``home/``
+    （pi 的配置与会话记录）存成 ``<组>/session-snapshots/<序号>-<when>-<时刻>.tar.gz``，连同库的版本，可以恢复到
+    任意会话之前。论文与代码是只读挂载，宿主机上的挂载点是空目录，不占空间。
+
+    文件名带时刻，从不覆盖：中断后重跑的会话有两个起点，被中断的那次记在 ``rerun_after_interruption`` 中，两份都留着。"""
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    out = arm_dir(run, arm) / "session-snapshots" / f"{seq:03d}-{when}-{stamp}.tar.gz"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if out.exists():
+        raise FileExistsError(f"refusing to overwrite a recorded snapshot: {out}")
+    work = arm_dir(run, "A0") / "repo" if arm == "A0" else paths.work
+    partial = out.with_name(out.name + ".partial")
+    with tarfile.open(partial, "w:gz") as tar:
+        for source, name in ((work, "work"), (paths.home, "home")):
+            if source.exists():
+                tar.add(source, arcname=name)
+    partial.replace(out)
+    return {"path": str(out.relative_to(run)), "sha256": hashlib.sha256(out.read_bytes()).hexdigest()}
+
+
 def recover(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, step: dict[str, Any],
             inflight: dict[str, Any]) -> dict[str, Any] | None:  # fmt: skip
     """运行框架在会话中途或记账之前退出后，续跑到这个会话时：库没有变（A0 的工作区内容也没有变）就返回 ``None``，
     照常重跑（基础设施中断）；库变了就不重跑——同一任务在已改变的库上再做一次会留下重复的贡献——把这次会话按
-    ``exit: interrupted`` 照实记账，事件流与会话记录有多少记多少。"""
+    ``exit: interrupted`` 照实记账，事件流与会话记录有多少记多少。
+
+    重跑不恢复工作目录与 ``home/``：写者从被中断的那次留下的状态（如未提交的草稿）接着开始，不是从原起点重跑。
+    记录中写明（``rerun_inherits_workdir``），两次尝试的起点快照都保留（:func:`workdir_snapshot`）。"""
     unchanged = version(config, run, arm) == inflight["version_before"]
     if arm == "A0":
         unchanged = unchanged and _a0_worktree(run) == inflight["worktree_before"]
@@ -504,7 +543,8 @@ def recover(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, ste
 
 
 def network_calls(events: Path) -> list[str]:
-    """会话中联网的 shell 命令（curl、wget、git clone、pip install、带网址的命令）：沙箱不断网，联网只记下。"""
+    """会话中联网的 shell 命令（curl、wget、git clone、pip install、带网址的命令），记为尝试联网：写者的沙箱断网后
+    它们只会失败（V3 §7 第 5 条）。"""
     found = []
     if not events.exists():
         return found
@@ -799,6 +839,102 @@ SNAPSHOT_FILES = {"A0": ("log.jsonl", "tree"), "A4": ("graph.jsonl",)}  # 其余
 SNAPSHOT_COUNTS = {"A0": ("files", "commits"), "A4": ("nodes", "edges")}  # 其余组：nodes、edges、commits、documents
 
 
+BACKUP_DB = "neo4j"  # 被测系统用 Neo4j 的默认库
+BACKUP_FILES = ("neo4j.dump", "data.tar.gz")
+
+
+def backup(config: dict[str, Any], run: Path, arm: str, papers: int) -> None:
+    """A3、A2 检查点上的库备份 ``backups/<组>/k<篇数>/``，供读者事后在检查点的库上作答（写读分离，V3 §7 第 9 条）。
+    快照（:func:`snapshot`）去掉了向量，恢复它要重算向量，读者看到的就不是写者留下的那个库；备份是原样。
+
+    - ``data.tar.gz``：材料根目录（论文副本与产物文档的各个版本）；
+    - ``neo4j.dump``：停下图库的容器（检查点上没有写者会话，MCP 服务也没有起），用同一镜像的 ``neo4j-admin database
+      dump`` 离线导出，再启动容器，等库可连后核对分支头仍是检查点的版本；
+    - ``meta.yml``：组、检查点、库版本、容器与镜像、两个文件的 SHA-256。
+
+    先写到 ``k<篇数>.partial/``，完整后改名。已有完整备份（哈希一致）时跳过。恢复：``neo4j-admin database load`` 到
+    新容器的数据目录，材料根目录解包，读者的 MCP 服务指向二者。"""
+    if arm not in GRAPH or papers == 0:
+        return
+    out = run / "backups" / arm / f"k{papers}"
+    if backup_complete(out, arm):
+        return
+    container = config["arms"][arm].get("neo4j_container")
+    if not container:
+        raise RuntimeError(f"{arm}: neo4j_container is not configured; the checkpoint store cannot be backed up")
+    expected = at_checkpoint(config, run, arm, papers)
+    image, data_dir = container_of(container)
+    partial = out.with_name(out.name + ".partial")
+    shutil.rmtree(partial, ignore_errors=True)
+    partial.mkdir(parents=True)
+    with tarfile.open(partial / "data.tar.gz", "w:gz") as tar:
+        tar.add(arm_dir(run, arm) / "data", arcname="data")
+    _docker("stop", container)
+    try:
+        partial.chmod(0o777)  # 容器中的 neo4j 用户（7474）要往这里写 dump
+        _docker("run", "--rm", "-v", f"{data_dir}:/data", "-v", f"{partial}:/backups", image,
+                "neo4j-admin", "database", "dump", BACKUP_DB, "--to-path=/backups")  # fmt: skip
+    finally:
+        partial.chmod(0o755)
+        _docker("start", container)
+        _wait_store(config, run, arm)
+    if (now := version(config, run, arm)) != expected:
+        raise RuntimeError(f"{arm}: after the backup the store is at {now}, not at checkpoint {papers} ({expected})")
+    meta = {"arm": arm, "papers": papers, "version": expected, "container": container, "image": image,
+            "created": datetime.now(UTC).isoformat(timespec="seconds"),
+            "sha256": {n: _sha256(partial / n) for n in BACKUP_FILES}}  # fmt: skip
+    (partial / "meta.yml").write_text(yaml.safe_dump(meta, sort_keys=False), encoding="utf-8")
+    partial.rename(out)
+
+
+def backup_complete(out: Path, arm: str) -> bool:
+    try:
+        meta = yaml.safe_load((out / "meta.yml").read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return False
+    if not isinstance(meta, dict) or meta.get("arm") != arm or not isinstance(meta.get("sha256"), dict):
+        return False
+    return all((out / n).exists() and meta["sha256"].get(n) == _sha256(out / n) for n in BACKUP_FILES)
+
+
+def container_of(name: str) -> tuple[str, str]:
+    """图库容器的镜像与挂到 ``/data`` 的宿主机目录。``docker run --rm`` 起的容器停下即被删除，拒绝。"""
+    info = json.loads(_docker("inspect", name))[0]
+    if info["HostConfig"].get("AutoRemove"):
+        raise RuntimeError(f"container {name} was started with --rm: stopping it for the backup would delete it")
+    data = [m["Source"] for m in info["Mounts"] if m["Destination"] == "/data"]
+    if not data:
+        raise RuntimeError(f"container {name} has no /data mount on the host")
+    return info["Config"]["Image"], data[0]
+
+
+def _docker(*args: str) -> str:
+    done = subprocess.run(["docker", *args], capture_output=True, text=True)
+    if done.returncode != 0:
+        raise RuntimeError(f"docker {args[0]} failed: {done.stderr[-1000:]}")
+    return done.stdout
+
+
+def _wait_store(config: dict[str, Any], run: Path, arm: str, limit_s: int = 180) -> None:
+    deadline = time.monotonic() + limit_s
+    while True:
+        try:
+            version(config, run, arm)
+            return
+        except Exception:  # 容器刚启动：连接被拒或库尚未就绪
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(2)
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def snapshot_complete(out: Path, arm: str) -> bool:
     """快照是否完整：``meta.yml`` 是这一组的元数据，``counts`` 中该组的计数齐全且都是非负整数，必需文件都在
     （旧导出若中断在 ``counts:`` 之后，解析出的 ``counts`` 为 ``None``，不算完整）。"""
@@ -872,10 +1008,15 @@ def _record_invocation(path: Path, config_path: Path, config: dict[str, Any], ar
 
 
 def preflight(config: dict[str, Any], arms: list[str]) -> list[str]:
-    """各组要用的服务是否连得上（TCP）：大模型、图库、Graphiti。"""
+    """各组要用的服务是否连得上（TCP）：大模型、图库、Graphiti；A3、A2 的图库容器能否停下备份（:func:`backup`）。"""
     problems = []
     for arm in arms:
         spec = config["arms"][arm]
+        if arm in GRAPH:
+            try:
+                container_of(spec.get("neo4j_container") or "")
+            except (RuntimeError, IndexError, json.JSONDecodeError) as exc:
+                problems.append(f"{arm} neo4j_container {spec.get('neo4j_container')!r}: {exc}")
         for key in ("llm", "neo4j", "graphiti"):
             if key in spec:
                 url = urlsplit(spec[key])
@@ -919,6 +1060,7 @@ def run_arm(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, unt
                 if step["papers"] not in (checkpoints(run).get(arm) or {}):
                     checkpoint(config, run, arm, step["papers"])
                 snapshot(config, run, arm, step["papers"])
+                backup(config, run, arm, step["papers"])  # 读者之前：读者以后也可以在备份上离线作答
                 answers = {}
                 for group in GROUPS:
                     if with_readers:
@@ -928,7 +1070,8 @@ def run_arm(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, unt
                     else:
                         answers[group] = "skipped"
                 emit("CHECKPOINT", arm, k=step["papers"], version=checkpoints(run)[arm][step["papers"]],
-                     snapshot="ok", answers=answers["main"], aux=answers["aux"])  # fmt: skip
+                     snapshot="ok", backup="ok" if arm in GRAPH and step["papers"] else "-",
+                     answers=answers["main"], aux=answers["aux"])  # fmt: skip
             continue
         last_seq = step["seq"]
         if until is not None and step["seq"] > until:
@@ -948,6 +1091,7 @@ def run_arm(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, unt
             record = session(config, timeline, run, arm, step)
             if rerun_of:
                 record["rerun_after_interruption"] = rerun_of
+                record["rerun_inherits_workdir"] = True  # 重跑接着被中断那次留下的工作目录（见 recover）
         _append(run, record)
         _inflight(run, arm).unlink(missing_ok=True)
         done.add((arm, step["seq"]))

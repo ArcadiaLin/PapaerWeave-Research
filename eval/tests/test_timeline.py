@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
+import tarfile
 import threading
 import time
 from pathlib import Path
@@ -14,6 +16,7 @@ import pytest
 import yaml
 
 from pweval.harness import timeline
+from pweval.harness.sandbox import ENV_NOTE, Paths
 from pweval.harness.timeline import Timeline
 
 HINTS = {
@@ -29,15 +32,50 @@ def test_prompt_fills_the_arm_hints_after_the_background() -> None:
     step = {"seq": 5, "identity": "i3-a", "type": "compare", "writes": "CompareSettings",
             "task": "Are they comparable? {WRITE} {TOOLS}"}  # fmt: skip
     tl = Timeline([step], IDENTITIES, HINTS, READER, [])
+    note = f"\n\n{ENV_NOTE}\n"  # 环境说明接在任务文字之后（V3 §7 第 5 条），各组相同
     assert timeline.prompt(tl, "A3", step) == (
         "You maintain a benchmark.\n\nAre they comparable? Record it as a CompareSettings artifact. "
-        "Use the PaperWeave tools.\n"
+        "Use the PaperWeave tools." + note
     )
-    assert timeline.prompt(tl, "A4", step).endswith("Record it as a memory. Use the Graphiti memory tools.\n")
+    assert timeline.prompt(tl, "A4", step).endswith("Record it as a memory. Use the Graphiti memory tools." + note)
     build = {"seq": 1, "identity": "i3-a", "type": "build", "task": "Add the paper. {TOOLS}"}
-    assert timeline.prompt(tl, "A3", build).endswith("Add the paper. Use the PaperWeave tools.\n")
+    assert timeline.prompt(tl, "A3", build).endswith("Add the paper. Use the PaperWeave tools." + note)
     with pytest.raises(ValueError, match="placeholder"):
         timeline.prompt(tl, "A3", {**build, "task": "Add {paper}. {TOOLS}"})
+
+
+CONFIG = {"arms": {"A3": {"neo4j": "bolt://x", "llm": "http://192.0.2.1:30000/v1"},
+                   "A2": {"neo4j": "bolt://y", "llm": "http://192.0.2.1:30001/v1", "ablate": ["dedup"]},
+                   "A0": {"llm": "http://192.0.2.1:30000/v1"},
+                   "A4": {"graphiti": "http://127.0.0.1:8765/mcp/", "llm": "http://192.0.2.1:30001/v1"}}}  # fmt: skip
+
+
+def test_every_writer_sandbox_is_cut_off_from_the_network(tmp_path: Path) -> None:
+    for arm in timeline.ARMS:
+        box = timeline.sandbox_arm(CONFIG, tmp_path, arm)
+        assert box.isolated_llm == CONFIG["arms"][arm]["llm"]  # 只经转发连本组的大模型服务（V3 §7 第 5 条）
+        assert box.isolated_tcp == (("127.0.0.1:8765",) if arm == "A4" else ())  # A4 另转发 Graphiti
+    assert timeline.sandbox_arm(CONFIG, tmp_path, "A2").ablate == ("dedup",)
+
+
+def test_a_writer_session_is_archived_before_and_after(tmp_path: Path) -> None:
+    paths = Paths(tmp_path / "A3/writers/w")
+    (paths.work / "draft.yaml").parent.mkdir(parents=True)
+    (paths.work / "draft.yaml").write_text("graph-doc: 1\n")
+    (paths.work / "papers").mkdir()  # 只读挂载的挂载点：宿主机上是空目录
+    (paths.home / "sessions").mkdir(parents=True)
+    (paths.home / "sessions/s.jsonl").write_text("{}\n")
+    rec = timeline.workdir_snapshot(tmp_path, "A3", 7, paths, "before")
+    assert re.fullmatch(r"A3/session-snapshots/007-before-\d{8}T\d{6}Z\.tar\.gz", rec["path"]) and len(rec["sha256"]) == 64
+    with tarfile.open(tmp_path / rec["path"]) as tar:
+        assert {"work/draft.yaml", "home/sessions/s.jsonl", "work/papers"} <= set(tar.getnames())
+    a0 = tmp_path / "A0/repo"
+    a0.mkdir(parents=True)
+    (a0 / "AGENTS.md").write_text("x\n")
+    rec = timeline.workdir_snapshot(tmp_path, "A0", 12, Paths(tmp_path / "A0/writers/w"), "after")
+    with tarfile.open(tmp_path / rec["path"]) as tar:
+        assert "work/AGENTS.md" in tar.getnames()  # A0 的工作目录是共享仓库
+    assert not list((tmp_path / "A0/session-snapshots").glob("*.partial"))
 
 
 def _code(root: Path) -> Path:
@@ -460,3 +498,87 @@ def test_an_arm_runs_in_one_process_at_a_time(tmp_path: Path) -> None:
         holder.wait()
     with timeline._arm_lock(run, "A3") as mine:
         assert mine is True  # 持有的进程退出，锁随之释放
+
+
+def test_a_rerun_keeps_the_start_of_the_interrupted_attempt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    paths = Paths(tmp_path / "A3/writers/w")
+    paths.work.mkdir(parents=True)
+    (paths.work / "draft.yaml").write_text("first\n")
+    stamps = iter(["20261021T100000Z", "20261021T100500Z"])
+
+    class Clock:
+        @staticmethod
+        def now(tz):  # noqa: ANN001, ANN205
+            return SimpleNamespace(strftime=lambda fmt: next(stamps))
+
+    monkeypatch.setattr(timeline, "datetime", Clock)
+    first = timeline.workdir_snapshot(tmp_path, "A3", 7, paths, "before")
+    (paths.work / "draft.yaml").write_text("left by the interrupted attempt\n")
+    second = timeline.workdir_snapshot(tmp_path, "A3", 7, paths, "before")
+    assert first["path"] != second["path"]  # 重跑的起点另存，被中断那次的起点不被覆盖
+    assert timeline._sha256(tmp_path / first["path"]) == first["sha256"]
+    with tarfile.open(tmp_path / first["path"]) as tar:
+        assert tar.extractfile("work/draft.yaml").read() == b"first\n"
+
+
+def _backup_config(tmp_path: Path) -> dict:
+    return {"arms": {"A3": {"neo4j": "bolt://x", "neo4j_container": "neo4j-a3", "llm": "http://h:1/v1"}}}
+
+
+def test_the_checkpoint_store_is_dumped_offline_and_restarted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "A3/data/artifacts").mkdir(parents=True)
+    (tmp_path / "A3/data/artifacts/lb.v1.md").write_text("x\n")
+    calls = []
+
+    def docker(*args: str) -> str:
+        calls.append(args[0])
+        if args[0] == "inspect":
+            return json.dumps([{"HostConfig": {"AutoRemove": False}, "Config": {"Image": "neo4j:ubi10"},
+                                "Mounts": [{"Source": "/srv/a3/data", "Destination": "/data"}]}])  # fmt: skip
+        if args[0] == "run":
+            assert args[args.index("-v") + 1] == "/srv/a3/data:/data" and args[-2:] == ("neo4j", "--to-path=/backups")
+            Path(args[args.index("-v", args.index("-v") + 1) + 1].split(":")[0], "neo4j.dump").write_bytes(b"dump")
+        return ""
+
+    monkeypatch.setattr(timeline, "_docker", docker)
+    monkeypatch.setattr(timeline, "checkpoints", lambda run: {"A3": {10: "commit_000020"}})
+    monkeypatch.setattr(timeline, "version", lambda config, run, arm: "commit_000020")
+    timeline.backup(_backup_config(tmp_path), tmp_path, "A3", 10)
+    assert calls == ["inspect", "stop", "run", "start"]
+    out = tmp_path / "backups/A3/k10"
+    meta = yaml.safe_load((out / "meta.yml").read_text())
+    assert meta["version"] == "commit_000020" and set(meta["sha256"]) == {"neo4j.dump", "data.tar.gz"}
+    with tarfile.open(out / "data.tar.gz") as tar:
+        assert "data/artifacts/lb.v1.md" in tar.getnames()
+    calls.clear()
+    timeline.backup(_backup_config(tmp_path), tmp_path, "A3", 10)  # 已有完整备份：不再停库
+    assert calls == []
+    (out / "neo4j.dump").write_bytes(b"changed")
+    assert not timeline.backup_complete(out, "A3")  # 哈希不符即不完整
+
+
+def test_the_store_is_restarted_even_if_the_dump_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    (tmp_path / "A3/data").mkdir(parents=True)
+    calls = []
+
+    def docker(*args: str) -> str:
+        calls.append(args[0])
+        if args[0] == "inspect":
+            return json.dumps([{"HostConfig": {}, "Config": {"Image": "i"}, "Mounts": [{"Source": "/d", "Destination": "/data"}]}])
+        if args[0] == "run":
+            raise RuntimeError("docker run failed")
+        return ""
+
+    monkeypatch.setattr(timeline, "_docker", docker)
+    monkeypatch.setattr(timeline, "checkpoints", lambda run: {"A3": {10: "c"}})
+    monkeypatch.setattr(timeline, "version", lambda config, run, arm: "c")
+    with pytest.raises(RuntimeError, match="docker run failed"):
+        timeline.backup(_backup_config(tmp_path), tmp_path, "A3", 10)
+    assert calls[-1] == "start" and not (tmp_path / "backups/A3/k10").exists()
+
+
+def test_a_container_started_with_rm_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    info = [{"HostConfig": {"AutoRemove": True}, "Config": {"Image": "i"}, "Mounts": []}]
+    monkeypatch.setattr(timeline, "_docker", lambda *args: json.dumps(info))
+    with pytest.raises(RuntimeError, match="--rm"):
+        timeline.container_of("neo4j-test")

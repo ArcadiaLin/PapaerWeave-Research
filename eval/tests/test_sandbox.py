@@ -182,6 +182,24 @@ def test_a4_registers_graphiti_over_http(host: Path) -> None:
     assert "/run/t1" not in _mounts(sandbox._bwrap(paths, arm, WRITER))
 
 
+def test_an_isolated_a4_writer_reaches_graphiti_through_a_forward(host: Path) -> None:
+    paths = Paths(host / "run/A4/w")
+    arm = Arm("A4", host / "papers", graphiti="http://127.0.0.1:8765/mcp/", isolated_llm=SETTINGS["llm"],
+              isolated_tcp=("127.0.0.1:8765",))  # fmt: skip
+    sandbox.prepare(paths, arm, **SETTINGS)
+    mcp = json.loads((paths.home / ".pi/agent/mcp.json").read_text())["mcpServers"]
+    assert mcp["Graphiti"]["url"] == "http://127.0.0.1:8765/mcp/"  # 沙箱内回环地址的同一端口
+    args = sandbox._bwrap(paths, arm, WRITER)
+    assert "--share-net" not in args and "/run/t1" in _mounts(args)
+    start = sandbox.isolated_start(arm)
+    assert f"tcp-to-unix 127.0.0.1:{sandbox.LLM_PORT} /run/t1/llm.sock" in start
+    assert "tcp-to-unix 127.0.0.1:8765 /run/t1/tcp-8765.sock" in start and start.endswith('exec "$@"')
+    assert sandbox._forwards(arm) == [("llm.sock", "192.0.2.1:30001"), ("tcp-8765.sock", "127.0.0.1:8765")]
+    with pytest.raises(ValueError, match="must forward"):  # 断网却没有转发 Graphiti
+        sandbox.prepare(paths, Arm("A4", None, graphiti="http://127.0.0.1:8765/mcp/", isolated_llm=SETTINGS["llm"]),
+                        **SETTINGS)  # fmt: skip
+
+
 def test_a2_starts_the_ablated_server(host: Path) -> None:
     paths = Paths(host / "run/A2/w")
     arm = Arm("A2", host / "papers", neo4j="bolt://x", data=host / "data", ablate=("dedup", "revision"))
@@ -225,3 +243,13 @@ def test_a_tool_command_over_the_limit_is_killed() -> None:
     finally:
         root.kill()
         root.wait()
+
+
+def test_a_forward_that_does_not_start_fails_fast(host: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    arm = Arm("P", None, isolated_llm=SETTINGS["llm"])
+    monkeypatch.setattr(sandbox, "FORWARD_WAIT_S", 0.2)
+    script = sandbox.isolated_start(arm).replace("python3 /opt/t1/bridge.py", "true")  # 转发进程起不来
+    started = time.monotonic()
+    done = subprocess.run(["bash", "-c", script, "bash", "echo", "pi"], capture_output=True, text=True)
+    assert done.returncode == sandbox.FORWARD_EXIT and sandbox.FORWARD_FAILED in done.stderr
+    assert time.monotonic() - started < 5  # 不等到会话时限

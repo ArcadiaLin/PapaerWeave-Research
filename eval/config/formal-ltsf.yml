@@ -11,9 +11,11 @@ workdir_root: ~/pw-lab/runs           # 运行目录 <workdir_root>/<运行名>/
 arms:
   A3:
     neo4j: bolt://localhost:7696
+    neo4j_container: neo4j-a3                    # 检查点上停下它做离线 dump（timeline.backup）；不能是 --rm 起的容器
     llm: http://192.168.163.112:30000/v1
   A2:
     neo4j: bolt://localhost:7697
+    neo4j_container: neo4j-a2
     llm: http://192.168.163.112:30001/v1
     ablate: [dedup, revision, stale, affected]   # 同 schema 的裸图：四项机制全关
   A0:
@@ -31,6 +33,7 @@ runner:
   thinking: medium           # pi 的默认思考级别（V3 先导未改）
   context_window: 262144     # D14：sglang 实际支持的上下文
   reserve_tokens: 32768      # D15：压缩时预留，摘要上限 0.8 倍
+  max_output_tokens: 98304   # 单次回复的输出上限，所有组统一（V3 §7 第 4 条；宿主机为 32768，f1 中 A4 有 3 个写者会话撞上）
   http_idle_timeout_ms: null # pi 默认
   session_timeout_min: 40    # 写者会话（V3 先导 2400 秒）
   probe_timeout_min: 15      # 读者会话（V3 先导 900 秒）

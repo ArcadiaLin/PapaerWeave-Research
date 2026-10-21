@@ -1,6 +1,8 @@
 """写者与读者会话的隔离运行：一次 pi 会话在 bubblewrap 沙箱中执行（默认配置的 pi，非交互）。
 
-沙箱只隔离文件系统，不断网（用户 2026-10-19 决定；联网读取由会话后的审计记下）。沙箱里能看到的只有：系统目录与
+沙箱隔离文件系统；写者与 P 原文组的沙箱另外断网（V3 §7 第 5 条，10-21；此前按用户 2026-10-19 的决定不断网），
+大模型服务与 Graphiti 经 unix socket 转发进去（``Arm.isolated_llm``、``Arm.isolated_tcp``），联网命令只会失败，
+仍由会话后的审计记下。沙箱里能看到的只有：系统目录与
 node（只读）、工作目录 ``/work``（可写）、本会话的 ``HOME``（pi 的 agent 目录：模型配置、设置、MCP 登记与会话记录，
 不带宿主机的扩展、skills 与认证）。写者另有论文材料 ``/work/papers`` 与按论文版本固定 commit 的代码 ``/work/code``
 （都只读）；读者两者都没有。各组的 ``/work``：
@@ -8,7 +10,7 @@ node（只读）、工作目录 ``/work``（可写）、本会话的 ``HOME``（
 - A3、A2：每个写者自己的目录；库只经 MCP 进入（见下）。
 - A0：共享仓库本身（各写者共用一份，写者轮流运行）；读者是检查点处的副本，只读。仓库的 ``AGENTS.md`` 由 pi 从
   工作目录加载。
-- A4：每个写者自己的目录；Graphiti 的 MCP 服务在沙箱外，经 HTTP 连接（网络共享）。
+- A4：每个写者自己的目录；Graphiti 的 MCP 服务在沙箱外，经 HTTP 连接（断网时经转发，沙箱内连同一回环端口）。
 - 参照线（``none``）：没有库。
 
 仓库、``docs/``、题库与金标准、其他组与其他写者的目录、宿主机的 ``/tmp`` 都不可见；环境变量清空后只设必要的几个
@@ -16,7 +18,7 @@ node（只读）、工作目录 ``/work``（可写）、本会话的 ``HOME``（
 
 A3、A2 的 MCP 服务在沙箱外：沙箱内登记的只是一条转发命令（``mcp.sock``，:mod:`pweval.harness.bridge`），每个连接
 在沙箱外启动一次服务，登录身份与连接参数在沙箱外写定，写者拿不到图库的口令。A2 启动的是消融版
-（``eval/baselines/a2_mcp.py``）。大模型服务由 pi 直接连接（各组的地址取实验配置）。
+（``eval/baselines/a2_mcp.py``）。大模型服务的地址取实验配置：断网的沙箱经转发连接，其余由 pi 直接连接。
 
 ``pi`` 从工作目录及其上层加载 ``AGENTS.md``：沙箱中 ``/work`` 的上层为空，仓库的说明文件不会被加载。
 """
@@ -121,6 +123,7 @@ class Arm:
     graphiti: str | None = None  # A4：Graphiti MCP 服务的地址
     pi_args: tuple[str, ...] = ()  # 附加给 pi 的参数，例如参照组的 --no-tools（docs/designs/v3/evaluation.md §10）
     isolated_llm: str | None = None  # 断网（--unshare-net）时大模型服务的地址：经 unix socket 转发进沙箱（V3 §7 第 5 条）
+    isolated_tcp: tuple[str, ...] = ()  # 断网时另外转发进沙箱的服务（host:port），沙箱内在回环地址的同一端口上可连，如 A4 的 Graphiti
 
 
 @dataclass(frozen=True)
@@ -200,7 +203,12 @@ def prepare(
         }
     elif arm.name == "A4":
         assert arm.graphiti is not None
-        servers["Graphiti"] = {"url": arm.graphiti, "exposure": "direct", "timeout": 300}
+        url = urlsplit(arm.graphiti)
+        if arm.isolated_llm is not None:  # 断网：沙箱内连回环地址的同一端口（isolated_tcp 转发到沙箱外的服务）
+            if f"{url.hostname}:{url.port}" not in arm.isolated_tcp:
+                raise ValueError(f"an isolated A4 sandbox must forward {url.hostname}:{url.port} (isolated_tcp)")
+            url = url._replace(netloc=f"127.0.0.1:{url.port}")
+        servers["Graphiti"] = {"url": url.geturl(), "exposure": "direct", "timeout": 300}
     _write_json(agent / "mcp.json", {"mcpServers": servers})
 
 
@@ -226,10 +234,9 @@ def run_session(paths: Paths, arm: Arm, writer: Writer, prompt: str, *, timeout_
         bridges.append(_spawn(mcp, stderr))
         socks.append(paths.sock / "mcp.sock")
     if arm.isolated_llm is not None:
-        target = urlsplit(arm.isolated_llm)
-        bridges.append(_spawn(["unix-to-tcp", str(paths.sock / "llm.sock"), f"{target.hostname}:{target.port or 80}"],
-                              stderr))  # fmt: skip
-        socks.append(paths.sock / "llm.sock")
+        for name, target in _forwards(arm):
+            bridges.append(_spawn(["unix-to-tcp", str(paths.sock / name), target], stderr))
+            socks.append(paths.sock / name)
     try:
         if socks:
             _wait_for(*socks)
@@ -246,8 +253,8 @@ def run_session(paths: Paths, arm: Arm, writer: Writer, prompt: str, *, timeout_
             stdin.write_text(prompt, encoding="utf-8")
         else:
             command.append(prompt)
-        if arm.isolated_llm is not None:  # 沙箱内先起回环端口到 socket 的转发，端口可连后再换成 pi
-            command = ["bash", "-c", ISOLATED_START, "bash", *command]
+        if arm.isolated_llm is not None:  # 沙箱内先起回环端口到 socket 的转发，端口都可连后再换成 pi
+            command = ["bash", "-c", isolated_start(arm), "bash", *command]
         killed: list[dict] = []
         with (
             open(runs / f"{stamp}.jsonl", "wb") as out,
@@ -276,6 +283,8 @@ def run_session(paths: Paths, arm: Arm, writer: Writer, prompt: str, *, timeout_
                     else:
                         killed += kill_long_tools(proc.pid, TOOL_LIMIT_S, time.monotonic() - started)
         seconds = round(time.monotonic() - started, 1)
+        if code == FORWARD_EXIT and FORWARD_FAILED.encode() in (runs / f"{stamp}.err").read_bytes():
+            raise RuntimeError(f"the sandbox forward did not start: {(runs / f'{stamp}.err').read_text()[-500:]}")
     finally:
         for p in bridges:
             p.terminate()
@@ -292,11 +301,35 @@ def tool_calls(events: Path) -> int:
         return f.read().count(b'"type":"tool_execution_start"')
 
 
-ISOLATED_START = (
-    f"python3 /opt/t1/bridge.py tcp-to-unix 127.0.0.1:{LLM_PORT} /run/t1/llm.sock & "
-    f"until (: >/dev/tcp/127.0.0.1/{LLM_PORT}) 2>/dev/null; do sleep 0.05; done; "
-    'exec "$@"'
-)
+def _forwards(arm: Arm) -> list[tuple[str, str]]:
+    """断网的沙箱要转发的服务：(socket 文件名, 沙箱外的 host:port)。大模型服务在沙箱内的 ``LLM_PORT``，``isolated_tcp``
+    中的服务在沙箱内的同一端口。"""
+    assert arm.isolated_llm is not None
+    llm = urlsplit(arm.isolated_llm)
+    out = [("llm.sock", f"{llm.hostname}:{llm.port or 80}")]
+    for target in arm.isolated_tcp:
+        port = int(target.rsplit(":", 1)[1])
+        if port == LLM_PORT:
+            raise ValueError(f"port {LLM_PORT} is taken by the model forward inside the sandbox")
+        out.append((f"tcp-{port}.sock", target))
+    return out
+
+
+def isolated_start(arm: Arm) -> str:
+    """沙箱内的启动脚本：每个转发在回环地址上起一个端口接到 socket，端口都可连后 ``exec`` 换成 pi。某个端口
+    ``FORWARD_WAIT_S`` 秒内仍不可连，就打印 ``FORWARD_FAILED`` 并以 ``FORWARD_EXIT`` 退出（见 :func:`run_session`）。"""
+    tries = int(FORWARD_WAIT_S / 0.05)
+    parts = []
+    for name, target in _forwards(arm):
+        port = LLM_PORT if name == "llm.sock" else int(target.rsplit(":", 1)[1])
+        parts.append(f"python3 /opt/t1/bridge.py tcp-to-unix 127.0.0.1:{port} /run/t1/{name} & n=0; "
+                     f"until (: >/dev/tcp/127.0.0.1/{port}) 2>/dev/null; do n=$((n+1)); "
+                     f"if [ $n -gt {tries} ]; then echo '{FORWARD_FAILED} 127.0.0.1:{port}' >&2; exit {FORWARD_EXIT}; fi; "
+                     f"sleep 0.05; done; ")  # fmt: skip
+    return "".join(parts) + 'exec "$@"'
+FORWARD_WAIT_S = 10  # 沙箱内的转发端口最多等这么久；起不来是基础设施故障，不记作会话超时
+FORWARD_FAILED = "FORWARD_FAILED"
+FORWARD_EXIT = 97
 ARG_LIMIT = 100_000  # 字节；单个命令行参数的上限是 131072 字节（Linux MAX_ARG_STRLEN），D 的长材料会超过
 TOOL_LIMIT_S = 600  # 单个 shell 工具命令的时限：超过即终止，pi 收到出错结果后继续（两组相同）
 
@@ -439,4 +472,5 @@ def _write_json(path: Path, data: object) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-__all__ = ["GRAPH", "Arm", "Paths", "Writer", "pi_install", "pi_version", "prepare", "run_session"]
+__all__ = ["ENV_NOTE", "GRAPH", "Arm", "Paths", "Writer", "isolated_start", "pi_install", "pi_version", "prepare",
+           "run_session"]
