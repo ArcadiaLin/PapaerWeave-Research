@@ -1,13 +1,13 @@
 ---
 name: pi-extension-dev
-description: 开发 pi (pi-coding-agent) 的 extension，或在本项目的 pi-configs 下创建/修改 pi 启动配置版本。当用户要求编写、调试 pi extension，或管理 pi 配置时使用。
+description: 开发、调试 pi (pi-coding-agent) 的 extension，或查阅 pi 的配置与 MCP 用法时使用。评测用的 pi 配置不在这里，由 eval 生成（见文末）。
 ---
 
 # pi Extension 开发
 
 本 skill 不重复讲解如何开发 extension——本仓库内有 pi 上游源码的 clone（`references/repos/pi`，gitignored），自带完整文档，开发时**直接引用这些文档**作为权威依据，不要凭记忆写 API。
 
-使用前确认 clone 与本机 pi 版本一致：`git -C references/repos/pi log -1` 对比 `pi --version`，落后就 `git -C references/repos/pi pull`（远程是上游 `earendil-works/pi`）。pi 的 npm 安装包也自带同版本文档，位于 `$(npm root -g)/@earendil-works/pi-coding-agent/docs/`，可作为 clone 未同步时的备选。
+使用前确认 clone 与本机 pi 版本一致：`git -C references/repos/pi log -1` 对比 `pi --version`，落后就 `git -C references/repos/pi pull`（远程是上游 `earendil-works/pi`）。本机 pi 是托管安装，安装包自带同版本的文档与示例，位于 `~/.pi/agent/install/releases/<版本>/node_modules/@earendil-works/pi-coding-agent/`（`docs/`、`examples/`），clone 缺失或未同步时用它（2026-10-15 迁机后 clone 尚未恢复）。
 
 ## 权威文档（开发时必读）
 
@@ -40,19 +40,11 @@ description: 开发 pi (pi-coding-agent) 的 extension，或在本项目的 pi-c
 
 ## 加载与测试位置
 
-- 本项目的扩展开发位置：`pi-configs/<版本>/extensions/`，可用单文件 `<名称>.ts` 或子目录 `<名称>/index.ts`。
-- 通过 `./pi-configs/<版本>/start.sh` 加载；启动脚本把配置目录作为本地 pi 资源包传给 `--extension`，并用 `--no-extensions` 限定自动加载的扩展集合。
-- 全局 `~/.pi/agent/extensions/` 和项目 `.pi/extensions/` 不会自动加载；额外扩展可显式传入 `-e ./path.ts`。
-- 配置目录内的扩展支持 `/reload`，包括重新发现新增的扩展文件。
+- 仓库不再保留 `pi-configs/`（2026-10-21 删除：评测配置由 eval 生成，其余配置版本已无用途）。需要开发扩展时，再与用户商定放在哪里。
+- 测试扩展：`pi --no-extensions -e ./path.ts`（`--no-extensions` 关掉自动发现，显式的 `-e` 仍加载）；`--session-dir` 把会话放到别处，免得混进本机记录。
+- 不要改全局 `~/.pi/agent/` 的现役配置；评测框架从这里读模型配置（待移入 `eval/config/`）。
+- 扩展支持 `/reload`，包括重新发现新增的扩展文件。
 
-## 与本项目的关系：pi-configs 配置版本
+## 评测用的 pi 配置不在这里
 
-本项目根目录有 `pi-configs/`，用于存放 pi 的启动配置版本（现有 `default/`）。约定见 `pi-configs/README.md`：
-
-- 每个子目录是一套配置版本，含 `start.sh`（保留调用时 cwd，透传额外参数）、`SYSTEM.md`（可编辑的提示词主体）、`extensions/`（该配置的扩展源码）和 `sessions/`（本地会话，Git 忽略）；AGENTS.md 和 skills 仍由 pi 动态追加
-- 从仓库根目录用 `./pi-configs/<版本>/start.sh` 启动
-- 新增配置版本：复制 `default/` 中的启动脚本、提示词和需要的扩展源码到新目录，不复制 `sessions/` 历史记录
-- 模型、登录态和内置工具配置沿用本机 pi；会话通过 `--session-dir` 保存到对应配置的 `sessions/`，可用同一启动脚本的 `--continue` / `--resume` 恢复
-- 配置目录还可添加 `skills/`、`prompts/`、`themes/`，按 pi 本地资源包约定额外加载；这些类型的全局和项目资源仍按 pi 的规则发现
-
-开发/调试 extension 时，如需隔离环境验证（自定义 system prompt、指定 extension 集合等），就在 `pi-configs/` 下新建一个配置版本来跑，不要改动 `default/` 或全局 `~/.pi/agent/` 的现役配置。
+正式运行与参照组的 pi 配置由 `eval/src/pweval/harness/sandbox.py` 的 `prepare()` 在每个会话的沙箱 `HOME` 中生成（`models.json`、`settings.json`、`mcp.json`），条件取自 `eval/config/*.yml` 的 runner 段；各组的差别在 `Arm`（`sandbox.py`、`timeline.py`、`readers.py`、`refs.py`）。要改评测条件就改这些，并按 AGENTS.md 先与用户确认；不要另建启动配置。写者与读者都是默认配置的 pi：不改系统提示，不加扩展。
