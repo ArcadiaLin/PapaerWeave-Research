@@ -258,6 +258,15 @@ def test_search_finds_artifacts(store: Store) -> None:
     assert "art_0001" in mixed and "dataset_0001" in mixed
 
 
+
+def test_artifact_search_text_lists_every_node_it_used(store: Store, monkeypatch: pytest.MonkeyPatch) -> None:
+    from paperweave.store import derived
+
+    monkeypatch.setattr(derived, "NEIGHBOR_NAMES", 1)  # 普通节点只留一个邻居名称；产物不受上限
+    used = store.query("MATCH (:Artifact {id: 'art_0001'})-[:USED]->(m) WHERE m.name IS NOT NULL RETURN m.name AS name")
+    text = derived.node_texts(store.driver, None, ["art_0001"])[0]["search_text"]
+    assert len(used) > 1 and all(r["name"] in text for r in used)
+
 NEW_EXPERIMENT = """graph-doc: v0.2
 create:
   $ili:

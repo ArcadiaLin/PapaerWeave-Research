@@ -254,6 +254,18 @@ def test_get_and_traverse_page_like_read(writer: Writer, monkeypatch: pytest.Mon
     assert "Get the rest with ids=[dataset_0001]" in cut.text
 
 
+def test_related_names_are_cut_in_a_fixed_order(store: Store, monkeypatch: pytest.MonkeyPatch) -> None:
+    from paperweave.store import derived
+
+    monkeypatch.setattr(derived, "NEIGHBOR_NAMES", 1)  # 只留一个：应是它自己指出去的边的终点中名称最小的
+    rows = store.query(
+        "MATCH ({id: 'exp_0001'})-[r]->(m:Searchable) WHERE type(r) <> 'USED' RETURN coalesce(m.name, m.title) AS name"
+    )
+    first = min(r["name"] for r in rows if r["name"])
+    texts = [derived.node_texts(store.driver, None, ["exp_0001"])[0]["search_text"] for _ in range(2)]
+    assert texts[0] == texts[1] and texts[0].endswith(f"related: {first}")
+
+
 def test_derived_texts_follow_a_rename_without_a_full_pass(writer: Writer, store: Store) -> None:
     from paperweave.store.derived import edge_texts, node_texts
 

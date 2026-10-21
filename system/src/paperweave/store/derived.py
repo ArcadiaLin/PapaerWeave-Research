@@ -2,7 +2,7 @@
 
 - 节点的 ``search_text``（全文索引 ``node_texts``）：名称、别名、描述，以及邻居的名称——检索 "PatchTST ETTh1"
   能命中用到二者的 Experiment，即使它的描述里没写这两个名字。邻居不经 ``USED``；产物是标题、摘要与它用到的节点的
-  名称（只在产物一侧：节点的文本里不放产物标题，免得热门节点被产物挤满）。
+  名称，全部列出（只在产物一侧：节点的文本里不放产物标题，免得热门节点被产物挤满）。
 - 节点的 ``embedding``（向量索引 ``node_vectors``）：名称、别名与描述；Content 是描述；产物是标题与摘要。
 - 带 ``description`` 的边的 ``search_text``（``edge_texts``）与 ``embedding``（``edge_vectors``）：两端的名称、
   关系类型与描述。没有描述的边不进索引。
@@ -23,7 +23,10 @@ from ..model.schema import ARTIFACT, FROM, INDEXED_RELS, SEARCHABLE
 from .embedding import embedding_key
 
 Embed = Callable[[list[str]], list[list[float]]]
-NEIGHBOR_NAMES = 40  # search_text 中邻居名称的上限：ETTh1 这类节点有上百个邻居，名称只取一部分
+NEIGHBOR_NAMES = 40  # 节点 search_text 中邻居名称的上限：ETTh1 这类节点有上百个邻居，名称只取一部分
+# 超过上限时取哪些：先取节点自己指出去的边的终点（实验的方法、数据集与论文，Claim 所谈的对象），再取指向它的，同侧按名称，
+# 截断不随库中的存储顺序变。产物不设上限：它的名称是自己用到的节点（用户 10-21 定）；f1 的 k30 中三份排行榜各用到
+# 67–70 个有名称的节点，上限 40 会让近半数行的方法与论文搜不到这份表。
 
 
 def node_texts(driver: Driver, database: str | None, ids: list[str] | None = None) -> list[dict[str, Any]]:
@@ -35,7 +38,10 @@ def node_texts(driver: Driver, database: str | None, ids: list[str] | None = Non
             OPTIONAL MATCH (k:NameKey)-[:NAMES]->(n) WHERE k.raw <> n.name
             WITH n, collect(DISTINCT k.raw) AS alias
             OPTIONAL MATCH (n)-[r]-(m:{SEARCHABLE}) WHERE type(r) <> 'USED' OR (n:{ARTIFACT} AND startNode(r) = n)
-            WITH n, alias, collect(DISTINCT coalesce(m.name, m.title))[..{NEIGHBOR_NAMES}] AS near
+            WITH n, alias, coalesce(m.name, m.title) AS near_name, CASE WHEN startNode(r) = n THEN 0 ELSE 1 END AS side
+            ORDER BY side, near_name
+            WITH n, alias, collect(DISTINCT near_name) AS near
+            WITH n, alias, CASE WHEN n:{ARTIFACT} THEN near ELSE near[..{NEIGHBOR_NAMES}] END AS near
             OPTIONAL MATCH (n)-[:{FROM}]->(p:Paper)
             RETURN n.id AS id, n.name AS name, n.title AS title, n.abs AS abs, n.description AS description,
                    alias, near, p.name AS paper, n.search_text AS search_text, n.embedding_key AS key""",
