@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from pweval.protocol.evidence import Evidence, build, judge_material, merge, reader_material
+from pweval.protocol.evidence import Evidence, build, judge_material, load_probes, merge, reader_material
 
 PAPER = "1234.56789v1"
 OTHER = "2222.22222v2"
@@ -35,6 +35,9 @@ def ev(tmp_path: Path) -> Evidence:
     (bank / "facts/tables.csv").write_text(f"table,arxiv,first,last,number\n{PAPER}:T7,{PAPER},7,10,1\n"
                                            f"{OTHER}:T3,{OTHER},3,5,3\n")  # fmt: skip
     (bank / "facts/own.yml").write_text("[]\n")
+    (bank / "facts/cells.csv").write_text("table,arxiv,dataset,horizon,method,header,metric,value,line\n"
+                                          f"{PAPER}:T7,{PAPER},etth1,96,a,A,mse,0.2,10\n"
+                                          f"{OTHER}:T3,{OTHER},etth2,96,b,B,mse,0.3,5\n")  # fmt: skip
     for paper, table in ((PAPER, "T7"), (OTHER, "T3")):
         fact = {"tables": [{"table": f"{paper}:{table}", "role": "main", "variate": "multivariate"}]}
         (bank / f"facts/papers/{paper}.yml").write_text(yaml.safe_dump(fact))
@@ -101,3 +104,29 @@ def test_build_is_reproducible_and_refuses_a_used_directory(ev: Evidence, tmp_pa
         p.relative_to(two): p.read_bytes() for p in two.rglob("*") if p.is_file()}
     with pytest.raises(ValueError, match="must be empty"):
         build(ev, one)
+
+
+def test_tables_keep_only_the_rows_asked_about_in_the_d_material(ev: Evidence) -> None:
+    t5 = probe(template="T5", slots={"P": PAPER, "D": "ETTh2"}, gold={"beaten": [], "later_papers": {}},
+               evidence=[f"{PAPER}:T7"])  # fmt: skip
+    reader = reader_material(ev, t5)
+    assert "| A | 0.2 |" not in reader and "| B | 0.3 |" in reader and "rows not asked about" in reader
+    assert "| Model | MSE |" in reader  # 表头保留
+    assert "| A | 0.2 |" in judge_material(ev, t5)  # 判分包不切
+    t6 = probe(template="T6", slots={"P": PAPER}, gold={"dropped": []}, evidence=[f"{PAPER}:T7"])
+    reader = reader_material(ev, t6)
+    assert "| A | 0.2 |" in reader  # 依据中的表不切
+    assert "| B | 0.3 |" in reader  # 每行只有一个方法的表按转置表处理，留全表
+
+
+def test_supplement_anchors_of_the_frozen_bank_resolve() -> None:
+    from pweval.protocol.evidence import BANK, PAPERS, SUPPLEMENT
+
+    if not (BANK / "probes/sample.yml").exists() or not PAPERS.exists():
+        pytest.skip("题库或语料不在本机")
+    real = Evidence()
+    ids = {p["id"] for p in load_probes(real.bank)}
+    for probe_id, extra in SUPPLEMENT.items():
+        assert probe_id in ids
+        for anchor in extra:
+            real.expand(anchor)

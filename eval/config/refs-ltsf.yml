@@ -4,6 +4,7 @@
 
 probes_repo: ~/pw-lab/probes                 # probes/sample.yml、auto.yml、manual-rendered.yml、tasks/
 corpus_papers: ~/pw-lab/data/formal/papers   # D、P 用（C 不用）
+code: ~/pw-lab/code                          # D 的代码依据（仓库@提交前 8 位）
 workdir_root: ~/pw-lab/runs                  # 运行目录 <workdir_root>/<运行名>/
 
 llm: http://192.168.163.112:30000/v1   # 每组独占一台推理服务（§7 第 1 条）；--llm 可以覆盖

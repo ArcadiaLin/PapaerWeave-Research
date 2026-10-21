@@ -15,6 +15,10 @@
   跨论文的集合题（自动题 T5–T8）补上库中每篇论文（各取最新版本）的这些表（题库 ``facts/papers/*.yml`` 中 ``role``
   以 ``main`` 开头、``variate`` 为 ``multivariate`` 的表），“出现”与“没有出现”都能在材料内判断。不补全文：原文中
   “没有说”的声明（来源、代码链接）由 D 的说明句写明封闭世界（:mod:`pweval.harness.refs`）。
+- **D 材料中的表按题目切行**（2026-10-21 确认）：题目指定了数据集（``D`` 槽位）时，表只留表头、分隔行与该数据集的行
+  （各预测长度都留）；T6 不指定数据集、只问哪些方法出现，补上的表只留表头（方法在行上的转置表留全表）。行属于哪个
+  数据集按 ``facts/cells.csv`` 判；数据集名先归一，一行中的数据集都认得、又都不是题目所问的，才删去，认不出的行保留。
+  切掉的行在材料中标出。判分包不切。
 - 材料开头列出库中的论文（标题、所用版本、首个 arXiv 版本的日期），供按日期筛选的题使用。
 
 **两种材料：**
@@ -47,6 +51,16 @@ ANCHOR = re.compile(f"{CODE.pattern}|{PAPER.pattern}")
 CODE_CONTEXT = 8  # 代码锚点前后各补的行数
 SCOPED = ("T5", "T6", "T7", "T8")  # 跨论文的集合题：补上库中全部论文的主结果表（自动题）
 EXCLUDED_TABLES = {"2205.08897v4:T1067"}  # 与 FiLM 表 1 重复的附录表，出题时也排除（题库 scripts/gen.py）
+# 参考答案记为“作者自己跑的”（source: run）却没有锚点的 T7 条目：补上原文中作者交代自己搭建、设置基线的段落，
+# 否则封闭世界的说明会把读者引向“没有说明”（2026-10-21 核对 D 材料时发现）。题库已冻结，故补在这里。
+SUPPLEMENT = {
+    "T7-bccfce23": ("2012.07436v3:302", "2012.07436v3:306"),  # Informer：比较方法含 LogSparse；按推荐设置运行比较方法
+    "T7-6d4ffdbe": ("2106.13008v5:972",),  # Autoformer：Transformer 基线都按两层编码器、一层解码器搭建
+    "T7-4c4f6b77": ("2106.13008v5:972",),
+}
+DATASETS = {"etth1", "etth2", "ettm1", "ettm2", "electricity", "traffic", "weather", "exchange", "ili", "solar",
+            "pems03", "pems04", "pems07", "pems08"}  # fmt: skip
+DATASET_ALIASES = {"elec": "electricity", "illness": "ili", "solarenergy": "solar", "weather-noaa": "weather"}
 
 BANK = Path("~/pw-lab/probes").expanduser()
 PAPERS = Path("~/pw-lab/data/formal/papers").expanduser()
@@ -119,10 +133,19 @@ class Passage:
     last: int
     role: str  # evidence（依据）、scope（封闭世界补上的主结果表）、judge（只供判分）
     lines: list[str] = field(repr=False)
+    hidden: set[int] = field(default_factory=set)  # D 材料中切掉的行（原文行号）；判分包不切
 
-    @property
-    def text(self) -> str:
-        return clean("\n".join(f"{n:>5}\t{line}" for n, line in enumerate(self.lines, self.first)))
+    def text(self, cut: bool = False) -> str:
+        out, skipping = [], False
+        for n, line in enumerate(self.lines, self.first):
+            if cut and n in self.hidden:
+                if not skipping:
+                    out.append("\t[rows not asked about are omitted here]")
+                skipping = True
+                continue
+            skipping = False
+            out.append(f"{n:>5}\t{line}")
+        return clean("\n".join(out))
 
 
 @dataclass
@@ -145,6 +168,7 @@ class Evidence:
         self.facts = [read_yaml(p) for p in sorted((bank / "facts/papers").glob("*.yml"))]
         self.present = papers_at(bank, checkpoint)
         self._sources: dict[str, list[str]] = {}
+        self._rows: dict[str, dict[int, tuple[set[str], set[str]]]] | None = None
 
     # ------------------------------------------------------------ 来源与锚点
 
@@ -207,6 +231,42 @@ class Evidence:
             b += 1
         return source, a, b
 
+    def rows(self) -> dict[str, dict[int, tuple[set[str], set[str]]]]:
+        """表 → 数据行的行号 → （数据集，方法列），来自 ``facts/cells.csv``。"""
+        if self._rows is None:
+            rows: dict[str, dict[int, tuple[set[str], set[str]]]] = defaultdict(dict)
+            with (self.bank / "facts/cells.csv").open(encoding="utf-8") as f:
+                for c in csv.DictReader(f):
+                    datasets, headers = rows[c["table"]].setdefault(int(c["line"]), (set(), set()))
+                    datasets.add(dataset_key(c["dataset"]))
+                    headers.add(c["header"])
+            self._rows = dict(rows)
+        return self._rows
+
+    def cut(self, probe: dict[str, Any], passage: Passage) -> set[int]:
+        """D 材料中这一段要切掉的行：题目指定数据集时删去其他数据集的行；T6 补上的表只留表头。"""
+        if "@" in passage.source or passage.role == "judge":
+            return set()
+        dataset = (probe.get("slots") or {}).get("D")
+        header_only = probe["template"] == "T6" and passage.role == "scope"
+        if not isinstance(dataset, str) and not header_only:
+            return set()
+        target = dataset_key(dataset) if isinstance(dataset, str) else None
+        hidden = set()
+        for t in self.tables:
+            if t["arxiv"] != passage.source or int(t["last"]) < passage.first or int(t["first"]) > passage.last:
+                continue
+            rows = self.rows().get(t["table"], {})
+            transposed = bool(rows) and max(len(h) for _, h in rows.values()) == 1  # 方法在行上
+            for line, (datasets, _) in rows.items():
+                if not passage.first <= line <= passage.last:
+                    continue
+                if header_only and not transposed:
+                    hidden.add(line)
+                elif target and datasets <= DATASETS and target not in datasets:
+                    hidden.add(line)
+        return hidden
+
     def main_tables(self) -> list[str]:
         """库中每篇论文（最新版本）主基准的多变量结果表。"""
         current = set(latest(self.present).values())
@@ -225,6 +285,7 @@ class Evidence:
         """（依据锚点，封闭世界补上的表，只供判分的锚点）。"""
         gold, template = probe["gold"], probe["template"]
         evidence = anchors(probe.get("evidence", [])) | anchors(probe.get("refs", {}))
+        evidence |= set(SUPPLEMENT.get(probe["id"], ()))
         for part in ("points", "entries", "ranking"):
             evidence |= anchors(gold.get(part, []))
         if template == "T1":
@@ -263,6 +324,8 @@ class Evidence:
                         passages.append(Passage(source, a, b, role, self.lines(source)[a - 1 : b]))
                     covered[source] = merge([*covered[source], (lo, hi)])
         passages.sort(key=lambda p: (p.role == "judge", _order(p.source), p.first))
+        for p in passages:
+            p.hidden = self.cut(probe, p)
         if not any(p.role == "evidence" for p in passages):
             errors.append("no evidence passages")
         slots = probe.get("slots") or {}
@@ -276,6 +339,11 @@ class Evidence:
             first = self.dates.get(paper.split("v")[0], {}).get("1", "unknown")
             out.append(f"- {self.title(paper)} (arXiv {paper}; first arXiv version {first})")
         return out
+
+
+def dataset_key(name: str) -> str:
+    key = name.strip().lower()
+    return DATASET_ALIASES.get(key, key)
 
 
 def _check(lo: int, hi: int, lines: list[str]) -> None:
@@ -300,8 +368,8 @@ def _order(source: str) -> tuple[int, str]:
     return (1, source) if "@" in source else (0, source)
 
 
-def _block(p: Passage, label: str) -> str:
-    body = p.text
+def _block(p: Passage, label: str, cut: bool = False) -> str:
+    body = p.text(cut)
     if "@" in p.source:
         fence = "`" * max(3, 1 + max((len(x) for x in re.findall(r"`+", body)), default=0))
         body = f"{fence}\n{body}\n{fence}"
@@ -313,11 +381,16 @@ def reader_material(ev: Evidence, probe: dict[str, Any]) -> str:
     m = ev.material(probe)
     if m.errors:
         raise ValueError(f"{probe['id']}: {m.errors}")
-    blocks = [_block(p, ev.label(p.source)) for p in m.passages if p.role != "judge"]
+    shown = [p for p in m.passages if p.role != "judge"]
+    blocks = [_block(p, ev.label(p.source), cut=True) for p in shown]
+    heading = "Passages from these papers (each line starts with its line number in the paper):"
+    if any("@" in p.source for p in shown):
+        heading = ("Passages from these papers and their code repositories (each line starts with its line number "
+                   "in the paper or file):")  # fmt: skip
     return (
         "Papers in the store (title; arXiv id and version; date of the first arXiv version):\n\n"
         + "\n".join(ev.paper_list())
-        + "\n\nPassages from these papers (each line starts with its line number in the paper):\n\n"
+        + f"\n\n{heading}\n\n"
         + "\n\n".join(blocks)
     )
 

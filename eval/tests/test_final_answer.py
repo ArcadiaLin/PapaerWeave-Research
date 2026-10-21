@@ -134,6 +134,22 @@ def test_closed_book_prompt_has_question_note_and_format() -> None:
 
 
 @pytest.mark.skipif(not (PROBES_REPO / "probes/sample.yml").exists(), reason="题库仓库不在本机")
+def test_paragraph_group_prompt_puts_material_between_question_and_format() -> None:
+    from pweval.harness.refs import D_NOTE, D_SCOPE
+    from pweval.harness.timeline import load_timeline
+    from pweval.protocol.evidence import Evidence
+
+    timeline, ev = load_timeline(PROBES_REPO), Evidence(PROBES_REPO)
+    t5 = next(p for p in timeline.probes if p["template"] == "T5")
+    text = reader_prompt("D", t5, ev)
+    order = [text.index(t5["question"].strip()), text.index("Passages from these papers"), text.index(D_NOTE),
+             text.index(D_SCOPE), text.index("Final answer")]  # fmt: skip
+    assert order == sorted(order) and "GOLD" not in text
+    t2 = next(p for p in timeline.probes if p["template"] == "T2")
+    assert D_SCOPE not in reader_prompt("D", t2, ev) and "Final answer" not in reader_prompt("D", t2, ev)
+
+
+@pytest.mark.skipif(not (PROBES_REPO / "probes/sample.yml").exists(), reason="题库仓库不在本机")
 def test_gold_of_every_sampled_auto_probe_round_trips() -> None:
     from pweval.harness.timeline import load_timeline
 

@@ -4,8 +4,12 @@
     python -m pweval.harness.refs <运行名> --groups C [--reps 2] [--probes main|aux|all] [--ids <题号,…>]
         [--limit N] [--llm <服务地址>] [--config eval/config/refs-ltsf.yml] [--dry-run] [--allow-config-change]
 
-目前实现 C 闭卷组：只给题目，不给库、原文与工具（pi ``--no-tools``）。提示语为题面、C 的说明句与题型的 Final answer
-段（:mod:`pweval.protocol.final_answer`；要点题没有这一段）。D、P 待实现。
+- C 闭卷组：只给题目，不给库、原文与工具（pi ``--no-tools``）。提示语为题面、C 的说明句与题型的 Final answer 段
+  （:mod:`pweval.protocol.final_answer`；要点题没有这一段）。
+- D 段落组：同样不带工具；提示语为题面、依据材料（:func:`pweval.protocol.evidence.reader_material`：库中论文清单与
+  依据段落，表按题目切行）、D 的说明句与 Final answer 段。回答记录另带 ``passages``（每段的出处、行号区间与切掉的行数）
+  与 ``material_sha256``。
+- P 待实现。
 
 C 与库、检查点都无关，所以每题每次只答一次，第 10、20 篇检查点取其中的有效子集（严格规则，D31）。回答存在
 ``<运行目录>/answers/<组>/k30.jsonl``（主检验）与 ``k30-aux.jsonl``（辅助组），一题一次一行，字段与正式时间线的读者
@@ -19,6 +23,7 @@ C 与库、检查点都无关，所以每题每次只答一次，第 10、20 篇
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import shutil
 import socket
@@ -34,6 +39,7 @@ from urllib.parse import urlsplit
 import yaml
 
 from ..paths import EVAL
+from ..protocol.evidence import SCOPED, Evidence, reader_material
 from ..protocol.final_answer import format_for
 from .sandbox import Arm, Paths, Writer, prepare, run_session
 from .timeline import (
@@ -52,7 +58,7 @@ from .timeline import (
 
 CONFIG = EVAL / "config/refs-ltsf.yml"
 GROUPS = ("C", "D", "P")  # 运行顺序：C → D → P
-IMPLEMENTED = ("C",)
+IMPLEMENTED = ("C", "D")
 CHECKPOINT = 30  # 参照组与检查点无关；回答按主检查点存放，前两个检查点取有效子集
 
 # §10.3：题面中的 “store” 指库；C 没有库，按“所知的已发表论文”理解。说明是中性的，不鼓励也不劝阻“不知道”。
@@ -61,21 +67,47 @@ C_NOTE = (
     'Where the question refers to "the store" or "the papers in the store", take it to\n'
     "mean the published papers on this topic that you know of."
 )
+# §10.1：D 只给依据段落。封闭世界（2026-10-21 确认）：材料包含这些论文对题目所问之事的全部说法，没有段落即没有说；
+# 跨论文的集合题另补上库中每篇论文的主结果表（按题目切行）。
+D_NOTE = (
+    "No store or tools are available: the material above is all you have. Answer from these passages only.\n"
+    "The passages contain every statement these papers make about what the question asks; if no passage shows a\n"
+    "paper saying something, the paper does not say it."
+)
+D_SCOPE = (
+    "The passages also include the main multivariate results tables of every paper in the store. For a question\n"
+    "about one dataset only that dataset's rows are kept; where only the compared methods matter, only the table\n"
+    "headers are kept."
+)
+D_STORE = (
+    'Where the question refers to "the store" or "the papers in the store", it means the papers listed above.'
+)
 NO_TOOLS = ("--no-tools", "--no-mcp", "--no-skills", "--no-extensions", "--no-context-files", "--no-prompt-templates")
 
 
 def load_config(path: Path) -> dict[str, Any]:
     config = yaml.safe_load(path.read_text(encoding="utf-8"))
-    for key in ("probes_repo", "corpus_papers", "workdir_root"):
+    for key in ("probes_repo", "corpus_papers", "code", "workdir_root"):
         config[key] = Path(config[key]).expanduser()
     return config
 
 
-def reader_prompt(group: str, probe: dict[str, Any]) -> str:
-    """题面原文、组的说明句，以及题型的 Final answer 段（要点题没有）。"""
-    if group != "C":
+def evidence_of(config: dict[str, Any]) -> Evidence:
+    return Evidence(config["probes_repo"], config["corpus_papers"], config["code"])
+
+
+def reader_prompt(group: str, probe: dict[str, Any], evidence: Evidence | None = None) -> str:
+    """题面原文、（D 的）依据材料、组的说明句，以及题型的 Final answer 段（要点题没有）。"""
+    if group == "C":
+        parts = [probe["question"].strip(), C_NOTE]
+    elif group == "D":
+        if evidence is None:
+            raise ValueError("group D needs the evidence material")
+        scoped = probe["template"] in SCOPED and "points" not in probe["gold"]
+        note = "\n".join([D_NOTE, *([D_SCOPE] if scoped else []), D_STORE])
+        parts = [probe["question"].strip(), reader_material(evidence, probe), note]
+    else:
         raise NotImplementedError(f"group {group} is not implemented yet")
-    parts = [probe["question"].strip(), C_NOTE]
     if fmt := format_for(probe):
         parts.append(fmt)
     return "\n\n".join(parts) + "\n"
@@ -100,8 +132,8 @@ def answered(run: Path, group: str, probe_group: str) -> set[tuple[str, int]]:
 
 
 def answer(config: dict[str, Any], run: Path, group: str, probe: dict[str, Any], rep: int, probe_group: str,
-           reader: Writer) -> dict[str, Any]:  # fmt: skip
-    """一题一次读者会话；C 不带任何工具。"""
+           reader: Writer, evidence: Evidence | None = None) -> dict[str, Any]:  # fmt: skip
+    """一题一次读者会话；C、D 不带任何工具。"""
     paths = Paths(run / group / f"rep{rep}" / probe["id"])
     if paths.root.exists():  # 中断后重跑：上次没存下回答的会话目录不留
         shutil.rmtree(paths.root)
@@ -118,10 +150,18 @@ def answer(config: dict[str, Any], run: Path, group: str, probe: dict[str, Any],
         reserve_tokens=runner["reserve_tokens"],
         max_tokens=runner.get("max_output_tokens"),
     )
-    text = reader_prompt(group, probe)
+    text = reader_prompt(group, probe, evidence)
     started = datetime.now(UTC).isoformat(timespec="seconds")
     result = run_session(paths, box, reader, text, timeout_s=runner["probe_timeout_min"] * 60)
     events = paths.root / result["events"]
+    material = {}
+    if group == "D" and evidence is not None:
+        m = evidence.material(probe)
+        material = {
+            "passages": [{"source": p.source, "first": p.first, "last": p.last, "role": p.role, "cut": len(p.hidden)}
+                         for p in m.passages if p.role != "judge"],
+            "material_sha256": hashlib.sha256(reader_material(evidence, probe).encode()).hexdigest(),
+        }  # fmt: skip
     return {
         "arm": group,
         "checkpoint": None,
@@ -140,12 +180,14 @@ def answer(config: dict[str, Any], run: Path, group: str, probe: dict[str, Any],
         "usage": usage(events),
         "tools": tool_counts(events),
         "network": network_calls(events),
+        **material,
     }
 
 
 def run_group(config: dict[str, Any], run: Path, group: str, chosen: list[tuple[str, dict[str, Any]]],
               reps: int, user: str) -> None:  # fmt: skip
     reader = Writer("reader", user, f"{config['runner']['agent']}/{config['runner']['model']}")
+    evidence = evidence_of(config) if group == "D" else None
     done = {g: answered(run, group, g) for g in {g for g, _ in chosen}}
     todo = [(g, p, r) for r in range(1, reps + 1) for g, p in chosen if (p["id"], r) not in done[g]]
     for g in {g for g, _, _ in todo}:
@@ -153,7 +195,7 @@ def run_group(config: dict[str, Any], run: Path, group: str, chosen: list[tuple[
 
     def ask(item: tuple[str, dict[str, Any], int]) -> None:
         g, probe, rep = item
-        record = answer(config, run, group, probe, rep, g, reader)
+        record = answer(config, run, group, probe, rep, g, reader, evidence)
         append_jsonl(answers_file(run, group, g), record)
         emit("READER", group, probe=probe["id"], rep=rep, exit=record["exit"], seconds=record["seconds"],
              chars=len(record["answer"]))  # fmt: skip
@@ -201,8 +243,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     chosen = select(timeline, args.probes, ids, args.limit)
     if args.dry_run:
         for group in groups:
+            evidence = evidence_of(config) if group == "D" else None
             for _, probe in chosen:
-                print(f"===== {group} {probe['id']} ({probe['template']})\n{reader_prompt(group, probe)}")
+                print(f"===== {group} {probe['id']} ({probe['template']})\n{reader_prompt(group, probe, evidence)}")
         return 0
     if problem := reachable(config["llm"]):
         raise SystemExit(f"inference service is not reachable: {problem}")
