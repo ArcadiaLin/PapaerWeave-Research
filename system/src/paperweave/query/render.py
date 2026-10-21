@@ -6,7 +6,7 @@ PyYAML 不能写注释，所以这里自己写一个只覆盖读取结果形状�
 （见测试）。
 
 注释：值或键是 ``names`` 中的 id 时，行末加 ``# <名称>``；``notes`` 按路径（如 ``("exp_0042", "anchor")``）给出
-其他行末注释，如锚点的章节。
+其他行末注释，如锚点的章节。注释接在值后空两格，不对齐到固定列：f1 中对齐用的空格占 search 返回的约一成。
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from typing import Any
 
 INDENT = "  "
-COMMENT_COLUMN = 36
+COMMENT_GAP = "  "  # 值与行末注释之间
 _PLAIN = re.compile(r"[A-Za-z0-9_$(][^\n]*")
 _SPECIAL_START = tuple("!&*%@`'\"[]{}>|#,?-:")
 _RESOLVES = re.compile(
@@ -86,7 +86,7 @@ def _with(line: str, comment: str | None) -> str:
     comment = " ".join(comment.split())
     if len(comment) > 70:
         comment = comment[:69].rstrip() + "…"
-    return f"{line.ljust(COMMENT_COLUMN - 1)} # {comment}"
+    return f"{line}{COMMENT_GAP}# {comment}"
 
 
 def _key(key: Any) -> str:
