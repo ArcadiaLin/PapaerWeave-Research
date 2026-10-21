@@ -18,4 +18,4 @@ runner:
   max_output_tokens: 98304   # 单次回复的输出上限（宿主机为 32768）：C、D 只有一次回复，思考与答案都在其中（§7 第 4 条）
   http_idle_timeout_ms: null
   probe_timeout_min: 60      # 防失控的上限，不是回答时限
-  reader_workers: 4
+  reader_workers: 12         # C 组按 12 路并发（10-21 定；C 的用时不进成本比较）
