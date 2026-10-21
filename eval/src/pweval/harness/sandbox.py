@@ -192,12 +192,26 @@ def run_session(paths: Paths, arm: Arm, writer: Writer, prompt: str, *, timeout_
             _wait_for(paths.sock / "mcp.sock")
         started = time.monotonic()
         exclude = ["--exclude-tools", ",".join(arm.hide_tools)] if arm.name == "A4" and arm.hide_tools else []
-        command = [pi_install()[1], "-p", "--offline", "--approve", "--mode", "json", *exclude, *arm.pi_args, prompt]
+        command = [pi_install()[1], "-p", "--offline", "--approve", "--mode", "json", *exclude, *arm.pi_args]
+        stdin = None
+        if len(prompt.encode()) > ARG_LIMIT:
+            # 过长的提示语经 stdin 传入：pi 读入后去掉首尾空白，没有消息参数时即作为提示语。读者提示语都以一个换行结尾，
+            # 经 stdin 时这个换行被去掉，此外逐字相同；其他首尾空白会改变提示语，不允许
+            if prompt.strip() != prompt.rstrip("\n"):
+                raise ValueError("a prompt passed through stdin must not start or end with whitespace other than newlines")
+            stdin = runs / f"{stamp}.prompt.txt"
+            stdin.write_text(prompt, encoding="utf-8")
+        else:
+            command.append(prompt)
         killed: list[dict] = []
-        with open(runs / f"{stamp}.jsonl", "wb") as out, open(runs / f"{stamp}.err", "wb") as err:
+        with (
+            open(runs / f"{stamp}.jsonl", "wb") as out,
+            open(runs / f"{stamp}.err", "wb") as err,
+            open(stdin or os.devnull, "rb") as source,  # pi -p 在 stdin 不是终端时会读它
+        ):
             proc = subprocess.Popen(
                 [*_bwrap(paths, arm, writer), *command],
-                stdin=subprocess.DEVNULL,  # pi -p 在 stdin 不是终端时会读它
+                stdin=source,
                 stdout=out,
                 stderr=err,
             )
@@ -223,6 +237,7 @@ def run_session(paths: Paths, arm: Arm, writer: Writer, prompt: str, *, timeout_
     return {"exit": code, "seconds": seconds, "events": f"runs/{stamp}.jsonl", "session": session, "tool_kills": killed}
 
 
+ARG_LIMIT = 100_000  # 字节；单个命令行参数的上限是 131072 字节（Linux MAX_ARG_STRLEN），D 的长材料会超过
 TOOL_LIMIT_S = 600  # 单个 shell 工具命令的时限：超过即终止，pi 收到出错结果后继续（两组相同）
 
 
