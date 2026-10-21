@@ -200,7 +200,8 @@ def t1(probe: dict[str, Any], a: dict[str, Any], ask: Ask, tables: Tables) -> fl
 
 def t3(probe: dict[str, Any], a: dict[str, Any], ask: Ask, tables: Tables) -> float | None:
     g = probe["gold"]
-    gold = {(ask.method(m), p) for m, p in zip(g["method"], g["paper"], strict=True)}
+    # 并列时 method 与 paper 两个列表各自排序，不能逐位配对；（方法，论文）对从排名中取最优值的各行
+    gold = {(ask.method(r["method"]), r["paper"]) for r in g["ranking"] if same(r["mse"], g["mse"])}
     rows = [(ask.method(r["method"]), ask.paper(r["paper"]), r) for r in a["best"]]
     if ask.unknown:
         return None
@@ -212,7 +213,7 @@ def t3(probe: dict[str, Any], a: dict[str, Any], ask: Ask, tables: Tables) -> fl
     stated = [r["lookback"].strip() for _, _, r in rows]
     gold_lookback = str(g["lookback"]).strip()
     if re.fullmatch(r"\d+", gold_lookback):
-        right = all(re.findall(r"\d+", s) == [gold_lookback] for s in stated)
+        right = all(set(re.findall(r"\d+", s)) == {gold_lookback} for s in stated)  # 同一个数写两次不算错
     elif all(s.lower() == gold_lookback.lower() for s in stated):
         right = True
     else:

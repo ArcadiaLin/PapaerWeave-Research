@@ -25,7 +25,9 @@ def render(template: str, gold: dict) -> str:
     if template == "T1":
         body = [f"MSE: {gold['mse']}", f"MAE: {gold['mae']}", f"Location: Table {gold['table']}"]
     elif template == "T3":
-        rows = zip(gold["method"], gold["paper"], strict=False)
+        # 并列时 method 与 paper 各自排序，成对的关系取自 ranking 中最优值的各行
+        rows = [(r["method"], r["paper"]) for r in gold.get("ranking", []) if r["mse"] == gold["mse"]]
+        rows = rows or list(zip(gold["method"], gold["paper"], strict=True))
         body = [f"{m} | {p} | {gold['mse']} | {gold['lookback']}" for m, p in rows]
     elif template in ("T4", "T6"):
         body = list(gold["methods" if template == "T4" else "dropped"]) or ["none"]

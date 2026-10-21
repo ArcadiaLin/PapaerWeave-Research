@@ -167,6 +167,16 @@ sys.exit(1 if problems else 0)
 '''
 
 
+# 逐题的判分说明：题库冻结后发现的金标准缺陷，不改题与参考答案，只在判分包中说明怎样判（各组相同）。
+JUDGE_NOTES = {
+    "M-T14-patchtst-code": (
+        "要点 a 的参考答案说 v2“只说代码将会公开”，但 PatchTST v2 原文中找不到这句话（金标准缺陷，题库已冻结，"
+        "不改）。判要点 a 时，回答只要说出 v2 没有给出自己的代码链接（文中的 GitHub 链接都是数据集）即算答对，"
+        "不因没有提到“将会公开”而扣分；回答若声称 v2 给出了自己的代码链接，仍算错。"
+    ),
+}
+
+
 def _fence(text: str) -> str:
     longest = max((len(run) for run in text.split("\n") if set(run) == {"~"}), default=0)
     fence = "~" * max(4, longest + 1)
@@ -217,7 +227,10 @@ def build(run: Path, name: str, probes_repo: Path, groups: list[str] | None) -> 
         only_extract = all(p["item"] == "extract" for items in by_probe[probe_id].values() for p in items)
         # 只需抽取答案的包不给参考答案与证据：抽取只记录回答说了什么，看到参考答案可能被带偏
         material = f"## 问题\n\n{probe['question'].strip()}\n" if only_extract else judge_material(ev, probe)
-        body = [f"# 判分包 {probe_id}（题型 {probe['template']}）\n", material, "\n## 待评回答\n"]
+        body = [f"# 判分包 {probe_id}（题型 {probe['template']}）\n", material]
+        if note := JUDGE_NOTES.get(probe_id):
+            body.append(f"\n## 判分说明\n\n{note}\n")
+        body.append("\n## 待评回答\n")
         expected[probe_id] = []
         for i, key in enumerate(answers, 1):
             label = f"A{i}"

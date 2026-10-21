@@ -77,11 +77,18 @@ def test_t1_values_and_location() -> None:
 
 
 def test_t3_ties_values_and_lookback() -> None:
-    gold = {"method": ["SCINet", "PatchTST/64"], "paper": ["2106.09305v3", "2211.14730v2"], "mse": 0.37,
-            "lookback": "336"}
+    # 题库中并列的 method 与 paper 两个列表各自排序（这里故意不对位），成对的关系只在 ranking 中
+    ranking = [{"method": "SCINet", "paper": "2106.09305v3", "mse": 0.37},
+               {"method": "PatchTST/64", "paper": "2211.14730v2", "mse": 0.37},
+               {"method": "DLinear", "paper": "2211.14730v2", "mse": 0.41}]  # fmt: skip
+    gold = {"method": ["PatchTST/64", "SCINet"], "paper": ["2106.09305v3", "2211.14730v2"], "mse": 0.37,
+            "lookback": "336", "ranking": ranking}
     probe = auto("T3", gold)
     both = ["SCINet | 2106.09305 | 0.370 | 336", "PatchTST | 2211.14730v2 | 0.37 | L = 336"]
     assert score(probe, fa(*both))["score"] == 1.0
+    repeated = ["SCINet | 2106.09305 | 0.370 | 336 (input length T = 336)", both[1]]
+    assert score(probe, fa(*repeated))["score"] == 1.0  # 同一个数写两次不算错
+    assert score(probe, fa("SCINet | 2106.09305 | 0.370 | 336 (searched in 96, 336)", both[1]))["score"] == 0.5
     assert score(probe, fa(both[0]))["score"] == 0.5  # 并列没列全
     assert score(probe, fa(both[0], "SCINet | 2106.09305 | 0.370 | 96"))["score"] == 0.5
     assert score(probe, fa(*both, "DLinear | 2211.14730 | 0.37 | 336"))["score"] == 0.0
