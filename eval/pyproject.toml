@@ -16,6 +16,7 @@ dependencies = [
 
 [project.scripts]
 pweval-refs = "pweval.harness.refs:main"   # 参照组 C、D、P 的读者（docs/designs/v3/evaluation.md §10）
+pweval-grade = "pweval.measure.grade_v3:main"   # V3 判分（docs/designs/v3/evaluation.md §5.4）
 
 [build-system]
 requires = ["hatchling"]
