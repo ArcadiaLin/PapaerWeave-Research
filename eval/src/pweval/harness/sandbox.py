@@ -83,7 +83,7 @@ class Writer:
 
 @dataclass(frozen=True)
 class Arm:
-    name: str  # A0、A2、A3、A4，或 none（参照线：没有库）
+    name: str  # A0、A2、A3、A4，或参照组 C、D、P（没有库），以及先导的 none
     papers: Path | None  # 论文材料目录（只读挂载到 /work/papers）；读者与参照线为 None
     code: Path | None = None  # 按论文版本固定 commit 的代码（只读挂载到 /work/code）；读者为 None
     store: Path | None = None  # A0：共享仓库，挂载为 /work
@@ -95,6 +95,7 @@ class Arm:
     evidence_scope: str | None = None  # A3、A2：artifacts 时 read_evidence 只读产物文档（读者不读论文原文）
     ablate: tuple[str, ...] = ()  # A2：关掉的机制（dedup、revision、stale、affected）
     graphiti: str | None = None  # A4：Graphiti MCP 服务的地址
+    pi_args: tuple[str, ...] = ()  # 附加给 pi 的参数，例如参照组的 --no-tools（docs/designs/v3/evaluation.md §10）
 
 
 @dataclass(frozen=True)
@@ -120,12 +121,14 @@ def prepare(
     context_window: int,
     idle_timeout_ms: int | None,
     reserve_tokens: int,
+    max_tokens: int | None = None,
 ) -> None:
     """建立会话的工作目录与 pi 的 agent 目录：模型配置、设置、MCP 登记，都写在本会话的 ``HOME`` 中（用户级配置，
     不受项目信任的限制；A0 的共享仓库里不放各写者的设置）。
 
     - 模型：宿主机 models.json 中的这一个模型，地址换成本组的大模型服务（D16：两台 sglang 按组分），上下文窗口
-      取实验配置（D14：sglang 实际支持 262144）。
+      取实验配置（D14：sglang 实际支持 262144）。``max_tokens`` 给出时覆盖单次回复的输出上限（宿主机为 32768；
+      不带工具的参照组只有一次回复，思考与答案都在其中，评测设计 V3 §7 第 4 条）。
     - 设置：思考级别、请求的空闲超时、会话记录目录，以及压缩时预留的 token（D15：摘要的生成上限是 0.8 ×
       reserveTokens，默认 16384 时开着思考的摘要会撞上限、压缩失败）。
 
@@ -141,7 +144,8 @@ def prepare(
     models = json.loads((host_agent / "models.json").read_text(encoding="utf-8"))
     entry = models["providers"][provider]
     entry["baseUrl"] = llm
-    entry["models"] = [m | {"contextWindow": context_window} for m in entry["models"] if m["id"] == model_id]
+    limits = {"contextWindow": context_window} | ({"maxTokens": max_tokens} if max_tokens else {})
+    entry["models"] = [m | limits for m in entry["models"] if m["id"] == model_id]
     if not entry["models"]:
         raise ValueError(f"{model} is not in {host_agent / 'models.json'}")
     models["providers"] = {provider: entry}
@@ -188,7 +192,7 @@ def run_session(paths: Paths, arm: Arm, writer: Writer, prompt: str, *, timeout_
             _wait_for(paths.sock / "mcp.sock")
         started = time.monotonic()
         exclude = ["--exclude-tools", ",".join(arm.hide_tools)] if arm.name == "A4" and arm.hide_tools else []
-        command = [pi_install()[1], "-p", "--offline", "--approve", "--mode", "json", *exclude, prompt]
+        command = [pi_install()[1], "-p", "--offline", "--approve", "--mode", "json", *exclude, *arm.pi_args, prompt]
         killed: list[dict] = []
         with open(runs / f"{stamp}.jsonl", "wb") as out, open(runs / f"{stamp}.err", "wb") as err:
             proc = subprocess.Popen(

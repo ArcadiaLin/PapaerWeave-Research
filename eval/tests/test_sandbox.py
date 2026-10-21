@@ -98,6 +98,13 @@ def test_pi_settings_go_to_the_session_home(host: Path) -> None:
     assert not (paths.work / ".pi").exists()  # 工作目录里不放 pi 的配置
 
 
+def test_max_tokens_overrides_the_output_limit_only_when_given(host: Path) -> None:
+    paths = Paths(host / "run/C/r")
+    sandbox.prepare(paths, Arm("C", None), **SETTINGS, max_tokens=98304)
+    provider = json.loads((paths.home / ".pi/agent/models.json").read_text())["providers"]["sglang"]
+    assert provider["models"] == [{"id": "m", "contextWindow": 262144, "maxTokens": 98304}]
+
+
 def test_writer_sees_work_papers_and_code_with_the_network_shared(host: Path) -> None:
     paths = Paths(host / "run/A3/w")
     arm = Arm("A3", host / "papers", code=host / "code", neo4j="bolt://x", data=host / "data")

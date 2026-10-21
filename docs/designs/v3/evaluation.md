@@ -182,19 +182,31 @@ $$
    | D | （段落放在题面之后）Answer only from the passages above. Cite the lines your answer rests on. |
    | C | No papers, store or tools are available. Answer from what you know. |
 
-   - **Final answer 段：** 自动题按题型要求在回答末尾给出固定字段，由脚本按题型生成，所有条件同一份；只规定填哪些字段，不透露答案。要点题不要求格式，照常自由作答。
+   - **Final answer 段：** 〔已确认 2026-10-21〕自动题要求在回答末尾给出固定字段。字段只取每题 `scoring` 计分所需的部分，不多不少；由脚本按题型生成，所有条件同一份，只规定填哪些字段，不透露答案。要点题（T2、手写的 T8、T9–T11、T14）不要求格式，照常自由作答。提示语中统一写作“End your reply with a section headed `Final answer`, exactly in this form:”，后接该题型的模板：
 
-     | 题型 | 字段（草稿） |
-     | --- | --- |
-     | T1 | MSE、MAE、表号 |
-     | T3 | 每个最优方法一行：方法、论文、MSE、look-back |
-     | T4、T6 | 每行一个方法 |
-     | T5 | 被超过的基线，每行一个；（基线，后来的论文）对，每行一对 |
-     | T7、T8 | 按 `auto.yml` 的 `answer_type` 生成相应字段 |
+     | 题型 | 模板 | 对应的计分依据（`scoring`） |
+     | --- | --- | --- |
+     | T1 | `MSE: <value>`<br>`MAE: <value>`<br>`Location: <table number, or lines, in the paper>` | 两个值与位置 |
+     | T3 | `<method> \| <paper> \| <MSE> \| <look-back as the paper states it, or "not stated">`，一行一个，只有并列时多行 | 方法、论文、值、look-back；并列须全部列出 |
+     | T4、T6 | `<method>`，一行一个；没有写 `none` | 方法集合的 F1 |
+     | T5 | `Beaten:` 下一行一个 `<method>`；`Later papers:` 下一行一对 `<baseline> \| <paper>`；没有写 `none` | 两部分各算 F1，等权 |
+     | T7 | `<paper> \| own`、`<paper> \| cited: <source>` 或 `<paper> \| not stated`，一行一篇 | 按论文的 F1，来源类别与所引出处 |
+     | T8（自动题） | `<paper> \| <MSE> \| <table or setting, optional>`，一行一篇 | （论文，值）对的 F1；注明表或设置的额外对不算错 |
 
-   - 缺少这一段或解析失败时，转由判分子代理读全文判定；格式遵从率按组报告。
+     - `<paper>` 写 arXiv 编号或标题均可，`<method>` 写论文中的名称；判分时按题库 `facts/aliases.yml`、`facts/methods.yml` 归一。
+     - T8 中“是否判定某值正确、其余错误”不设字段（设字段会诱导读者作出判定），由判分子代理读全文判定。
+   - **判分时用正则解析：** 〔已确认 2026-10-21〕取回答中最后一个 `Final answer` 标题（容许 `#`、`**` 与冒号）之后的内容，按题型的固定形式解析：
+     - 键值行 `^(MSE|MAE|Location):\s*(.+)$`；
+     - 以 `|` 分隔的行，按列数与题型对应；
+     - 小节标记 `Beaten:`、`Later papers:`；
+     - 字面量 `none`、`own`、`cited:`、`not stated`；
+     - 数值 `-?\d+(?:\.\d+)?`，按相等比较（`0.37` 与 `0.370` 相同）。
+     
+     名称经别名表归一。缺少这一段、正则解析失败或名称无法归一时，转由判分子代理读全文判定。格式遵从率与解析失败率按组报告。
    - 现在的 `tasks/reader.yml` 是冻结材料，按 `store_only` 写成；新提示语在新一轮冻结时替换它。
 4. 〔已确认 2026-10-21〕**不设回答时限，只设防失控的安全上限：单题 60 分钟或 300 次工具调用，先到者为准。** f1 的超时读者没有空转（完全重复的调用占比中位 0%），只是先收齐材料最后才写，15 分钟截断时 `answer` 只剩一句过程话。取消时限后它们能答完；安全上限只防循环调用与无休止的压缩。触发上限的题见 §5.1。单条 shell 命令仍限 10 分钟。
+   - 〔已确认 2026-10-21〕**单次回复的输出上限调到 98304 token，所有组统一**（配置项 `runner.max_output_tokens`；宿主机的模型配置为 32768）。C、D 不带工具，只有一次回复，思考与答案都在其中：C 的试跑中 1/10 题思考约 10 万字后撞上 32768，回答为空（`stopReason: length`）。f1 中带工具的读者没有一次撞上过 32768，所以对写者组的读者几乎没有影响；A4 有 3 个写者会话“输出触顶”，也是这个上限。
+   - 回答记录增加 `stop` 字段（最后一条回复的结束原因：`stop`、`length`、`error` 等）。仍撞上上限的题记 0 分，与失控的题一并单列。
 5. 〔已确认 2026-10-21〕**断网，并在任务文字与读者提示语中明说。** 写者与读者的沙箱都断网，只经转发保留模型调用与各组库服务的通道。这同时解决两个问题：各组取得的外部内容不等（f1 中 A0 有 38 个写者会话联网，A3 3 个、A2 2 个、A4 1 个），以及各组的 Neo4j 端口对所有写者都可达。
    - **环境说明（草稿，与第 6 条合为一段）：** “You are working in a sandbox for a test. There is no network access: any network command (curl, wget, pip install, git clone, web search) will fail. Python 3 is available with the standard library and PyYAML only; nothing else can be installed. Use only what is available locally.” 所有组、写者与读者同一段。
    - **放在哪里：** 〔已确认 2026-10-21〕接在每个写者任务与每条读者提示语的末尾，不改 pi 的系统提示，保持默认配置（`AGENTS.md`）。先例是 D29 在找实现的任务文字中写明“代码在 `code/` 中读，不要从网上取”。
@@ -341,23 +353,59 @@ T3 的段落大，是因为要给出各候选方法所在的整张表。
 
 ### 10.3 C 闭卷组
 
-状态：〔提议〕，未实现。闭卷组只给题目，不给库、原文与工具，读者只能凭模型已有的知识作答。它量出“背出来的分”：语料是公开论文，模型训练时可能读过其中一部分。
+状态：规格已确认（2026-10-21），未实现。闭卷组只给题目，不给库、原文与工具，读者只能凭模型已有的知识作答。它量出“背出来的分”：语料是公开论文，模型训练时可能读过其中一部分。
 
 **输入**
 
-- 题集：`probes/sample.yml` 的 200 道主题。闭卷组与库、检查点都无关，金标准也不按检查点重算（D31），所以 200 道作答一次，第 10、20 篇检查点取其中的有效子集。
+- 题集：`probes/sample.yml` 的 200 道主题；辅助组 6 道代码题（T16–T18）同样作答，另存。闭卷组与库、检查点都无关，金标准也不按检查点重算（D31），所以作答一次，第 10、20 篇检查点取其中的有效子集。
 - 不给：库、论文、代码、网络、工具。
 
-**作答**
+**提示语**〔已确认 2026-10-21〕
 
-- 读者：与段落组相同，pi 1.2.0，同一模型与思考级别，不带任何工具（`pi -p --no-tools --no-mcp --no-skills --no-extensions --no-context-files`），保留会话记录。
-- 提示语：按 §7 第 3 条，题面原文，加 C 的说明句与 Final answer 段。说明句是中性的：没有论文、库或工具可用，凭你所知作答；不鼓励也不劝阻“不知道”，避免说明本身左右得分。
-- 安全上限与其他读者相同。〔提议〕跑 2 次，与“每题取两条时间线的均值”对齐。
-- 先导的读者框架中已有闭卷参照线（`eval/src/pweval/harness/readers.py` 的 `--baselines`），提示语与输出格式按上面的规则改写。
+```text
+{question}
+
+No papers, store or tools are available. Answer from what you know.
+Where the question refers to "the store" or "the papers in the store", take it to
+mean the published papers on this topic that you know of.
+
+{FORMAT}
+```
+
+- `{FORMAT}` 是 §7 第 3 条中该题型的 Final answer 段；要点题没有这一段。
+- 关于 “store” 的一句只解释冻结题面中的用语（T6、T8 等写着 “the papers in the store”），不透露信息；P、D 各有对应的一句（P：`papers/` 中的论文；D：上面给出的段落）。
+- 说明是中性的：不鼓励也不劝阻“不知道”，避免说明本身左右得分。
+- 不加第 5 条的环境说明：C 不带工具，用不上。
+
+**运行配置**〔已确认 2026-10-21〕
+
+| 项 | 取值 |
+| --- | --- |
+| 运行名 | `ref1`（参照组第 1 轮；D、P 也放在这个运行目录下） |
+| 读者 | pi 1.2.0，`sglang/qwen3.8-27b`，思考级别 medium，上下文 262144，压缩预留 32768，与其他读者相同 |
+| 命令 | `pi -p --offline --mode json --no-tools --no-mcp --no-skills --no-extensions --no-context-files --no-prompt-templates` |
+| 沙箱 | 与其他读者相同，`/work` 为空；C 不带工具，不必等断网转发做好，网络共享即可 |
+| 服务与并发 | 独占一台推理服务，4 路并发 |
+| 次数 | 2 次，每条记录带 `rep` |
+| 上限 | 60 分钟（不带工具，实际不会触发） |
+
+**启动方式**〔提议〕
+
+与正式时间线（`python -m pweval.harness.timeline <运行名> …`）同一风格，新增参照组的入口：
+
+```text
+python -m pweval.harness.refs ref1 --groups C [--reps 2] [--probes main|aux|all] [--ids <题号,…>]
+    [--limit N] [--llm <服务地址>] [--dry-run]
+```
+
+- `--groups` 可取 `C`、`D`、`P` 的任意组合，按 C → D → P 的顺序运行；`--dry-run` 只生成提示语、不调用模型，用来检查 Final answer 段与段落。
+- 续跑与正式时间线相同：同一条命令，已答的（题，次）跳过；`run.yml` 记下仓库与题库的提交、pi 版本、实际生效的配置与服务地址。
+- 另在 `eval/pyproject.toml` 中登记命令行入口（例如 `pweval-refs`），等价于上面的写法。
+- 先导的读者框架中已有闭卷参照线（`eval/src/pweval/harness/readers.py` 的 `--baselines`），可沿用其中的会话调用；提示语、Final answer 段与输出格式按本节改写。
 
 **输出**
 
-- 写到 `<运行>/answers/C/k30.jsonl`，字段与其他读者相同（`arm` 记为 `C`）。判分与其他组同一流程、同批盲判。
+- 写到 `~/pw-lab/runs/ref1/answers/C/k30.jsonl` 与 `k30-aux.jsonl`，字段与其他读者相同（`arm` 记为 `C`，另有 `rep`）。判分与其他组同一流程、同批盲判；C 可以先判（§7 第 2 条）。
 
 **怎么读结果**
 

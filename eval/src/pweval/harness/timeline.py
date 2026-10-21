@@ -442,6 +442,7 @@ def session(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, ste
         context_window=runner["context_window"],
         idle_timeout_ms=runner.get("http_idle_timeout_ms"),
         reserve_tokens=runner["reserve_tokens"],
+        max_tokens=runner.get("max_output_tokens"),
     )
     before = version(config, run, arm)  # A4：前一个会话写入的记忆处理完，这个写者才开始
     inflight = {"seq": step["seq"], "started": datetime.now(UTC).isoformat(timespec="seconds"),
@@ -598,6 +599,7 @@ def answer(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, pape
         context_window=runner["context_window"],
         idle_timeout_ms=runner.get("http_idle_timeout_ms"),
         reserve_tokens=runner["reserve_tokens"],
+        max_tokens=runner.get("max_output_tokens"),
     )
     text = reader_prompt(timeline, arm, probe)
     started = datetime.now(UTC).isoformat(timespec="seconds")
@@ -614,6 +616,7 @@ def answer(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, pape
         "llm": config["arms"][arm]["llm"],
         "prompt": text,
         "answer": final_text(events),
+        "stop": stop_reason(events),
         "usage": usage(events),
         "tools": tool_counts(events),
         "network": network_calls(events),
@@ -640,6 +643,12 @@ def final_text(events: Path) -> str:
     texts = ["".join(c.get("text", "") for c in m.get("content", []) if c.get("type") == "text").strip()
              for m in _assistant_messages(events)]  # fmt: skip
     return next((t for t in reversed(texts) if t), "")
+
+
+def stop_reason(events: Path) -> str | None:
+    """最后一条助手消息的结束原因：``stop``、``toolUse``、``length``（撞上单次回复的输出上限）、``error`` 等。"""
+    messages = _assistant_messages(events)
+    return messages[-1].get("stopReason") if messages else None
 
 
 def usage(events: Path) -> dict[str, int]:

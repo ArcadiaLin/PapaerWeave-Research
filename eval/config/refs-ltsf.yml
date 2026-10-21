@@ -1,0 +1,21 @@
+# V3 参照组（pweval.harness.refs）：C 闭卷、D 段落、P 原文（docs/designs/v3/evaluation.md §7 第 2 条、§10）。
+# 题与金标准取自题库仓库（probes_repo）；读者设置与正式时间线（formal-ltsf.yml）相同，只有时限不同：
+# 读者不设回答时限，只设防失控的上限（§7 第 4 条）。
+
+probes_repo: ~/pw-lab/probes                 # probes/sample.yml、auto.yml、manual-rendered.yml、tasks/
+corpus_papers: ~/pw-lab/data/formal/papers   # D、P 用（C 不用）
+workdir_root: ~/pw-lab/runs                  # 运行目录 <workdir_root>/<运行名>/
+
+llm: http://192.168.163.112:30000/v1   # 每组独占一台推理服务（§7 第 1 条）；--llm 可以覆盖
+reps: 2                                 # 每题作答次数，与“每题取两条时间线的均值”对齐
+
+runner:
+  agent: pi
+  model: sglang/qwen3.8-27b
+  thinking: medium
+  context_window: 262144
+  reserve_tokens: 32768
+  max_output_tokens: 98304   # 单次回复的输出上限（宿主机为 32768）：C、D 只有一次回复，思考与答案都在其中（§7 第 4 条）
+  http_idle_timeout_ms: null
+  probe_timeout_min: 60      # 防失控的上限，不是回答时限
+  reader_workers: 4
