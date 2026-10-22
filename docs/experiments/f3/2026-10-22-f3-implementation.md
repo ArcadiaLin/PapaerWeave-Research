@@ -149,10 +149,10 @@ M1 开始实现前要先定的细节（取自设计 §10），逐项与用户敲
 | 工作项 | 完成标准 | 状态 | commit | 验证 |
 | --- | --- | --- | --- | --- |
 | system：anchor、Paper `source`、校验、过时、`read_evidence` | 1 | 完成 | 10a8fa0 | system 测试 276 项通过、eval 测试 170 项通过（临时 Neo4j `pw-f3-test`，端口 7699）；决定见 4.1 |
-| 来源服务 `read_source` | 2 | 未开始 | | |
-| 运行器 | 3 | 未开始 | | |
+| 来源服务 `read_source` | 2 | 完成 | c3101e0 | `eval/tests/test_source_server.py` 5 项通过（交付与只读、复用与完整性、拒绝不区分未开放与不存在、不带版本取已开放的最新版本、代码清单、stdio MCP）；决定见 4.2 |
+| 运行器 | 3 | 完成 | 6864820 | eval 测试 178 项通过（含开放与哈希核对、全新会话目录、中断两种情形、归档、沙箱挂载）；决定见 4.3 |
 | 种子转换 | 4 | 未开始 | | |
-| 冻结材料 | 5 | 未开始 | | |
+| 冻结材料 | 5 | 已生成，待冻结 | 题库 c2e7e91 | `scripts/tasks.py --f3`：73 项中改写 50 个任务，其余字段与 `plan.yml` 逐项相同；材料表 33 个论文来源、3 个代码仓库，点出的来源在该会话开始时都已开放（脚本内断言）；决定见 4.4。冻结记录在第 5 节 |
 | 冒烟 | 6 | 未开始 | | |
 
 ## 4 实现中的决定
@@ -174,6 +174,33 @@ M1 开始实现前要先定的细节（取自设计 §10），逐项与用户敲
 11. **去掉 `read_evidence` 的 `anchored` 范围**与 `query/anchored.py`：f3 读者的工具在评测侧（M2），而它依赖已去掉的 `material_ref`；f2-A3 读者若要重跑，用 10a8fa0 之前的代码。保留 `artifacts` 范围。
 12. **A2 的修订约束消融不变：** `eval/baselines/a2_mcp.py` 只滤掉 rule 为 `revision` 的问题；锚点与来源的问题（rule `anchor`、`source`）不受影响，即记录有效性两组都有（设计 §4.1）。
 13. **工具说明**（`system/src/paperweave/mcp/server.yml`）随之改写：示例中 Paper 写 `source: [2205.13504v3]`，锚点写 `2205.13504v3::120:135`；新版本的规则改为“把新版本的来源 ID 加进 Paper 的 `source`”；边的锚点说明去掉 `paper`。
+
+### 4.2 来源服务（c3101e0）
+
+1. **实现为评测侧的标准库 MCP stdio 服务**（`eval/src/pweval/harness/source_server.py`），不进 system：来源服务模拟外部世界（arXiv、代码托管站），四组共用，与被测系统无关。服务名 `Sources`，pi 中的工具名为 `mcp__Sources__read_source`。
+2. **每个会话启动一次**，经 `bridge.py unix-exec` 与 `sources.sock` 接入沙箱；可取的来源由运行器写进会话目录的 `opened.json`，请求记录在会话目录的 `sources.jsonl`（时间、请求原文、解析结果、结果、拷贝字节数；拒绝另记原因：未开放、不在语料、格式）。
+3. **代码的完整性**用目录内容哈希：按相对路径排序，逐个文件的“路径、NUL、内容 SHA-256”再取 SHA-256；材料表（题库 `scripts/tasks.py`）用同一算法。
+4. **格式错误**（`arXiv:` 前缀、含 `/`、`::` 或空格、不像来源 ID）回答格式提示而不是统一拒绝：它们不涉及开放状态，提示不泄露材料。
+5. **不带版本号的编号只在已开放的版本中选最新**，没有已开放版本时统一拒绝。
+6. **`/work/sources/` 在沙箱内只读挂载**（服务在沙箱外写宿主机的同一目录），不只靠文件权限：写者不能改动或删掉取到的原文；`reused` 时仍报告 `intact`。
+
+### 4.3 运行器（6864820）
+
+1. **新配置 `eval/config/f3-ltsf.yml`**，成为运行器的默认配置；与 `formal-ltsf.yml` 的差别只在题库中的三个位置（`plan`、`materials`、`seed`）与说明文字，服务、模型与预算不变。运行器要求这三项，`formal-ltsf.yml` 留作 f1、f2 的记录，不再能直接运行。
+2. **f3 只接通 A3、A2**：`--arms` 默认 `A3,A2`，给出 A0、A4 时拒绝运行（M3、M4）。沙箱与来源服务的接法对四组相同，A0、A4 接通时不必再改。
+3. **会话目录** `<组>/sessions/<序号>-<时刻>/`，每次尝试新建，同一身份也不复用；`writers/<身份>/` 不再使用。目录在会话后保留（`sessions.jsonl` 中的事件流与会话记录路径指向它），不挂给后续会话。
+4. **组的来源目录** `<组>/sources/`：会话开始时（`inflight.json` 写入之前）按材料表把到该会话为止开放的来源从语料复制进去，复制前按材料表核对哈希，不一致即停。它是 A3、A2 的 MCP 服务的 `PAPERWEAVE_SOURCES`：提交校验与写者的 `read_evidence` 认的是本组已开放的全部来源，不限于本会话取到的；`read_source` 只交付本会话可取的来源。种子来源在建立起点时开放，种子重放也用这个目录。
+5. **写者的来源说明**（B2 的一句）放在 `sandbox.WRITER_NOTE`，接在 `ENV_NOTE` 之后，各组相同。
+6. **`sessions.jsonl` 新增字段**：`root`（会话目录）、`materials`（`named`、`opens`、`available`：此时可取的来源数）、`read_source`（请求数、各结果的次数、取到的来源、拷贝字节数）、`archive`（会话归档的路径与哈希）。去掉 `workdir_before`、`workdir_after` 与 `rerun_inherits_workdir`。
+7. **中断（B4）**：库没变时，被中断那次的目录归档为 `<序号>-interrupted-<时刻>.tar.gz`，记在重跑记录的 `rerun_after_interruption.archive` 中，重跑在新目录；库已变时按 `exit: interrupted` 记账（`recovered`），归档同样标 `interrupted`。
+8. **写者时间线不再运行读者**：`--no-readers` 去掉，检查点上只记版本、快照与备份；读者按 M2 在备份上离线作答。`reader_arm` 等读者函数留给 M2 改写（其中的 `anchored` 范围已随 system 去掉）。
+9. **`status` 只看配置中有的组。**
+
+### 4.4 冻结材料（题库 c2e7e91）
+
+1. **任务文字的改写由脚本机械完成**（`scripts/tasks.py` 的 `f3_task`）：每类只替换 B2 所列的片段，并断言原片段恰好出现一次；`plan.yml` 不动。
+2. **verify-later 的句式**按 B2 写作 “Is the claim of the PatchTST paper (2211.14730v2; fetch it with read_source) that …”：把来源 ID 放进括号需要把所有格改成 “the claim of”，其余措辞不变。
+3. **materials.yml** 的结构：`seed`、`sessions`（每个会话的 `seq`、`type`，有则 `named`、`opens`）、`sources`（每个来源的 `kind` 与内容哈希）。checkpoint 不在 `sessions` 中。
 
 ## 5 冻结记录
 
