@@ -58,6 +58,12 @@ def test_every_writer_sandbox_is_cut_off_from_the_network(tmp_path: Path) -> Non
     assert timeline.sandbox_arm(CONFIG, tmp_path, "A2").ablate == ("dedup",)
 
 
+def test_graph_readers_read_papers_only_through_recorded_anchors(tmp_path: Path) -> None:
+    for arm in ("A3", "A2"):  # V3 §2.2：只能经库读原文，不能浏览
+        box = timeline.reader_arm(CONFIG, tmp_path, arm, 10)
+        assert box.read_only and box.evidence_scope == "anchored" and box.papers is None
+
+
 def test_a_writer_session_is_archived_before_and_after(tmp_path: Path) -> None:
     paths = Paths(tmp_path / "A3/writers/w")
     (paths.work / "draft.yaml").parent.mkdir(parents=True)

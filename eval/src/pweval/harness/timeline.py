@@ -568,13 +568,14 @@ def network_calls(events: Path) -> list[str]:
 
 
 def reader_arm(config: dict[str, Any], run: Path, arm: str, papers: int) -> Arm:
-    """读者看到的库，只读，没有论文与代码。A3、A2：MCP 服务只列不写入的工具，read_evidence 只读产物文档；
+    """读者看到的库，只读，没有论文目录与代码。A3、A2：MCP 服务只列不写入的工具，read_evidence 读产物文档与库中记录过
+    的锚点所在的块（``anchored``，V3 §2.2：只能经库读原文，不能浏览）；
     A0：检查点标签处的仓库副本（只读挂载）；A4：pi 不列出 Graphiti 的写入工具。"""
     spec = config["arms"][arm]
     if arm in GRAPH:
         data = arm_dir(run, arm) / "data"
         ablate = tuple(spec.get("ablate") or ())
-        return Arm(arm, None, neo4j=spec["neo4j"], data=data, read_only=True, evidence_scope="artifacts", ablate=ablate)
+        return Arm(arm, None, neo4j=spec["neo4j"], data=data, read_only=True, evidence_scope="anchored", ablate=ablate)
     if arm == "A0":
         copy = arm_dir(run, "A0") / "readers" / f"k{papers}" / "repo"
         if not copy.exists():

@@ -2,7 +2,8 @@
 写者的工作目录也是临时目录。
 
 只在设置了 ``GRAPH_VC_TEST_NEO4J_URI`` 时运行，要求开始时库为空，结束后清空库、约束与索引。不会连 neo4j-e09。
-每个测试模块重建一次图，模块内的测试按顺序共享写入的产物。
+每个测试模块重建一次图，模块内的测试按顺序共享写入的产物。论文材料默认是 60 行 ``line <i>``，模块中定义
+``PAPER_TEXT`` 时用它。
 """
 
 from __future__ import annotations
@@ -95,7 +96,7 @@ setting: {variate: multivariate}
 
 
 @pytest.fixture(scope="module")
-def store(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Store]:
+def store(request: pytest.FixtureRequest, tmp_path_factory: pytest.TempPathFactory) -> Iterator[Store]:
     if TEST_URI is None:
         pytest.skip("GRAPH_VC_TEST_NEO4J_URI is not set")
     from neo4j import GraphDatabase
@@ -108,7 +109,8 @@ def store(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Store]:
     root = tmp_path_factory.mktemp("materials")
     file = root / MATERIAL
     file.parent.mkdir(parents=True)
-    file.write_text("".join(f"line {i}\n" for i in range(1, 61)), encoding="utf-8")
+    default = "".join(f"line {i}\n" for i in range(1, 61))
+    file.write_text(getattr(request.module, "PAPER_TEXT", default), encoding="utf-8")
     graph = open_graph(driver, file_root=root)
     try:
         seeded = Store(driver, graph, root)

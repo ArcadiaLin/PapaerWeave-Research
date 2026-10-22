@@ -118,7 +118,7 @@ class Arm:
     embeddings: bool = True
     read_only: bool = False  # 读者：库只读
     hide_tools: tuple[str, ...] = ()  # A3、A2：MCP 服务不列出的工具；A4：pi 不列出的工具（--exclude-tools）
-    evidence_scope: str | None = None  # A3、A2：artifacts 时 read_evidence 只读产物文档（读者不读论文原文）
+    evidence_scope: str | None = None  # A3、A2 的读者：artifacts 时 read_evidence 只读产物文档；anchored 时论文只读记录过的锚点所在的块
     ablate: tuple[str, ...] = ()  # A2：关掉的机制（dedup、revision、stale、affected）
     graphiti: str | None = None  # A4：Graphiti MCP 服务的地址
     pi_args: tuple[str, ...] = ()  # 附加给 pi 的参数，例如参照组的 --no-tools（docs/designs/v3/evaluation.md §10）

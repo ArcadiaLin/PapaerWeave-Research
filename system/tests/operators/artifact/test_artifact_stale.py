@@ -121,7 +121,7 @@ def test_staleness_follows_inputs(store: Store, writers: dict[str, Writer], tmp_
 def test_artifacts_only_reads_documents_but_not_papers(store: Store) -> None:
     refs = ["art_0001::document::1:2", SOURCE]
     assert [i["state"] for i in read_evidence(store, refs)["items"]] == ["available", "available"]
-    document, paper = read_evidence(store, refs, artifacts_only=True)["items"]
+    document, paper = read_evidence(store, refs, scope="artifacts")["items"]
     assert document["state"] == "available" and document["path"].startswith("artifacts/")
     assert paper["state"] == "missing" and "source papers are not available" in paper["reason"]
     assert "text" not in paper
