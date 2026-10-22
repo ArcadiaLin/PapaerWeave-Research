@@ -1,6 +1,6 @@
 # f3：工程落地记录
 
-状态：M1 实现中（2026-10-22）。挡路项 B1–B7 已定；工作项进度见第 3 节。
+状态：M1 完成（2026-10-22）。挡路项 B1–B7 已定，六个工作项完成，冻结记录见第 5 节，冒烟结果见第 6 节；任务文字与材料表按 goal 的授权先行冻结，待用户复核（5.2）。
 设计：`docs/experiments/f3/2026-10-22-f3-design.md`（c4f97c6）。设计文档说明“要什么”，本文记录“做了什么、怎样验证的”。实现中发现设计需要改时，回到设计文档修改，本文只记一条指向那里的说明。
 
 ## 1 目标
@@ -152,8 +152,8 @@ M1 开始实现前要先定的细节（取自设计 §10），逐项与用户敲
 | 来源服务 `read_source` | 2 | 完成 | c3101e0 | `eval/tests/test_source_server.py` 5 项通过（交付与只读、复用与完整性、拒绝不区分未开放与不存在、不带版本取已开放的最新版本、代码清单、stdio MCP）；决定见 4.2 |
 | 运行器 | 3 | 完成 | 6864820 | eval 测试 178 项通过（含开放与哈希核对、全新会话目录、中断两种情形、归档、沙箱挂载）；决定见 4.3 |
 | 种子转换 | 4 | 完成 | 题库 addd7b6 | `scripts/seed_f3.py` 生成 `seed/f3/`；核对 1–3 写在 `seed/f3/CHECK.md`（种子论文哈希与材料表、f2-A3 副本一致；无残留；锚点 49 个、各榜引用 18/17/18 逐份相等）；核对 4：经运行器 `setup` 在空的 `pw-f3-test` 上重放，分支头 commit_000002，49 个锚点都带来源 ID，三张榜无 `_stale`；决定见 4.5 |
-| 冻结材料 | 5 | 已生成，待冻结 | 题库 c2e7e91 | `scripts/tasks.py --f3`：73 项中改写 50 个任务，其余字段与 `plan.yml` 逐项相同；材料表 33 个论文来源、3 个代码仓库，点出的来源在该会话开始时都已开放（脚本内断言）；决定见 4.4。冻结记录在第 5 节 |
-| 冒烟 | 6 | 未开始 | | |
+| 冻结材料 | 5 | 完成（待用户复核，见 5.2） | 题库 c2e7e91 | `scripts/tasks.py --f3`：73 项中改写 50 个任务，其余字段与 `plan.yml` 逐项相同；材料表 33 个论文来源、3 个代码仓库，点出的来源在该会话开始时都已开放（脚本内断言）；决定见 4.4。冻结记录在第 5 节 |
+| 冒烟 | 6 | 完成 | 代码 6864820，题库 addd7b6 | 5 个会话（build、leaderboard、note-i6、update、compare）与检查点 k10 全部正常结束；第 1.1 节第 6 项的四项检查都通过，见第 6 节 |
 
 ## 4 实现中的决定
 
@@ -211,8 +211,49 @@ M1 开始实现前要先定的细节（取自设计 §10），逐项与用户敲
 
 ## 5 冻结记录
 
-M1 完成时填写：代码版本、运行配置、任务文字、材料表与对应表的哈希。
+### 5.1 冻结的版本（2026-10-22）
+
+| 项 | 版本或 SHA-256 |
+| --- | --- |
+| 代码（system、eval） | 6864820（system 自 10a8fa0 起未再改） |
+| 运行配置 `eval/config/f3-ltsf.yml` | `893311037f14b939b2df57db782d657160b93263d99b3862b207695e99b8e9a2` |
+| 题库仓库 | addd7b6 |
+| `tasks/plan-f3.yml`（B2） | `81b06f2aeac1fb4c347e1998dbbbe7a795349371d1a02194de00ba3fff00fce5` |
+| `tasks/materials.yml`（B1） | `42156b3c4a08e73a416f61d5252729f7943ad4145d3287fc7b381613027c21b6` |
+| `tasks/identities.yml`（未改） | `7acd603be718356c4b8ae6089e618c21d4a01968c552947bc2ceb5cf22cc8d12` |
+| `tasks/hints.yml`（未改） | `c2f628da51f5ea35f80e84674dfc9809998f78f1d76c7f1c87db06898fb5df36` |
+| `seed/f3/mapping.yml`（B7） | `547fa21f9baa67a9a70303958395c035fb0c8cf0bcbbba6effe7b6bc8e8fa466` |
+| `seed/f3/01-seed.yaml` | `cefc2be1a58baedc7073f0b9febf16d2a4923507a0cc9e5405656137141bcf05` |
+| `seed/f3/02-lb-etth1.md` | `dd7565921af83b6b3e004224e8fec4900f25036c346ab804cdb795effcf1bf49` |
+| `seed/f3/03-lb-electricity.md` | `d7db12942eb55bb246e0c052c07c2be0a385b6d84e8bed6cd6019f058efc9e1e` |
+| `seed/f3/04-lb-etth2.md` | `08522ec9075942b3a98a5660b5a15ae82427b3284d0ab6e9ec6597a721f77fd7` |
+| pi | 1.2.0 |
+
+服务、模型与预算同 f2（`formal-ltsf.yml` 的 `arms`、`runner` 逐项相同）。运行器启动时把实际生效的配置与两个仓库的提交写进 `run.yml`，续跑时与第一次不同即拒绝。
+
+### 5.2 待用户复核
+
+完成标准第 5 项要求任务文字改写与材料表经用户确认。本轮 goal 授权“实验中不需要问我，先做决定，并进入文档”，因此先行冻结。改写规则是 B1、B2 中已与用户敲定的写法，由脚本机械执行；与 B2 示例的唯一出入是 verify-later 的所有格（4.4 第 2 条）。正式开跑前请复核：`plan-f3.yml` 中改写的 50 个任务（`git diff --no-index tasks/plan.yml tasks/plan-f3.yml`）与 `materials.yml`。
 
 ## 6 冒烟结果
 
-（暂无）
+2026-10-22 12:45–13:31（UTC），运行名 `f3-smoke`（`~/pw-lab/runs/f3-smoke/`，配置与任务表的副本也在其中）。条件：临时 Neo4j `pw-f3-test`（7699）；空闲的 sglang 30001（当时没有正式运行）；运行配置为 `f3-ltsf.yml` 改动图库、大模型与任务表；任务表取 `plan-f3.yml` 中的第 3、5、6、14、17 个会话，最后加一个检查点 k10。
+
+| 序号 | 类型 | 身份 | 退出 | 用时（秒） | 库版本 | `read_source` |
+| --- | --- | --- | --- | --- | --- | --- |
+| 3 | build（FiLM v3） | i3-b | 0 | 651 | 000002 → 000004 | 交付 1 |
+| 5 | leaderboard（ETTh1） | i3-b | 0 | 216 | 不变（noop） | 0 |
+| 6 | note-i6（Autoformer） | i1-b | 0 | 380 | 000004 → 000006 | 交付 2（论文与代码） |
+| 14 | update（FiLM v3 → v4） | i3-b | 0 | 931 | 000006 → 000008 | 交付 2 |
+| 17 | compare（C1） | i3-c | 0 | 535 | 000008 → 000012 | 交付 2、拒绝 1 |
+
+检查点 k10：快照、离线备份（停下 `pw-f3-test` 做 dump 后重启，版本核对一致）都完成；没有运行读者。各会话的联网命令 0 条，工具命令没有被终止。
+
+**第 1.1 节第 6 项的检查：**
+
+1. **开放与拒绝：** 写者都用 `read_source` 取材料；note-i6 取到论文与代码仓库（2,275,901 字节，附清单）。compare 的写者请求 `2106.13008v1`（不在语料中），得到统一的拒绝，原因只进记录。拒绝“已在语料、尚未开放”的情形由单元测试覆盖（`test_refusals_do_not_tell_unopened_from_missing`），冒烟中没有出现。
+2. **库中 anchor 的格式：** 结束时库中 123 个锚点（节点与边）全部以来源 ID 开头：种子 49 个，写者 74 个，分布在 FiLM v3/v4、Autoformer、TiDE、TimeMachine 上。build 写者给 Paper 声明了 `source: [2205.08897v3]`；note-i6 写者新建 `code_0001`，`source: [Autoformer@09994619]`。Note 引用了 21 处代码行（`Autoformer@09994619::<文件>::a:b`），`USED` 边连到 `code_0001`。CompareSettings 的来源引用连到 4 篇论文。
+3. **update 后的过时标记：** update 写者把 `2205.08897v4` 加进 `paper_0003` 的 `source`，改写了 50 个锚点；仍写在 v3 上的 13 个锚点所在记录读出 `_anchor_version`（如 `exp_0018`：“anchor cite 2205.08897v3; paper_0003 now also has the newer version 2205.08897v4 …”）。ETTh1 排行榜中 FiLM 的行读出 `_stale`（`reason: superseded`，`by: 2205.08897v4`）。
+4. **不继承私人文件：** 每个会话一个新目录 `A3/sessions/<序号>-<时刻>/`。i3-b 的三个会话（3、5、14）中，后一个的 `work/` 里没有前一个的草稿（如第 3 个会话的 `film_graph.yaml`），`sources/` 里只有本会话取到的来源。每个会话结束后的 `/work` 与 home 归档在 `A3/session-snapshots/<序号>-after-*.tar.gz`。
+
+**附带观察（不挡 M1）：** leaderboard 会话没有改动，因为 build 写者在第 3 个会话中已把 FiLM 加进 ETTh1 排行榜（`art_0001` v2）。这是写者自己的选择：build 任务没有要求维护排行榜。leaderboard 写者核对数值时用的是 PaperWeave 的 `read_evidence`，没有调用 `read_source`。
