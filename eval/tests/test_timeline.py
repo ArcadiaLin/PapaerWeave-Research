@@ -81,12 +81,12 @@ def test_a_writer_session_is_archived_after_it_ends(tmp_path: Path) -> None:
     assert re.fullmatch(r"A3/session-snapshots/007-after-\d{8}T\d{6}Z\.tar\.gz", rec["path"]) and len(rec["sha256"]) == 64
     with tarfile.open(tmp_path / rec["path"]) as tar:  # B4：/work（含 sources/）与 home
         assert {"work/draft.yaml", "home/sessions/s.jsonl", "work/sources/2106.13008v5/paper.md"} <= set(tar.getnames())
-    a0 = tmp_path / "A0/repo"
+    a0 = tmp_path / "A0/sessions/012-x/work"
     a0.mkdir(parents=True)
     (a0 / "AGENTS.md").write_text("x\n")
     rec = timeline.archive(tmp_path, "A0", 12, Paths(tmp_path / "A0/sessions/012-x"), "after")
     with tarfile.open(tmp_path / rec["path"]) as tar:
-        assert "work/AGENTS.md" in tar.getnames()  # A0 的工作目录是共享仓库
+        assert "work/AGENTS.md" in tar.getnames()  # A0 的工作目录是本次的克隆
     assert not list((tmp_path / "A0/session-snapshots").glob("*.partial"))
 
 
@@ -164,12 +164,16 @@ def test_a0_starts_from_the_kit_and_two_seed_commits(tmp_path: Path) -> None:
     (seed / "a0/store/artifacts/ETTh1.md").write_text("---\ntype: Leaderboard\n---\n")
     run = tmp_path / "run"
     timeline._seed_a0(run, seed)
-    repo = run / "A0/repo"
-    log = subprocess.run(["git", "-C", str(repo), "log", "--format=%an|%s"], capture_output=True, text=True).stdout
+    repo = run / "A0/shared.git"  # 裸仓库：只有已发布的提交
+    git = ["git", "-C", str(repo)]
+    log = subprocess.run([*git, "log", "--format=%an|%s", "main"], capture_output=True, text=True).stdout
     assert log.splitlines() == [f"seed|{timeline.SEED_MESSAGES[1]}", f"seed|{timeline.SEED_MESSAGES[0]}",
                                 "setup|Set up the shared repository"]  # fmt: skip
-    assert (repo / "AGENTS.md").exists() and (repo / "templates/Note.md").exists()
-    assert (repo / ".gitignore").read_text() == "papers/\ncode/\n"
+    files = subprocess.run([*git, "ls-tree", "-r", "--name-only", "main"], capture_output=True, text=True).stdout.split()
+    assert {"AGENTS.md", "templates/Note.md", "store/nodes/paper/paper_0001.yaml"} <= set(files)
+    gitignore = subprocess.run([*git, "show", "main:.gitignore"], capture_output=True, text=True).stdout
+    assert gitignore == "sources/\n" and not (run / "A0/seed-build").exists()
+    assert subprocess.run([*git, "remote"], capture_output=True, text=True).stdout == ""
 
 
 def test_probes_count_once_all_their_papers_are_in() -> None:
@@ -454,35 +458,124 @@ def test_a_formal_run_needs_a_frozen_copy(tmp_path: Path) -> None:
 # ---------------------------------------------------------------- 复审 2026-10-19 的三条与 A4 的内容指纹
 
 
-def _a0_repo(tmp_path: Path) -> Path:
+def _a0_run(tmp_path: Path) -> Path:
+    seed = tmp_path / "seed"
+    (seed / "a0/store/nodes/paper").mkdir(parents=True)
+    (seed / "a0/store/nodes/paper/paper_0001.yaml").write_text("id: paper_0001\n")
+    (seed / "a0/store/artifacts").mkdir(parents=True)
+    (seed / "a0/store/artifacts/ETTh1.md").write_text("---\ntype: Leaderboard\n---\n")
     run = tmp_path / "run"
-    repo = run / "A0/repo"
-    repo.mkdir(parents=True)
-    (repo / ".gitignore").write_text("papers/\n")
-    (repo / "note.md").write_text("v1\n")
-    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t"]
-    subprocess.run([*git, "init", "-q"], check=True)
-    subprocess.run([*git, "add", "-A"], check=True)
-    subprocess.run([*git, "commit", "-q", "-m", "x"], check=True)
+    timeline._seed_a0(run, seed)
     return run
 
 
-def test_a0_worktree_fingerprint_sees_content_not_just_status(tmp_path: Path) -> None:
-    """前一会话留下 ` M note.md`，这一会话再改它而不提交：git status 前后相同，内容指纹不同。"""
-    run = _a0_repo(tmp_path)
-    repo = run / "A0/repo"
-    (repo / "note.md").write_text("v2\n")
-    status, before = timeline._a0_status(run), timeline._a0_worktree(run)
-    (repo / "note.md").write_text("v3\n")
-    assert timeline._a0_status(run) == status and timeline._a0_worktree(run) != before
-    (repo / "new.md").write_text("a\n")
-    untracked = timeline._a0_worktree(run)
-    (repo / "new.md").write_text("b\n")
-    assert timeline._a0_worktree(run) != untracked  # 未跟踪文件的内容也在内
-    (repo / "papers").mkdir()
-    (repo / "papers/x.md").write_text("ignored\n")
-    assert timeline._a0_worktree(run) == timeline._a0_worktree(run) != untracked
-    assert timeline._a0_status(run) == [" M note.md", "?? new.md"]  # 仓库自己的索引没有被动过
+def _agent_git(work: Path, *args: str) -> str:
+    git = ["git", "-C", str(work), "-c", "user.name=w", "-c", "user.email=w@x"]
+    return subprocess.run([*git, *args], check=True, capture_output=True, text=True).stdout
+
+
+def test_an_a0_session_works_on_a_fresh_clone_and_publishes_its_commits(tmp_path: Path) -> None:
+    """f3 §2.2：每个会话克隆已发布的状态（含历史、不带远程）；会话结束时只把写者提交了的快进同步回共享仓库，
+    未提交的改动与其他分支不同步，记为未发布。"""
+    run = _a0_run(tmp_path)
+    before = timeline.version({}, run, "A0")
+    paths = Paths(run / "A0/sessions/001-a")
+    assert timeline.a0_clone(run, paths) == before
+    work = paths.work
+    assert (work / "AGENTS.md").exists() and _agent_git(work, "remote") == ""
+    assert len(_agent_git(work, "log", "--format=%H").split()) == 3  # 历史完整
+    (work / "sources/2106.13008v5").mkdir(parents=True)
+    (work / "sources/2106.13008v5/paper.md").write_text("full text\n")  # 来源副本被 .gitignore 忽略
+    (work / "store/nodes/paper/paper_0002.yaml").write_text("id: paper_0002\n")
+    _agent_git(work, "add", "store/nodes/paper/paper_0002.yaml")
+    _agent_git(work, "commit", "-q", "-m", "add paper_0002")
+    (work / "draft.md").write_text("private\n")
+    _agent_git(work, "branch", "scratch")
+    _agent_git(work, "checkout", "-q", "scratch")
+    (work / "store/x.md").write_text("x\n")
+    _agent_git(work, "add", "store/x.md")
+    _agent_git(work, "commit", "-q", "-m", "on a side branch")
+    _agent_git(work, "checkout", "-q", "main")
+    record = timeline.a0_publish(run, paths, before)
+    assert record["published"] == 1 and record["refused"] is None and record["before"] == before
+    assert record["after"] == timeline.version({}, run, "A0") != before
+    assert record["uncommitted"] == ["?? draft.md"] and record["other_branches"] == ["scratch"]
+    shared = ["git", "-C", str(run / "A0/shared.git")]
+    tree = subprocess.run([*shared, "ls-tree", "-r", "--name-only", "main"], capture_output=True, text=True).stdout
+    assert "store/nodes/paper/paper_0002.yaml" in tree and "draft.md" not in tree and "store/x.md" not in tree
+    assert "sources/" not in tree
+
+    second = Paths(run / "A0/sessions/002-b")  # 下一个会话：全新克隆，看到已发布的，看不到上一会话的私人文件
+    timeline.a0_clone(run, second)
+    assert (second.work / "store/nodes/paper/paper_0002.yaml").exists() and not (second.work / "draft.md").exists()
+    assert timeline.a0_publish(run, second, record["after"])["published"] == 0
+
+
+def test_pi_loads_the_a0_conventions_from_the_clone(tmp_path: Path) -> None:
+    """A0 的约定（含发布说明）在仓库根目录的 AGENTS.md，克隆即 pi 的 cwd（/work）。用 pi 自己的加载函数核对：
+    启动时读进系统提示的正是这个文件，不靠写者自己去读。"""
+    from pweval.harness.sandbox import pi_install
+
+    try:
+        release, _ = pi_install()
+    except FileNotFoundError:
+        pytest.skip("pi is not installed")
+    if release is None or not shutil.which("node"):
+        pytest.skip("not a managed pi install")
+    run = _a0_run(tmp_path)
+    paths = Paths(run / "A0/sessions/001-a")
+    timeline.a0_clone(run, paths)
+    (paths.home / ".pi/agent").mkdir(parents=True)
+    loader = release / "node_modules/@earendil-works/pi-coding-agent/dist/core/resource-loader.js"
+    script = (f"const m = await import('file://{loader}'); const files = m.loadProjectContextFiles("
+              "{cwd: process.argv[1], agentDir: process.argv[2]}); console.log(JSON.stringify(files));")  # fmt: skip
+    out = subprocess.run(["node", "--input-type=module", "-e", script, str(paths.work), str(paths.home / ".pi/agent")],
+                         check=True, capture_output=True, text=True).stdout  # fmt: skip
+    (loaded,) = json.loads(out)
+    assert loaded["path"] == str(paths.work / "AGENTS.md")
+    assert "Put contributions you want to share in /work/store/" in loaded["content"]
+    assert "Record the source ID for claims and results." in loaded["content"]
+
+
+def test_a0_does_not_publish_a_rewritten_history(tmp_path: Path) -> None:
+    run = _a0_run(tmp_path)
+    before = timeline.version({}, run, "A0")
+    paths = Paths(run / "A0/sessions/001-a")
+    timeline.a0_clone(run, paths)
+    _agent_git(paths.work, "commit", "-q", "--amend", "-m", "rewritten")
+    record = timeline.a0_publish(run, paths, before)
+    assert record["published"] == 0 and "does not extend" in record["refused"]
+    assert timeline.version({}, run, "A0") == before
+    gone = Paths(run / "A0/sessions/002-b")
+    timeline.a0_clone(run, gone)
+    _agent_git(gone.work, "checkout", "-q", "--detach")
+    _agent_git(gone.work, "branch", "-D", "main")
+    assert timeline.a0_publish(run, gone, before)["refused"] == "the session has no main branch"
+    moved = Paths(run / "A0/sessions/003-c")
+    timeline.a0_clone(run, moved)
+    with pytest.raises(RuntimeError, match="moved during the session"):
+        timeline.a0_publish(run, moved, "0" * 40)
+
+
+def test_an_interrupted_a0_session_is_rerun_since_nothing_was_published(tmp_path: Path,
+                                                                        monkeypatch: pytest.MonkeyPatch) -> None:  # fmt: skip
+    """B4：被中断的 A0 会话不同步，共享仓库没变，从全新目录重跑；本地提交随归档保存。"""
+    run = _a0_run(tmp_path)
+    before = timeline.version({}, run, "A0")
+    paths = Paths(run / "A0/sessions/005-a")
+    timeline.a0_clone(run, paths)
+    (paths.work / "store/n.md").write_text("n\n")
+    _agent_git(paths.work, "add", "store/n.md")
+    _agent_git(paths.work, "commit", "-q", "-m", "local only")
+    tl = Timeline([], IDENTITIES, HINTS, READER, [])
+    step = {"seq": 5, "identity": "i3-a", "type": "build"}
+    inflight = {"seq": 5, "root": str(paths.root.relative_to(run)), "started": "t", "started_epoch": 0.0,
+                "version_before": before}  # fmt: skip
+    config = {"arms": {"A0": {}}, "runner": {"agent": "pi", "model": "m"}}
+    out = timeline.recover(config, tl, run, "A0", step, inflight)
+    assert set(out) == {"rerun"} and timeline.version({}, run, "A0") == before
+    with tarfile.open(run / out["rerun"]["archive"]["path"]) as tar:
+        assert "work/store/n.md" in tar.getnames()
 
 
 def test_a_torn_last_line_is_set_aside_and_the_log_stays_appendable(tmp_path: Path) -> None:

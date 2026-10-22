@@ -9,7 +9,7 @@
 :mod:`pweval.harness.freeze` 建立）：会话代码不可写、与检出的提交一致，否则拒绝；``--unfrozen`` 只用于冒烟与开发，
 记入 ``run.yml``。
 
-f3 只接通了 A3、A2（M1）；A0、A4 的写者条件属 M3、M4，在此之前拒绝运行。
+f3 接通了 A3、A2（M1）与 A0（M3）；A4 的写者条件属 M4，在此之前拒绝运行。``--arms`` 缺省为 A3、A2，A0 须点名。
 
 会话序列、身份与任务文字由题库仓库（``probes_repo``）给出，各组相同（tmps/probes/writer-tasks.md）：
 
@@ -21,14 +21,14 @@ f3 只接通了 A3、A2（M1）；A0、A4 的写者条件属 M3、M4，在此之
 - ``tasks/reader.yml``、``probes/sample.yml``：检查点上的读者与 200 道题（严格规则：金标准依赖的论文全部入库才作答）；
   另有辅助组的代码题（``manual-rendered.yml`` 中 ``group: auxiliary``），同样作答，单独存放、不进主检验；
 - ``seed/f3/``（配置项 ``seed``，B7）：起点。A3、A2 由系统的命令行重放两次提交（锚点与种子论文；三张排行榜），A0 是
-  ``a0/store`` 的文件分两次 git 提交，A4 是 ``a4/episodes.yaml`` 的 30 条记忆，经 Graphiti 的 MCP 服务逐条写入。
+  ``a0/store`` 的文件分两次 git 提交（共享仓库是只存已发布提交的裸仓库），A4 是 ``a4/episodes.yaml`` 的 30 条记忆，经 Graphiti 的 MCP 服务逐条写入。
 
 运行目录 ``<workdir_root>/<运行名>/``：
 
 - ``run.yml``：每次调用的时间、参数、实际生效的配置、仓库与题库的提交、pi 的版本（续跑时配置或题库变了即拒绝）；
 - ``sessions.jsonl``：每个会话一行（组、序号、类型、身份、会话目录、退出码、用时、事件流与会话记录、会话前后的
   库版本、材料清单 ``materials``（点出、新开放的来源与此时可取的来源数）、来源服务的请求统计 ``read_source``、
-  会话归档、联网的命令）；
+  会话归档、联网的命令；A0 另有发布记录 ``a0``：发布的提交数、未发布的改动与分支）；
 - ``checkpoints.yml``：各组每个检查点（0、10、20、30 篇）的库版本（A4 为 group 的指纹，见 :func:`version`）；
 - ``snapshots/<组>/k<篇数>/``：检查点的快照（:func:`snapshot`），供事后的库健康度审计与判分核对；
 - ``backups/<组>/k<篇数>/``：A3、A2 在检查点上的库备份（:func:`backup`：Neo4j 的离线 dump 与材料根目录），读者事后
@@ -42,7 +42,8 @@ f3 只接通了 A3、A2（M1）；A0、A4 的写者条件属 M3、M4，在此之
   开始时从语料复制并核对哈希，是 A3、A2 的 MCP 服务的只读来源目录（``PAPERWEAVE_SOURCES``）；
 - ``answers/<组>/k<篇数>.jsonl``：检查点上读者的回答，一题一行（题号、题面原文、回答原文、库版本、事件流与会话记录、
   用时、token、工具调用、联网命令）。运行时不判分，全部运行结束后按题号对回冻结的金标准统一判分；
-- ``<组>/``：A3、A2 的材料根目录 ``data/``（产物文档）；A0 的共享仓库 ``repo/``。
+- ``<组>/``：A3、A2 的材料根目录 ``data/``（产物文档）；A0 的共享仓库 ``shared.git``（裸仓库，只有已发布的提交；
+  每个会话从它克隆到本次的 ``work/``，会话结束时运行器把写者的新提交快进同步回来，见 :func:`a0_publish`）。
 
 写者的沙箱断网（V3 §7 第 5 条），不挂载论文与代码（f3 §2）：材料只经来源服务 ``read_source`` 按来源 ID 取得，任务
 文字末尾接环境说明（``ENV_NOTE``）、写者的来源说明（``WRITER_NOTE``）与本地和发布的说明（``PUBLISH_NOTE``）。
@@ -106,7 +107,8 @@ from .source_server import tree_sha256
 CONFIG = EVAL / "config/f3-ltsf.yml"
 A0_KIT = EVAL / "baselines/a0"  # A0 的约定（AGENTS.md）与模板，内容与 A3 的工具说明、空白模板对等
 ARMS = ("A3", "A2", "A0", "A4")
-F3_ARMS = ("A3", "A2")  # f3 已接通的组；A0、A4 属 M3、M4
+F3_ARMS = ("A3", "A2", "A0")  # f3 已接通的组；A4 属 M4
+DEFAULT_ARMS = ("A3", "A2")  # 不给 --arms 时运行的组；A0 须点名（与 A3 共用推理服务，D16）
 PROTECTED = {7687, 7688}  # 不清空的图库端口
 SEED_USER = "seed"
 SEED_MESSAGES = (  # 与 seed/README.md 相同，各组一致
@@ -363,23 +365,33 @@ def _git(repo: Path, *args: str, user: str | None = None, env: dict[str, str] | 
     return subprocess.run(["git", "-C", str(repo), *args], env=env, check=True, capture_output=True, text=True).stdout
 
 
+def shared_repo(run: Path) -> Path:
+    """A0 的共享仓库：裸仓库，只存已发布的提交（f3 §2.2）。"""
+    return arm_dir(run, "A0") / "shared.git"
+
+
 def _seed_a0(run: Path, seed: Path) -> None:
-    """共享仓库：约定与模板（setup 提交），种子的节点文件与排行榜各一次提交（作者 seed，说明与 A3 相同）。"""
-    repo = arm_dir(run, "A0") / "repo"
-    if repo.exists():
-        shutil.rmtree(repo)  # 没有记录检查点 0：上次建到一半
-    repo.mkdir(parents=True)
-    shutil.copy(A0_KIT / "AGENTS.md", repo / "AGENTS.md")
-    shutil.copytree(A0_KIT / "templates", repo / "templates")
-    (repo / ".gitignore").write_text("papers/\ncode/\n", encoding="utf-8")  # 论文与代码是挂载进来的副本
-    _git(repo, "init", "-q", "-b", "main")
-    _git(repo, "add", "-A")
-    _git(repo, "commit", "-q", "-m", "Set up the shared repository", user="setup")
+    """共享仓库：约定与模板（setup 提交），种子的节点文件与排行榜各一次提交（作者 seed，说明与 A3 相同）。先在
+    ``A0/seed-build/`` 中提交，再克隆成裸仓库 ``shared.git``（去掉远程），建好后删掉 ``seed-build/``。"""
+    shared, build = shared_repo(run), arm_dir(run, "A0") / "seed-build"
+    for d in (shared, build):
+        if d.exists():
+            shutil.rmtree(d)  # 没有记录检查点 0：上次建到一半
+    build.mkdir(parents=True)
+    shutil.copy(A0_KIT / "AGENTS.md", build / "AGENTS.md")
+    shutil.copytree(A0_KIT / "templates", build / "templates")
+    (build / ".gitignore").write_text("sources/\n", encoding="utf-8")  # 来源服务交付的副本，在会话的工作目录中
+    _git(build, "init", "-q", "-b", "main")
+    _git(build, "add", "-A")
+    _git(build, "commit", "-q", "-m", "Set up the shared repository", user="setup")
     store = seed / "a0/store"
     for part, message in zip(("nodes", "artifacts"), SEED_MESSAGES, strict=True):
-        shutil.copytree(store / part, repo / "store" / part)
-        _git(repo, "add", "-A")
-        _git(repo, "commit", "-q", "-m", message, user=SEED_USER)
+        shutil.copytree(store / part, build / "store" / part)
+        _git(build, "add", "-A")
+        _git(build, "commit", "-q", "-m", message, user=SEED_USER)
+    _git(build, "clone", "-q", "--bare", "--no-hardlinks", str(build), str(shared))
+    _git(shared, "remote", "remove", "origin")
+    shutil.rmtree(build)
 
 
 def _seed_a4(config: dict[str, Any], seed: Path, *, reset: bool) -> None:
@@ -434,7 +446,7 @@ def sandbox_arm(config: dict[str, Any], run: Path, arm: str, opened: list[str] |
         return Arm(arm, None, neo4j=spec["neo4j"], data=data, ablate=tuple(spec.get("ablate") or ()), isolated_llm=llm,
                    sources=sources_dir(run, arm), read_source=read)  # fmt: skip
     if arm == "A0":
-        return Arm("A0", None, store=arm_dir(run, "A0") / "repo", isolated_llm=llm, read_source=read)
+        return Arm("A0", None, isolated_llm=llm, read_source=read)  # /work 是本会话的克隆（:func:`a0_clone`）
     graphiti = urlsplit(spec["graphiti"])
     return Arm("A4", None, graphiti=spec["graphiti"], isolated_llm=llm, read_source=read,
                isolated_tcp=(f"{graphiti.hostname}:{graphiti.port}",))  # fmt: skip
@@ -449,13 +461,13 @@ A4_CONTENT = (  # group 的全部节点与边，属性去掉嵌入（嵌入由�
 
 
 def version(config: dict[str, Any], run: Path, arm: str) -> str | None:
-    """库的版本：A3、A2 为分支头的提交 id，A0 为仓库的 HEAD。A4 没有版本，取 group 的内容指纹：先等排队的记忆
+    """库的版本：A3、A2 为分支头的提交 id，A0 为共享仓库已发布的 ``main``。A4 没有版本，取 group 的内容指纹：先等排队的记忆
     处理完，再用 Cypher 读出全部节点与边（去掉嵌入），对排序后的内容取 sha256。任何属性的改动（包括实体摘要、
     事实失效）都会改变它。"""
     if arm in GRAPH:
         return export.head(config["arms"][arm]["neo4j"])
     if arm == "A0":
-        return _git(arm_dir(run, "A0") / "repo", "rev-parse", "HEAD").strip()
+        return _git(shared_repo(run), "rev-parse", "refs/heads/main").strip()
     settle(config)
     spec = config["arms"]["A4"]
     with export.driver(spec["neo4j"]) as d:
@@ -467,25 +479,67 @@ def version(config: dict[str, Any], run: Path, arm: str) -> str | None:
     return f"nodes={nodes} edges={len(rows) - nodes} sha256={digest}"
 
 
-def _a0_status(run: Path) -> list[str]:
-    return _git(arm_dir(run, "A0") / "repo", "status", "--porcelain").splitlines()
+# 运行器在写者的克隆上执行 git 时关掉仓库配置能触发的外部命令（克隆的 .git/config 归写者管）
+_CLONE_SAFE = ("-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null")
 
 
-def _a0_worktree(run: Path) -> str:
-    """A0 工作区的内容指纹：暂存区的树，以及把工作区全部改动（已修改、已暂存、未跟踪，不含忽略的）加进去之后的树。
-    ``git status`` 只给出文件名与状态，同一文件被再次修改时看不出来。两棵树都在临时索引上算，不动仓库自己的索引
-    （只在对象库中多出几个不被引用的对象）。"""
-    repo = arm_dir(run, "A0") / "repo"
-    index = repo / _git(repo, "rev-parse", "--git-path", "index").strip()
-    with tempfile.TemporaryDirectory() as tmp:
-        scratch = Path(tmp) / "index"
-        if index.exists():
-            shutil.copy(index, scratch)
-        env = {"GIT_INDEX_FILE": str(scratch)}
-        staged = _git(repo, "write-tree", env=env).strip()
-        _git(repo, "add", "-A", env=env)
-        worktree = _git(repo, "write-tree", env=env).strip()
-    return f"index={staged} worktree={worktree}"
+def a0_clone(run: Path, paths: Paths) -> str:
+    """A0 会话开始：把共享仓库已发布的状态（含全部历史）克隆到本次全新的工作目录（f3 §2.2），去掉远程：写者不
+    push，发布由运行器在会话结束时同步（:func:`a0_publish`）。返回克隆时的提交。"""
+    _git(arm_dir(run, "A0"), "clone", "-q", "--no-hardlinks", str(shared_repo(run)), str(paths.work))
+    _git(paths.work, "remote", "remove", "origin")
+    return _git(paths.work, *_CLONE_SAFE, "rev-parse", "HEAD").strip()
+
+
+def _clone_git(work: Path, *args: str) -> str | None:
+    try:
+        return _git(work, *_CLONE_SAFE, *args)
+    except subprocess.CalledProcessError:
+        return None
+
+
+def a0_state(run: Path, paths: Paths, before: str, refused: str | None = None) -> dict[str, Any]:
+    """A0 会话的发布记录：会话前后共享仓库的 ``main``、这次发布的提交数、没有发布的原因，以及留在本地、没有发布的
+    内容（未提交的改动，``main`` 之外有新提交的分支）。未发布的内容随会话归档，计为未发布贡献（f3 §2.2）。"""
+    after = version({}, run, "A0")
+    count = int(_git(shared_repo(run), "rev-list", "--count", f"{before}..{after}").strip()) if after != before else 0
+    work = paths.work
+    status = _clone_git(work, "status", "--porcelain", "--untracked-files=all") if work.exists() else None
+    branches = (_clone_git(work, "for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads") or "") if work.exists() else ""
+    others = []
+    for line in branches.splitlines():
+        name, _, head = line.partition(" ")
+        if name != "main" and _git_ok(shared_repo(run), "cat-file", "-e", f"{head}^{{commit}}") is False:
+            others.append(name)
+    return {"before": before, "after": after, "published": count, "refused": refused,
+            "uncommitted": status.splitlines() if status else [], "other_branches": others}  # fmt: skip
+
+
+def _git_ok(repo: Path, *args: str) -> bool:
+    try:
+        _git(repo, *args)
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+
+def a0_publish(run: Path, paths: Paths, before: str) -> dict[str, Any]:
+    """A0 会话结束（写者的会话返回，含超时与报错；运行框架中断不算）：把写者本地 ``main`` 上的新提交快进同步到
+    共享仓库（f3 §2.2、B4）。只同步提交：不代选文件，不提交未提交的改动，不同步标签与其他分支。写者改写了已发布的
+    历史（不能快进）或删掉了 ``main`` 时不同步，照实记下。同步时逐个检查对象（``fetch.fsckObjects``）。"""
+    shared = shared_repo(run)
+    if (now := version({}, run, "A0")) != before:  # 写者轮流运行，会话期间没有别人发布
+        raise RuntimeError(f"A0: the shared repository moved during the session ({before} → {now})")
+    head = _clone_git(paths.work, "rev-parse", "--verify", "-q", "refs/heads/main")
+    head = head.strip() if head else None
+    if head is None:
+        return a0_state(run, paths, before, refused="the session has no main branch")
+    if head != before:
+        if not _git_ok(paths.work, *_CLONE_SAFE, "merge-base", "--is-ancestor", before, head):
+            return a0_state(run, paths, before, refused="main does not extend the published history")
+        _git(shared, "-c", "fetch.fsckObjects=true", "fetch", "-q", "--no-tags", str(paths.work),
+             "refs/heads/main:refs/heads/main")  # fmt: skip
+    return a0_state(run, paths, before)
 
 
 def session_paths(run: Path, arm: str, seq: int) -> Paths:
@@ -502,6 +556,8 @@ def session(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, ste
     替换），会话记入 ``sessions.jsonl`` 之后才删掉；中断后续跑时据此判断这个会话是否已经改了库（:func:`recover`）。"""
     writer = writer_of(config, timeline.identities[step["identity"]])
     paths = session_paths(run, arm, step["seq"])
+    if arm == "A0":
+        a0_clone(run, paths)  # 全新目录中取出已发布的状态，在 prepare 之前（克隆要求目录不存在）
     opened = timeline.opened_through(step["seq"])
     box = sandbox_arm(config, run, arm, opened, f"{arm}-{step['seq']:03d}")
     runner = config["runner"]
@@ -520,16 +576,15 @@ def session(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, ste
     inflight = {"seq": step["seq"], "root": str(paths.root.relative_to(run)),
                 "started": datetime.now(UTC).isoformat(timespec="seconds"), "started_epoch": time.time(),
                 "version_before": before}  # fmt: skip
-    if arm == "A0":
-        inflight["worktree_before"] = _a0_worktree(run)
     _write_atomic(_inflight(run, arm), json.dumps(inflight, ensure_ascii=False))
     result = run_session(paths, box, writer, prompt(timeline, arm, step), timeout_s=runner["session_timeout_min"] * 60)
-    return _session_record(config, timeline, run, arm, step, writer, paths, inflight, result)
+    a0 = a0_publish(run, paths, before) if arm == "A0" else None
+    return _session_record(config, timeline, run, arm, step, writer, paths, inflight, result, a0=a0)
 
 
 def _session_record(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, step: dict[str, Any],
                     writer: Writer, paths: Paths, inflight: dict[str, Any], result: dict[str, Any], *,
-                    archived_as: str = "after") -> dict[str, Any]:  # fmt: skip
+                    archived_as: str = "after", a0: dict[str, Any] | None = None) -> dict[str, Any]:  # fmt: skip
     events = paths.root / result["events"] if result["events"] else None
     record = {
         "arm": arm,
@@ -549,9 +604,8 @@ def _session_record(config: dict[str, Any], timeline: Timeline, run: Path, arm: 
         "archive": archive(run, arm, step["seq"], paths, archived_as),
         "network": network_calls(events) if events else [],
     }
-    if arm == "A0":
-        record["uncommitted"] = _a0_status(run)
-        record["worktree"] = _a0_worktree(run)
+    if a0 is not None:
+        record["a0"] = a0
     return record
 
 
@@ -572,7 +626,7 @@ def read_source_record(paths: Paths) -> dict[str, Any]:
 
 
 def archive(run: Path, arm: str, seq: int, paths: Paths, when: str) -> dict[str, str]:
-    """会话结束（``after``）或被中断（``interrupted``）时的工作目录（含 ``sources/``；A0 为共享仓库，含 ``.git``）与
+    """会话结束（``after``）或被中断（``interrupted``）时的工作目录（含 ``sources/``；A0 为本次的克隆，含 ``.git``）与
     ``home/``，存成 ``<组>/session-snapshots/<序号>-<when>-<时刻>.tar.gz``，只供审计，不挂给后续会话（f3 B4）。
 
     文件名带时刻，从不覆盖：中断后重跑的会话有两份归档，被中断那次的记在 ``rerun_after_interruption`` 中。"""
@@ -581,7 +635,7 @@ def archive(run: Path, arm: str, seq: int, paths: Paths, when: str) -> dict[str,
     out.parent.mkdir(parents=True, exist_ok=True)
     if out.exists():
         raise FileExistsError(f"refusing to overwrite a recorded snapshot: {out}")
-    work = arm_dir(run, "A0") / "repo" if arm == "A0" else paths.work
+    work = paths.work
     partial = out.with_name(out.name + ".partial")
     with tarfile.open(partial, "w:gz") as tar:
         for source, name in ((work, "work"), (paths.home, "home")):
@@ -614,17 +668,17 @@ def recover(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, ste
     - 库变了：不重跑——同一任务在已改变的库上再做一次会留下重复的贡献——把这次会话按 ``exit: interrupted`` 照实
       记账（``recovered``），事件流与会话记录有多少记多少，目录归档为 ``interrupted``。
 
-    A3、A2 看库版本，A4 看内容指纹（:func:`version`）。"""
+    A3、A2 看库版本，A0 看共享仓库已发布的 ``main``（被中断的会话不同步，本地提交随归档保存），A4 看内容指纹
+    （:func:`version`）。"""
     unchanged = version(config, run, arm) == inflight["version_before"]
-    if arm == "A0":
-        unchanged = unchanged and _a0_worktree(run) == inflight["worktree_before"]
     writer = writer_of(config, timeline.identities[step["identity"]])
     paths = Paths(run / inflight["root"])
     if unchanged:
         return {"rerun": {**inflight, "archive": archive(run, arm, step["seq"], paths, "interrupted")}}
     result = _interrupted_result(paths, inflight["started_epoch"])
+    a0 = a0_state(run, paths, inflight["version_before"], refused="interrupted") if arm == "A0" else None
     record = _session_record(config, timeline, run, arm, step, writer, paths, inflight, result,
-                             archived_as="interrupted")  # fmt: skip
+                             archived_as="interrupted", a0=a0)  # fmt: skip
     return {"record": {**record, "recovered": True}}
 
 
@@ -666,7 +720,7 @@ def reader_arm(config: dict[str, Any], run: Path, arm: str, papers: int) -> Arm:
         copy = arm_dir(run, "A0") / "readers" / f"k{papers}" / "repo"
         if not copy.exists():
             copy.parent.mkdir(parents=True, exist_ok=True)
-            subprocess.run(["git", "clone", "-q", "--no-hardlinks", str(arm_dir(run, "A0") / "repo"), str(copy)], check=True)
+            subprocess.run(["git", "clone", "-q", "--no-hardlinks", str(shared_repo(run)), str(copy)], check=True)
             _git(copy, "checkout", "-q", f"checkpoint-{papers}")
         return Arm("A0", None, store=copy, read_only=True)
     return Arm("A4", None, graphiti=spec["graphiti"], hide_tools=A4_WRITE_TOOLS)
@@ -877,7 +931,7 @@ def checkpoints(run: Path) -> dict[str, dict[int, Any]]:
 def checkpoint(config: dict[str, Any], run: Path, arm: str, papers: int) -> None:
     """记下检查点的库版本；A0 另打 git 标签 ``checkpoint-<篇数>``（读者读这个标签处的副本）。"""
     if arm == "A0":
-        _git(arm_dir(run, "A0") / "repo", "tag", "-f", f"checkpoint-{papers}", user="t1")
+        _git(shared_repo(run), "tag", "-f", f"checkpoint-{papers}", user="t1")
     head = version(config, run, arm)
     with _locked(run / "checkpoints.yml"):  # 读、改、写之间不让别的组（或别的进程）插进来
         data = checkpoints(run)
@@ -910,7 +964,7 @@ def snapshot(config: dict[str, Any], run: Path, arm: str, papers: int) -> None:
         shutil.rmtree(partial)
     spec = config["arms"][arm]
     if arm == "A0":  # 按标签导出，与仓库当前状态无关
-        export.export_a0(arm_dir(run, "A0") / "repo", f"checkpoint-{papers}", partial)
+        export.export_a0(shared_repo(run), f"checkpoint-{papers}", partial)
     else:
         at_checkpoint(config, run, arm, papers)
         if arm in GRAPH:
@@ -1276,7 +1330,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("name", help="运行名")
     parser.add_argument("--config", default=str(CONFIG))
-    parser.add_argument("--arms", default=",".join(F3_ARMS))
+    parser.add_argument("--arms", default=",".join(DEFAULT_ARMS))
     parser.add_argument("--until", type=int, help="只跑到这个序号（试跑）")
     parser.add_argument("--neo4j", help="覆盖图库地址，如 A3=bolt://localhost:7695（A4 为 Graphiti 的库）")
     parser.add_argument("--reset", action="store_true",
@@ -1300,7 +1354,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if unknown := set(arms) - set(ARMS):
         raise SystemExit(f"unknown arms: {sorted(unknown)}")
     if pending := [a for a in arms if a not in F3_ARMS]:
-        raise SystemExit(f"{','.join(pending)}: the f3 writer conditions are not implemented for these arms yet (M3, M4)")
+        raise SystemExit(f"{','.join(pending)}: the f3 writer conditions are not implemented for these arms yet (M4)")
     if problems := preflight(config, arms):
         raise SystemExit("services are not reachable:\n" + "\n".join(problems))
     run = config["workdir_root"] / args.name

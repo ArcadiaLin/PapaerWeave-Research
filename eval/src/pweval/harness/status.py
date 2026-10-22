@@ -71,8 +71,10 @@ def report(config: dict, timeline: tl.Timeline, run: Path, log: Path) -> list[st
             out.append(f"  abnormal exits: {', '.join(odd)}")
         if net := [str(r["seq"]) for r in mine if r.get("network")]:
             out.append(f"  network calls in sessions: {', '.join(net)}")
-        if arm == "A0" and mine and mine[-1].get("uncommitted"):
-            out.append(f"  uncommitted after last session: {len(mine[-1]['uncommitted'])} paths")
+        if arm == "A0" and mine and (a0 := mine[-1].get("a0")):
+            out.append(f"  last session: published {a0['published']} commits"
+                       + (f", not published: {a0['refused']}" if a0.get("refused") else "")
+                       + (f", {len(a0['uncommitted'])} uncommitted paths" if a0.get("uncommitted") else ""))
         inflight = tl._inflight(run, arm)
         if inflight.exists():
             data = json.loads(inflight.read_text(encoding="utf-8"))

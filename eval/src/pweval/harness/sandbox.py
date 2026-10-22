@@ -9,8 +9,8 @@ node（只读）、工作目录 ``/work``（可写）、本会话的 ``HOME``（
 沙箱外写入）。``Arm.papers``、``Arm.code`` 只留给参照组与 f2 之前的运行。各组的 ``/work``：
 
 - A3、A2：f3 起每个会话一个全新目录（:mod:`pweval.harness.timeline`）；库只经 MCP 进入（见下）。
-- A0：共享仓库本身（各写者共用一份，写者轮流运行）；读者是检查点处的副本，只读。仓库的 ``AGENTS.md`` 由 pi 从
-  工作目录加载。
+- A0：写者的 ``/work`` 是共享仓库已发布状态的克隆，每个会话一份（f3 §2.2，:func:`pweval.harness.timeline.a0_clone`）；
+  读者是检查点处的副本，只读。仓库根目录的 ``AGENTS.md``（约定）由 pi 从工作目录加载进系统提示。
 - A4：每个写者自己的目录；Graphiti 的 MCP 服务在沙箱外，经 HTTP 连接（断网时经转发，沙箱内连同一回环端口）。
 - 参照线（``none``）：没有库。
 
@@ -135,7 +135,7 @@ class Arm:
     name: str  # A0、A2、A3、A4，或参照组 C、D、P（没有库），以及先导的 none
     papers: Path | None  # 论文材料目录（只读挂载到 /work/papers）；读者与参照线为 None
     code: Path | None = None  # 按论文版本固定 commit 的代码（只读挂载到 /work/code）；读者为 None
-    store: Path | None = None  # A0：共享仓库，挂载为 /work
+    store: Path | None = None  # 挂载为 /work 的现成目录（A0 读者的检查点副本）；不给时为会话的 work/
     neo4j: str | None = None  # A3、A2：图库
     data: Path | None = None  # A3、A2：材料根目录（PAPERWEAVE_DATA：论文与产物文档），只给沙箱外的 MCP 服务
     embeddings: bool = True
@@ -190,7 +190,7 @@ def prepare(
     agent = paths.home / ".pi/agent"
     for d in (agent, paths.home / "sessions", paths.sock):
         d.mkdir(parents=True, exist_ok=True)
-    if arm.name != "A0":
+    if arm.store is None:
         paths.work.mkdir(parents=True, exist_ok=True)
     if arm.read_source is not None:
         (paths.work / "sources").mkdir(parents=True, exist_ok=True)  # 来源服务在沙箱外写入，沙箱内只读挂载
@@ -426,7 +426,7 @@ def kill_long_tools(root: int, limit_s: int, root_age_s: float) -> list[dict]:
 
 def _bwrap(paths: Paths, arm: Arm, writer: Writer) -> list[str]:
     node = Path(shutil.which("node") or "").resolve().parent.parent
-    work = arm.store if arm.name == "A0" else paths.work
+    work = arm.store if arm.store is not None else paths.work
     assert work is not None
     args = [
         "bwrap", "--unshare-all", *(() if arm.isolated_llm else ("--share-net",)), "--die-with-parent", "--clearenv",
