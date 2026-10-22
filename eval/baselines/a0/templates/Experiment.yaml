@@ -2,7 +2,7 @@
 id: exp_NNNN                    # next free number for this kind (look at the existing files)
 kind: Experiment
 paper:                          # the id of the paper it comes from (required)
-anchor: []                      # the paper's line ranges it rests on, like ["120:135", "210:214"], quoted (required)
+anchor: []                      # its sources: source ids, optionally with lines, like ["2205.13504v2::120:135"], quoted (required)
 figures: []                     # tables and figures it covers, main one first, like [S4.T3, A1.T8]
 description: |                  # what it is, in your own words, readable on its own (required)
   ...
