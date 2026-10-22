@@ -1,4 +1,4 @@
-"""固定材料：按引用开头找到材料，按登记的哈希读出它的行，按标题行求锚点的章节。read_evidence、读取投影、产物的写入与过期共用。"""
+"""固定材料（产物文档）：按引用开头找到材料，按登记的哈希读出它的行。read_evidence、产物的写入与过期共用；锚点的章节按来源目录求。"""
 
 from __future__ import annotations
 
@@ -7,8 +7,10 @@ from typing import Any
 
 from graph_vc import GraphState
 
+from ..model.refs import parse_ref
+from ..model.schema import PAPER_SOURCE
 from ..store.store import Store
-from .sections import cached_headings, sections
+from .sections import cached_headings, section_at
 
 
 def materials(store: Store, heads: set[str]) -> dict[str, dict[str, Any]]:
@@ -72,19 +74,21 @@ def load_lines(store: Store, material: dict[str, Any]) -> list[str] | None:
 
 
 def section_finder(store: Store):
-    """锚点 → 章节：按材料 id 读出材料（核对哈希），按标题行求章节；同一份材料只解析一次。"""
-    known: dict[str, tuple[tuple[int, str], ...]] = {}
+    """锚点 → 所在的章节：按锚点开头的来源 ID 读来源目录中的论文，按标题行求章节；代码与读不到的来源不算。"""
+    sources = store.sources
 
-    def find(material_id: str, anchors: list[str]) -> list[str]:
-        if material_id not in known:
-            rows = store.query(
-                "MATCH (m:Material {id: $id}) RETURN m.path AS path, m.content_hash AS content_hash", id=material_id
-            )
-            lines = load_lines(store, rows[0]) if rows else None
-            known[material_id] = (
-                cached_headings(rows[0]["path"], rows[0]["content_hash"], "\n".join(lines)) if lines else ()
-            )
-        return sections(list(known[material_id]), anchors)
+    def find(anchors: list[str]) -> list[str]:
+        out: list[str] = []
+        for anchor in anchors:
+            ref = parse_ref(anchor) if isinstance(anchor, str) else None
+            if ref is None or not PAPER_SOURCE.fullmatch(ref.head) or ref.lines is None:
+                continue
+            lines = sources.lines(ref.head)
+            heads = cached_headings(ref.head, ref.head, "\n".join(lines)) if lines is not None else ()
+            title = section_at(list(heads), ref.lines[0])
+            if title and title not in out:
+                out.append(title)
+        return out
 
     return find
 

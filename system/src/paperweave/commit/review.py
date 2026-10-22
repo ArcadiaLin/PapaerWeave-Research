@@ -15,7 +15,8 @@ from typing import Any, Protocol
 from graph_doc import Document, is_temp
 from graph_vc import Changeset
 
-from ..model.schema import ANCHOR, ARTIFACT, NAMED, kind_of
+from ..model.refs import normalize_ref
+from ..model.schema import ARTIFACT, NAMED, kind_of
 from .problems import Problem
 
 CONFIRM_KEYS = frozenset({"distinct_from", "revise"})
@@ -117,7 +118,7 @@ def _check_confirm(doc: Document) -> list[Problem]:
             problems.append(Problem("format", f"{at}.distinct_from", "distinct_from is a list of existing ids"))
         elif "revise" in entry and revise_of(entry) is None:
             problems.append(
-                Problem("format", f"{at}.revise", "revise has reason (text) and anchor (line ranges like [120:135])")
+                Problem("format", f"{at}.revise", "revise has reason (text) and anchor (source lines like [2205.13504v2::120:135])")
             )
     return problems
 
@@ -129,7 +130,8 @@ def distinct_from(entry: Any) -> list[str]:
 
 
 def revise_of(entry: Any) -> dict[str, Any] | None:
-    """``confirm.<ref>.revise`` → ``{reason?, anchor?: [<start>:<end>…]}``；格式不对时为 ``None``。"""
+    """``confirm.<ref>.revise`` → ``{reason?, anchor?: [<来源 ID>::<start>:<end>…]}``（规范写法）；格式不对时为 ``None``。
+    锚点是否可解析由 :func:`paperweave.commit.revision.check_revisions` 检查。"""
     if not isinstance(entry, Mapping) or not isinstance(entry.get("revise"), Mapping):
         return None
     revise = entry["revise"]
@@ -144,9 +146,9 @@ def revise_of(entry: Any) -> dict[str, Any] | None:
     anchor = revise.get("anchor")
     if anchor is not None:
         anchor = [anchor] if isinstance(anchor, str) else anchor
-        if not isinstance(anchor, list) or not all(isinstance(a, str) and ANCHOR.fullmatch(a.strip()) for a in anchor):
+        if not isinstance(anchor, list) or not anchor or not all(isinstance(a, str) and a.strip() for a in anchor):
             return None
-        out["anchor"] = [a.strip() for a in anchor]
+        out["anchor"] = [normalize_ref(a) for a in anchor]
     return out
 
 

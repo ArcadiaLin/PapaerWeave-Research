@@ -6,7 +6,8 @@
 - **改动**（改字段、改或删出边）：``confirm.<id>.revise`` 给出 ``reason`` 与 ``anchor``。
 - **删除**：``confirm.<id>.revise`` 给出 ``reason``。
 
-``anchor`` 是该记录所属论文中支持改动的行范围，按论文的当前材料检查不越界（同一提交换了新材料时按新材料）。理由与锚点记入提交的
+``anchor`` 是支持改动的来源行，写法与记录的锚点相同（``<来源 ID>::<起>:<止>``），须在所属论文声明的来源中（同一提交中
+改了论文的 ``source`` 时按改后的）。理由与锚点记入提交的
 ``meta.revisions``，旧值留在版本历史中。Entity 与 Concept 不在两层之内，改动不要求理由。删除另一端节点时连带删除的
 边由 ``delete-impact`` 提示，不算修订。
 """
@@ -14,13 +15,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from pathlib import Path
 from typing import Any
 
 from graph_doc import Document
 from graph_vc import Changeset, GraphState
 
-from ..model.schema import ANCHOR, CONTENT, FROM, kind_of
+from ..model.schema import CONTENT, FROM, kind_of
+from ..store.sources import SourceDir
+from .anchors import check
 from .problems import Problem
 from .reader import Reader
 from .review import revise_of
@@ -34,7 +36,7 @@ def check_revisions(
     before: GraphState,
     added: Mapping[str, list[tuple[str, str, bool]]],
     reader: Reader,
-    material_root: Path,
+    sources: SourceDir,
     ref: Callable[[str], str] = str,
 ) -> tuple[list[Problem], dict[str, dict[str, Any]]]:
     """按改前状态检查本次改动。返回问题，以及要记入提交的修订（节点 id → ``{reason?, anchor?}``）。"""
@@ -61,7 +63,7 @@ def check_revisions(
             continue
         if entry.get("anchor"):
             problem = _check_anchor(
-                f"confirm.{key}.revise.anchor", entry["anchor"], node_id, before, changeset, reader, material_root
+                f"confirm.{key}.revise.anchor", entry["anchor"], node_id, before, changeset, reader, sources
             )
             if problem is not None:
                 problems.append(problem)
@@ -123,42 +125,30 @@ def _check_anchor(
     before: GraphState,
     changeset: Changeset,
     reader: Reader,
-    material_root: Path,
+    sources: SourceDir,
 ) -> Problem | None:
-    papers = sorted(k.dst for k in before.edges if k.src == node_id and k.type == FROM)
-    near = reader.local_state(papers)
-    path = _attached_path(changeset, papers, near)
-    if path is None:
-        materials = sorted(
-            k.src
-            for k in near.edges
-            if k.type == "MATERIAL_OF" and k.dst in papers and not near.nodes[k.src].props.get("superseded_by")
-        )
-        path = near.nodes[materials[0]].props.get("path") if materials else None
-    file = material_root / path if isinstance(path, str) else None
-    if file is None or not file.is_file():
-        return Problem("anchor", at, "the record's paper has no readable material to anchor the revision in")
-    total = len(file.read_text(encoding="utf-8").splitlines())
-    for item in anchor:
-        m = ANCHOR.fullmatch(item)
-        if m is None or not 1 <= int(m["start"]) <= int(m["end"]) <= total:
-            return Problem("anchor", at, f"lines {item} are outside the paper (1:{total})")
+    """修订依据：所属论文（本次提交后）声明的来源中的行范围，与记录自身的 ``anchor`` 规则相同。"""
+    moved = sorted(e.key.dst for e in changeset.edges if e.key.src == node_id and e.key.type == FROM and e.after is not None)
+    papers = moved or sorted(k.dst for k in before.edges if k.src == node_id and k.type == FROM)  # 同一提交换了论文时按新论文
+    if not papers:
+        return Problem("anchor", at, "the record has no paper to anchor the revision in")
+    allowed = _sources_after(papers[0], changeset, reader)
+    listed = ", ".join(allowed) if allowed else "none yet"
+    whose = f"a source of {papers[0]} (its source: {listed})"
+    for i, item in enumerate(anchor if isinstance(anchor, list) else [anchor]):
+        _, problem = check(item, sources, allowed, whose, grounded=True)
+        if problem is not None:
+            return Problem("anchor", f"{at}[{i}]", problem)
     return None
 
 
-def _attached_path(changeset: Changeset, papers: list[str], near: GraphState) -> str | None:
-    """本次提交给论文换上的新材料的路径：同一提交中改写的锚点按新版本检查，与记录自身的 ``anchor`` 一致。"""
-    attached = sorted(
-        e.key.src
-        for e in changeset.edges
-        if e.key.type == "MATERIAL_OF" and e.key.dst in papers and e.before is None and e.after is not None
-    )
-    if not attached:
-        return None
-    node = next((n for n in changeset.nodes if n.id == attached[0] and n.after is not None), None)
-    props = node.after if node is not None else near.nodes[attached[0]].props if attached[0] in near.nodes else {}
-    path = props.get("path")
-    return path if isinstance(path, str) else None
+def _sources_after(paper: str, changeset: Changeset, reader: Reader) -> list[str]:
+    """论文在本次提交后声明的来源：同一提交中改了 ``source`` 时按改后的。"""
+    node = next((n for n in changeset.nodes if n.id == paper and n.after is not None), None)
+    if node is not None and "source" in node.after:
+        return list(node.after.get("source") or [])
+    state = reader.local_state([paper])
+    return list(state.nodes[paper].props.get("source") or []) if paper in state.nodes else []
 
 
 __all__ = ["check_revisions"]

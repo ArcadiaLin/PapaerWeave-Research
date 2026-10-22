@@ -9,8 +9,8 @@
     {id, kind, op, fields?: {字段: [改前, 改后]}, edges?: {added, removed, changed}}
 
 ``op`` 为 ``create``、``update``、``delete``，或 ``edges``（字段没变，只有出边变了）。字段与关系的拼写与读视图
-相同，所以别名（``NAMES``）的变化显示为 ``alias`` 的变化，材料（``MATERIAL_OF``）的变化显示为 ``material``
-（Artifact 为 ``_document``）的变化。关系挂在起点一侧；Artifact 的 ``_USED`` 按关系比较。
+相同，所以别名（``NAMES``）的变化显示为 ``alias`` 的变化，Artifact 的文档（``MATERIAL_OF``）的变化显示为
+``_document`` 的变化。关系挂在起点一侧；Artifact 的 ``_USED`` 按关系比较。
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ def is_object(node_id: str, state: GraphState) -> bool:
 
 def object_ids(ids: Iterable[str]) -> list[str]:
     """其中图模型对象与 Artifact 的 id（按 id 的写法判断，已删除的也算）；NameKey、Material 这类系统节点不在内，
-    它们的变化显示在所属对象的 ``aliases`` 与 ``material`` 上。"""
+    它们的变化显示在所属对象的 ``aliases`` 与 ``_document`` 上。"""
     return [i for i in ids if _OBJECT_ID.match(i)]
 
 

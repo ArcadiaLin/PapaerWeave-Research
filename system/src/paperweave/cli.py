@@ -55,14 +55,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("error: give a request file, - or -e", file=sys.stderr)
         return 1
 
-    from .config import DATA, NEO4J_DB
+    from .config import DATA, NEO4J_DB, SOURCES
     from .store.derived import sync
     from .store.embedding import embed
     from .store.graph import connect
 
     driver = connect()
     graph = open_graph(driver, database=NEO4J_DB, file_root=DATA)
-    store = Store(driver, graph, DATA, database=NEO4J_DB, embed=None if args.no_embed else embed)
+    store = Store(driver, graph, DATA, database=NEO4J_DB, embed=None if args.no_embed else embed, source_root=SOURCES)
     try:
         check_versioned(driver, database=NEO4J_DB)
         setup_database(graph, driver, database=NEO4J_DB)

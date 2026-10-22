@@ -7,8 +7,8 @@
   look-back），``variant`` 列可以没有。方法与论文的单元格以 id 开头。行键的各字段按字符串比较，可以写说明文字。
 - **论文覆盖表**是含 ``paper`` 列、不含 ``method`` 列的表，行键为论文。
 - **引用：** 头部的 ``task``、``dataset``；表中 ``method``、``paper`` 列开头的 id；``source`` 列的来源引用；
-  表格单元格中不带方括号的来源引用（如 ``Table 1 (material_a1::4.2::112:140)``）；正文中方括号里的引用。
-- **轻度规则**（只看这次新增与修改的行）：须带 ``source``，且落在该行 ``paper`` 的材料中；``metrics`` 中声明的列
+  表格单元格中不带方括号的来源引用（如 ``Table 1 (2205.13504v2::4.2::112:140)``）；正文中方括号里的引用。
+- **轻度规则**（只看这次新增与修改的行）：须带 ``source``，且引的是该行 ``paper`` 声明的来源；``metrics`` 中声明的列
   须为数字或留空。只警告的：数字没有出现在所引的行中；列与表单不同；``lookback``、``pred_len`` 写成文字；
   ``role``、``origin`` 的取值不在表单中。
 - **附注**（读取时现算）：每位编辑者写的结果行数；所引论文已有新版本的行；同一格（方法、变体、预测长度、指标）
@@ -23,6 +23,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from ...model.refs import NODE_ID, cited
+from ...model.schema import SOURCE_ID
 from ..document import Parsed, Table, tables
 from .base import (
     ArtifactType,
@@ -44,8 +45,9 @@ ROLES = frozenset({"target", "baseline"})
 ORIGINS = frozenset({"run", "cited"})
 DIRECTIONS = frozenset({"lower", "higher"})
 _NUMBER = re.compile(r"-?\d*\.?\d+(?:[eE]-?\d+)?")
-_SOURCE = re.compile(r"[a-z]+_[0-9a-f]{4,}::(?:[^:()\[\]|]+::)?\d+(?:\s*[:–-]\s*\d+)?")  # 章节可省略
-_SPLIT = re.compile(r"\s*;\s*|\s*,\s+(?=[a-z]+_[0-9a-f]{4,}::)")
+_HEAD = rf"(?:{SOURCE_ID.pattern}|[a-z]+_[0-9a-f]{{4,}})"  # 来源 ID；库内 id 开头的旧写法也认出来，由引用核对报告
+_SOURCE = re.compile(rf"{_HEAD}::(?:[^:()\[\]|]+::)?\d+(?:\s*[:–-]\s*\d+)?")  # 章节可省略
+_SPLIT = re.compile(rf"\s*;\s*|\s*,\s+(?={_HEAD}::)")
 
 
 TEMPLATE = """---
@@ -61,11 +63,11 @@ metrics: {MSE: lower, MAE: lower}
 
 One row per (method, variant, paper, lookback, pred_len). method and paper cells start with the id; role is
 target or baseline; origin is run (the paper ran it) or cited (copied from another paper); source is the paper
-lines holding the numbers, <paper id>::<start>:<end>.
+lines holding the numbers, <source id>::<start>:<end> (the paper's version, like 2205.13504v2::120:135).
 
 | method | variant | paper | role | origin | lookback | pred_len | MSE | MAE | source |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| <method id> <name> |  | <paper id> <short name> | target | run | 336 | 96 | 0.370 | 0.400 | <paper id>::<start>:<end> |
+| <method id> <name> |  | <paper id> <short name> | target | run | 336 | 96 | 0.370 | 0.400 | <source id>::<start>:<end> |
 
 ## Papers covered
 
@@ -73,7 +75,7 @@ Every paper in the store with experiments on this dataset: the tables taken, or 
 
 | paper | tables | complete |
 | --- | --- | --- |
-| <paper id> <short name> | Table 3 (<paper id>::<start>:<end>) | yes |
+| <paper id> <short name> | Table 3 (<source id>::<start>:<end>) | yes |
 """
 
 
@@ -208,8 +210,8 @@ class Leaderboard(ArtifactType):
             return
         paper = leading_id(cells.get("paper", ""))
         found = [f for f in (lookup(r) for r in refs) if f is not None]
-        if any(f.owner != paper for f in found):
-            report("schema", line, f"source must cite the material of {paper}, the row's paper")
+        if any(paper not in f.owners for f in found):
+            report("schema", line, f"source must cite a source of {paper}, the row's paper (one in its source field)")
             return
         numbers = [x for f in found for text in f.lines or [] for x in _numbers(text)]
         for metric, value in values.items():

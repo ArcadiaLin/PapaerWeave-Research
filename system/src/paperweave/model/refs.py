@@ -1,7 +1,9 @@
 """引用的三种写法（docs/designs/v2/operators.md §2.1）与正文中的方括号引用。
 
 - 对象引用：节点 id，如 ``exp_0012``、``art_0003``；
-- 来源引用：``<论文、产物或材料 id>::[<章节>::]<start>:<end>``，章节可省略；
+- 来源引用：``<来源 id>::[<章节>::]<start>:<end>``，来源 id 为带版本的 arXiv 编号或 ``<仓库>@<commit>``，章节可省略；
+  代码写作 ``<仓库>@<commit>::<文件路径>::<start>:<end>``。只写来源 id（或代码只写到文件）指整个来源（或整个文件）。
+  产物与材料 id 开头的 ``<id>::<start>:<end>`` 也解析为来源引用，只用作 read_evidence 的读取输入；
 - 记录引用：``<artifact id>#<key>``，指 Artifact 中的一条记录：旧版 Agent 算子是数据块中的记录，共同产物是按行键
   对齐的表格行，``key`` 为行键各字段以 ``+`` 相连（如 ``art_0003#method_0001++paper_0001+24+96``），字段可以含
   ``/`` 与空格（operators.md §4.1）。
@@ -19,7 +21,7 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-from .schema import LOCATOR
+from .schema import CODE_SOURCE, LOCATOR, SOURCE_ID
 
 RefKind = Literal["object", "source", "record"]
 
@@ -27,20 +29,40 @@ NODE_ID = re.compile(r"[a-z]+_[0-9a-f]{4,}")  # 模型节点、Artifact 与 Mate
 RECORD = re.compile(r"(?P<art>art_\d{4,})#(?P<key>[^\s\[\]#](?:[^\[\]#\n]*[^\s\[\]#])?)")
 RECORD_KEY = re.compile(r"[A-Za-z0-9_.-]+")  # 记录键、项键与矩阵的行列键；~ 留给 Check 的成对键与矩阵的格子
 _BRACKET = re.compile(r"\[([^\[\]\n]+)\](?!\()")
-_SEPARATOR = re.compile(r"\s*[,;]\s+(?=[a-z]+_[0-9a-f]{4,})")
+_SEPARATOR = re.compile(rf"\s*[,;]\s+(?=[a-z]+_[0-9a-f]{{4,}}|{SOURCE_ID.pattern})")
 
 
 @dataclass(frozen=True, slots=True)
 class Ref:
-    """``head`` 是对象 id、Artifact id（记录引用）或来源引用开头的材料 / 节点 id。"""
+    """``head`` 是对象 id、Artifact id（记录引用）或来源引用开头的来源、材料或节点 id。"""
 
     text: str
     kind: RefKind
     head: str
     key: str | None = None  # 记录键
-    locator: str | None = None  # 来源引用 :: 之后的部分
+    locator: str | None = None  # 来源引用 :: 之后的部分；只写来源时为 None
+
+    @property
+    def external(self) -> bool:
+        """来源引用以外部来源 id 开头（不是库内的节点或材料 id）。"""
+        return self.kind == "source" and SOURCE_ID.fullmatch(self.head) is not None
+
+    @property
+    def file(self) -> str | None:
+        """代码来源引用中的仓库内文件路径。"""
+        if self.kind != "source" or not CODE_SOURCE.fullmatch(self.head) or not self.locator:
+            return None
+        match = LOCATOR.fullmatch(self.locator)
+        return match["section"] if match else self.locator
+
+    @property
+    def lines(self) -> tuple[int, int] | None:
+        """来源引用的行范围；只写到来源或文件时为 None。"""
+        match = LOCATOR.fullmatch(self.locator or "")
+        return (int(match["start"]), int(match["end"])) if match else None
 
 
+_PATH = re.compile(r"[^\s:]+(?:/[^\s:]+)*")  # 仓库内的文件路径：不含空白与冒号
 _LINES = re.compile(r"(?:lines?\s*|L)?(?P<start>\d+)(?:\s*(?:[-\u2013\u2014:~]|\.\.)\s*L?(?P<end>\d+))?", re.I)
 
 
@@ -66,11 +88,15 @@ def parse_ref(text: str) -> Ref | None:
         return Ref(text, "record", match["art"], key=match["key"])
     head, sep, locator = text.partition("::")
     if sep:
-        if NODE_ID.fullmatch(head) and LOCATOR.fullmatch(locator):
+        if (NODE_ID.fullmatch(head) or SOURCE_ID.fullmatch(head)) and LOCATOR.fullmatch(locator):
+            return Ref(text, "source", head, locator=locator)
+        if CODE_SOURCE.fullmatch(head) and _PATH.fullmatch(locator):  # 代码只写到文件
             return Ref(text, "source", head, locator=locator)
         return None
     if NODE_ID.fullmatch(text):
         return Ref(text, "object", text)
+    if SOURCE_ID.fullmatch(text):  # 只写来源：整个来源
+        return Ref(text, "source", text)
     return None
 
 

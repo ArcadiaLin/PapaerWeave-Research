@@ -13,8 +13,8 @@
 
 环境变量：``PAPERWEAVE_NEO4J_URI`` 等连接参数（:mod:`paperweave.config`）；``PAPERWEAVE_USER``；``PAPERWEAVE_AGENT``；
 ``PAPERWEAVE_READ_ONLY=1`` 时只列出不写入的工具，``PAPERWEAVE_HIDE_TOOLS`` 中逗号分隔的工具不列出；
-``PAPERWEAVE_EVIDENCE_SCOPE=artifacts`` 时 read_evidence 只读产物文档，不读论文原文；``anchored`` 时论文只读库中
-记录过的锚点所在的块（:func:`scoped`）；
+``PAPERWEAVE_EVIDENCE_SCOPE=artifacts`` 时 read_evidence 只读产物文档，不读来源（:func:`scoped`）；
+``PAPERWEAVE_SOURCES`` 是只读来源目录（:mod:`paperweave.query.sources`）；
 ``PAPERWEAVE_NO_EMBED=1`` 时关闭查询向量，写入后也不补算；``PAPERWEAVE_MCP_LOG`` 给出日志文件（追加写）；
 ``PAPERWEAVE_WORKDIR`` 是写者的工作目录，commit 的文件只从这里读，checkout 也写到这里，不设时取服务进程的当前目录；
 ``PAPERWEAVE_WORKDIR_ALIAS`` 是写者看到的同一目录（见 :mod:`paperweave.draft`）。库没有版本记录时服务不启动。
@@ -61,17 +61,12 @@ def enabled(spec: Spec) -> dict[str, types.Tool]:
 
 
 SCOPE_NOTES = {
-    "artifacts": " In this session only artifact documents can be read; source papers are not available.",
-    "anchored": (
-        " In this session a paper can be read only around the anchors recorded in the store (on records, edges or"
-        " artifact documents): a reference must fall within the paragraph or table such an anchor is in, and the"
-        " whole paragraph or table is returned. Artifact documents can be read in full."
-    ),
+    "artifacts": " In this session only artifact documents can be read; sources are not available.",
 }
 
 
 def scoped(tools: dict[str, types.Tool]) -> tuple[dict[str, types.Tool], dict[str, Operator]]:
-    """``PAPERWEAVE_EVIDENCE_SCOPE`` 为 ``artifacts`` 或 ``anchored`` 时把 read_evidence 换成限定范围的版本，说明中补一句。"""
+    """``PAPERWEAVE_EVIDENCE_SCOPE`` 为 ``artifacts`` 时把 read_evidence 换成限定范围的版本，说明中补一句。"""
     ops = dict(TOOLS)
     scope = os.environ.get("PAPERWEAVE_EVIDENCE_SCOPE") or None
     if scope is not None and scope not in SCOPE_NOTES:  # 拼错时不能悄悄放开原文
@@ -146,7 +141,7 @@ def serve(
 
 
 def main() -> int:
-    from ..config import DATA, NEO4J_DB, NEO4J_URI
+    from ..config import DATA, NEO4J_DB, NEO4J_URI, SOURCES
     from ..store.derived import sync as sync_derived
     from ..store.embedding import embed
     from ..store.graph import connect
@@ -167,7 +162,7 @@ def main() -> int:
         return 2
     graph = open_graph(driver, database=NEO4J_DB, file_root=DATA)
     setup_database(graph, driver, database=NEO4J_DB)  # 空库也有 main 分支与索引：读取工具不必区分“没有索引”与“没有结果”
-    store = Store(driver, graph, DATA, database=NEO4J_DB, embed=None if no_embed else embed)
+    store = Store(driver, graph, DATA, database=NEO4J_DB, embed=None if no_embed else embed, source_root=SOURCES)
     def sync(touched: list[str] | None = None) -> int:
         return sync_derived(driver, NEO4J_DB, None if no_embed else embed, touched)
 

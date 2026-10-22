@@ -65,7 +65,7 @@ create:
     name: Are Transformers Effective for Time Series Forecasting?
     identities: ["arxiv:2205.13504"]
     year: 2023
-    material: papers/2023-DLinear/paper.md
+    source: [2205.13504v3]
     description: |
       Questions whether Transformers are effective for LTSF and introduces DLinear.
     extra:
@@ -83,12 +83,11 @@ create:
     identities: ["url:https://github.com/cure-lab/LTSF-Linear"]
     IMPLEMENTS:
       $dlinear:
-        paper: $paper
-        anchor: [20:21]
+        anchor: [2205.13504v3::20:21]
   $exp:
     kind: Experiment
     paper: $paper
-    anchor: [198:240]
+    anchor: [2205.13504v3::198:240]
     figures: [S5.T2, A3.T9]
     description: |
       Compare DLinear with Transformer baselines on nine datasets.
@@ -107,21 +106,21 @@ create:
   $claim:
     kind: Claim
     paper: $paper
-    anchor: [10:14]
+    anchor: [2205.13504v3::10:14]
     description: |
       DLinear outperforms Transformer methods in most settings.
     ABOUT: [$dlinear, task_0002]
   $contrib:
     kind: Contribution
     paper: $paper
-    anchor: [40:44]
+    anchor: [2205.13504v3::40:44]
     description: |
       Introduces a simple linear baseline for LTSF.
     ABOUT: [$dlinear]
   $exp2:
     kind: Experiment
     paper: $paper
-    anchor: [250:260]
+    anchor: [2205.13504v3::250:260]
     figures: [S5.T4]
     description: |
       Ablation of the decomposition.
@@ -172,7 +171,9 @@ class MemoryGraph:
         return prepared
 
 
-def write_material(root: Path, path: str, lines: int = 300) -> None:
+def write_source(root: Path, source: str, lines: int = 300) -> None:
+    """来源目录（材料根目录下的 sources/）中的一篇论文：每行写着来源 ID 与行号。"""
+    path = f"sources/{source}/paper.md"
     file = root / path
     file.parent.mkdir(parents=True, exist_ok=True)
     file.write_text("".join(f"{path} line {i}\n" for i in range(1, lines + 1)), encoding="utf-8")
@@ -180,8 +181,8 @@ def write_material(root: Path, path: str, lines: int = 300) -> None:
 
 @pytest.fixture
 def graph(tmp_path: Path) -> MemoryGraph:
-    write_material(tmp_path, "papers/2023-DLinear/paper.md")
-    write_material(tmp_path, "papers/2023-PatchTST/paper.md")
+    write_source(tmp_path, "2205.13504v3")
+    write_source(tmp_path, "2211.14730v2")
     g = MemoryGraph(tmp_path)
     assert g.submit(SEED, "seed:tsf").ok
     return g

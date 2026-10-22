@@ -38,17 +38,17 @@ Report = Callable[[str, int, str], None]
 
 @dataclass(frozen=True, slots=True)
 class Source:
-    """一个来源引用所指的材料：``owner`` 是材料所属的节点，``superseded_by`` 是取代它的新版本材料，``lines`` 是所引
-    的那几行（文件不在或哈希不符时为 ``None``）。"""
+    """一个来源引用所指的来源：``source`` 是来源 ID，``owners`` 是库中声明它的 Paper 或 Code，``superseded_by`` 是库中
+    声明过的更新版本，``lines`` 是所引的那几行（只写来源、文件读不到或越界时为 ``None``）。"""
 
-    material: str
-    owner: str | None
+    source: str
+    owners: tuple[str, ...]
     superseded_by: str | None
     lines: list[str] | None
 
 
 Lookup = Callable[[str], "Source | None"]
-"""来源引用的写法 → 所指的材料；不是来源引用或材料不在时为 ``None``。"""
+"""来源引用的写法 → 所指的来源；不是外部来源的引用或来源未开放时为 ``None``。"""
 
 Authors = Mapping[int, tuple[str, int]]
 """文档的行号 → 最近编辑它的 ``(编辑者, 版本号)``，由版本链推出（paperweave.artifact.versions.blame）。"""

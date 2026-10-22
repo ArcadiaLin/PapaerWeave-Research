@@ -8,6 +8,8 @@ REPO = next(p for p in [Path.cwd(), *Path.cwd().parents, *Path(__file__).resolve
 DATA = Path(os.environ.get("PAPERWEAVE_DATA", REPO / "data/raw/e09-paper-knowledge")).expanduser()
 DOCS = DATA / "docs"       # 入库的 graph-doc，按文件名顺序提交，版本管理
 PAPERS = DATA / "papers"
+# 只读来源目录：已开放的固定版本来源（<来源 ID>/paper.md、<仓库>@<commit>/），由运行环境维护（f3 设计 §4）
+SOURCES = Path(os.environ.get("PAPERWEAVE_SOURCES", DATA / "sources")).expanduser()
 
 # 默认值对应 infra/neo4j-e09/docker-compose.yml；与 neo4j-e08 端口相同，同一时间只起一个
 NEO4J_URI = os.environ.get("PAPERWEAVE_NEO4J_URI", "bolt://localhost:7687")

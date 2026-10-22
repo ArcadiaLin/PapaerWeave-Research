@@ -67,13 +67,15 @@ tools:
   read_evidence:
     title: Read evidence
     description: >-
-      Read source lines: the lines of a paper (the anchor of a record) or of an artifact document. Write each
-      reference as <paper or artifact id>::<start>:<end>, such as paper_0003::120:135; a section in between
-      (paper_0003::4.2 Results::120:135) is accepted and ignored. Each item is available (text with line numbers
-      and the section it is in), missing or error; at most 400 lines per reference. Read only the lines you need.
+      Read source lines: the lines of a source (an anchor) or of an artifact document. Write each reference as
+      <source id>::<start>:<end>, such as 2205.13504v2::120:135 (a section in between, 2205.13504v2::4.2
+      Results::120:135, is accepted and ignored); code is <repo>@<commit>::<file>::<start>:<end>; an artifact
+      document is <artifact id>::<start>:<end>. Only sources that read_source can fetch are available. Each item is
+      available (text with line numbers and the section it is in), missing or error; at most 400 lines per
+      reference. Read only the lines you need.
     parameters:
-      source_refs: List of references <id>::<start>:<end>.
-      at: Optional commit id. Resolve the references as of that commit; without it, the current paper version is read.
+      source_refs: List of references <source id>::<start>:<end> or <artifact id>::<start>:<end>.
+      at: Optional commit id. Read artifact documents as of that commit; a source id is a fixed version.
 
   checkout:
     title: Checkout
@@ -99,7 +101,7 @@ tools:
             name: Are Transformers Effective for Time Series Forecasting?
             identities: [arxiv:2205.13504]   # without the version
             year: 2023
-            material: papers/2205.13504v3/paper.md   # the Markdown you read; anchors are its line numbers
+            source: [2205.13504v3]           # the source ids it is read from, as read_source gives them
           $dlinear:
             kind: Method
             name: DLinear
@@ -108,7 +110,7 @@ tools:
           $exp:
             kind: Experiment
             paper: $paper
-            anchor: [120:135, 141:150]       # lines of the paper's material
+            anchor: [2205.13504v3::120:135, 2205.13504v3::141:150]   # <source id>::<start>:<end>, in its paper's source
             figures: [S4.T2]
             description: |
               Long-horizon forecasting on six benchmarks against Transformer baselines ...
@@ -127,21 +129,21 @@ tools:
           exp_0002: {USES: [dataset_0005]}   # only these edges
         confirm:
           $dlinear: {distinct_from: [method_0011]}
-          exp_0002: {revise: {reason: "...", anchor: [88:90]}}
+          exp_0002: {revise: {reason: "...", anchor: [2205.13504v3::88:90]}}
 
       Rules:
       - Refer to existing nodes by id only (find them with search). A $name is valid only inside its file.
       - Writing a node that already exists blocks with exists; an edge that already exists with the same properties is skipped. To change, use set (fields) or delete (edges); to replace an edge's properties, write it under set.
       - New Entities and Concepts are checked for duplicates: a dedup error lists stored candidates. If one is the same thing, use its id instead of your $name; if none is, add confirm: {$name: {distinct_from: [the candidate ids]}}.
-      - Content (Experiment, Claim, Contribution) records what a paper says. New edges on an existing record need anchor (on the edge, or in confirm revise); changing its fields or edges needs confirm: {id: {revise: {reason, anchor}}}; deleting it needs reason. The old version stays in the history.
-      - A paper's new version: set the Paper's material to the new file. Anchors written earlier stay on the old version, and readers are told which ones; revise only the records the new version changes, with anchors in the new file.
+      - Content (Experiment, Claim, Contribution) records what a paper says; its anchors are lines of a source in its paper's source, not code. New edges on an existing record need anchor (on the edge, or in confirm revise); changing its fields or edges needs confirm: {id: {revise: {reason, anchor}}}; deleting it needs reason. The old version stays in the history.
+      - A paper's new version: add its source id to the Paper's source. Anchors written earlier keep pointing at the old version, and readers are told which ones; revise only the records the new version changes, with anchors in the new version.
       - Fields starting with _ and # comments are ignored, so a node pasted from get can go under set unchanged.
       - Quote short text containing ": " or starting with a special character; put long text in a | block.
 
       {{kinds}}
       Relations (start → end; * marks required properties):
       {{relations}}
-      Any edge may also carry anchor (paper lines), description and extra; an edge whose start is not a paper or Content gives paper when it has an anchor.
+      Any edge may also carry anchor (source lines, <source id>::<start>:<end>, from a source some Paper or Code declares; code: <repo>@<commit>::<file>::<start>:<end>), description and extra.
     parameters:
       files: Paths of files in your working directory; at most one graph-doc.
       message: One line saying what this commit does; for artifact documents, also what you changed and why.

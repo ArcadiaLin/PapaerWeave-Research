@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -35,15 +36,16 @@ def test_paper_form_is_written_in_physical_form(ingested: MemoryGraph) -> None:
     assert json.loads(paper.props["extra"]) == {"venue": "AAAI 2023"}
     assert paper.props["formed_by"] == "claude"
     exp = state.nodes["exp_0001"]
-    assert exp.props["anchor"] == ["198:240"]
+    assert paper.props["source"] == ["2205.13504v3"]
+    assert exp.props["anchor"] == ["2205.13504v3::198:240"]
     assert exp.props["exp_key"] == "paper_0001::S5.T2"
     assert "paper" not in exp.props
-    material = next(iter(edges(ingested, "exp_0001", "FROM").values()))["material_ref"]
-    assert material.startswith("material_")
+    assert edges(ingested, "exp_0001", "FROM") == {"paper_0001": {}}
+    assert not any(k.type == "MATERIAL_OF" for k in state.edges)  # 来源不登记为材料
     assert edges(ingested, "exp_0001", "EVALUATES")["method_0001"]["result"] == "cited"
     assert edges(ingested, "exp_0001", "USES")["dataset_0002"]["printed_as"] == "ETTh1"
     implements = edges(ingested, "code_0001", "IMPLEMENTS")["method_0002"]
-    assert implements["paper"] == "paper_0001" and implements["material_ref"] == material
+    assert implements["anchor"] == ["2205.13504v3::20:21"] and "paper" not in implements
     assert implements["formed_by"] == "claude"
     # D-Linear 是别名：NameKey 指向 DLinear
     names = {state.nodes[k.src].props["raw"] for k in state.edges if k.type == "NAMES" and k.dst == "method_0002"}
@@ -107,7 +109,7 @@ def test_fields_are_checked_against_the_kind(graph: MemoryGraph) -> None:
           $e:
             kind: Experiment
             paper: $p
-            anchor: [1:2]
+            anchor: [2205.13504v3::1:2]
             description: x
             EVALUATES:
               $m:
@@ -116,15 +118,96 @@ def test_fields_are_checked_against_the_kind(graph: MemoryGraph) -> None:
     msgs = {p.at: p.msg for p in prepared.errors}
     assert "extra" in msgs["create.$m.venue"]
     assert "namespace" in msgs["create.$p.identities[0]"]
-    assert "no material" in msgs["create.$e.anchor"]  # 论文是桩：没有正文
+    assert "not a source of $p (its source: none yet)" in msgs["create.$e.anchor[0]"]  # 论文没有声明来源
     assert "target" in msgs["create.$e.EVALUATES.$m.role"]
 
 
-def test_anchor_lines_are_checked_against_the_material(graph: MemoryGraph) -> None:
-    text = DLINEAR.replace("anchor: [198:240]", "anchor: [198:999]")
+def test_anchor_lines_are_checked_against_the_source(graph: MemoryGraph) -> None:
+    text = DLINEAR.replace("anchor: [2205.13504v3::198:240]", "anchor: [2205.13504v3::198:999]")
     prepared = graph.dry_run(text)
     assert [p.at for p in prepared.errors] == ["create.$exp.anchor[0]"]
-    assert "outside the paper (1:300)" in prepared.errors[0].msg
+    assert "outside 2205.13504v3 (1:300)" in prepared.errors[0].msg
+
+
+@pytest.mark.parametrize(
+    ("anchor", "expected"),
+    [
+        ("198:240", "lacks its source: write 2205.13504v3::198:240"),
+        ("2205.13504::198:240", "with its version"),
+        ("paper_0001::198:240", "not a store id"),
+        ("2205.13504v3", "give the lines"),
+        ("2211.14730v2::1:2", "not a source of $paper"),
+        ("2301.00001v1::1:2", "not an available source"),
+        ("Autoformer@09994619::a.py::1:2", "not code"),
+    ],
+)
+def test_content_anchors_are_lines_of_the_papers_own_source(graph: MemoryGraph, anchor: str, expected: str) -> None:
+    text = DLINEAR.replace("anchor: [2205.13504v3::198:240]", f"anchor: [{anchor}]")
+    prepared = graph.dry_run(text)
+    assert [p.at for p in prepared.errors] == ["create.$exp.anchor[0]"]
+    assert expected in prepared.errors[0].msg
+
+
+def test_anchors_are_stored_in_their_normal_form(graph: MemoryGraph) -> None:
+    prepared = graph.submit(DLINEAR.replace("anchor: [2205.13504v3::198:240]", 'anchor: ["`2205.13504v3 :: L198-L240`"]'))
+    assert prepared.ok, prepared.errors
+    assert graph.state.nodes["exp_0001"].props["anchor"] == ["2205.13504v3::198:240"]
+
+
+def test_paper_sources_are_versioned_and_available(graph: MemoryGraph) -> None:
+    for source, expected in [('"2205.13504"', "write the version too"), ("2205.13504v9", "not an available source"),
+                             ("Autoformer@09994619", "not a source id for a Paper"), ("papers/x.md", "not a source id")]:
+        prepared = graph.dry_run(DLINEAR.replace("source: [2205.13504v3]", f"source: [{source}]"))
+        assert ("source", "create.$paper.source[0]") in {(p.rule, p.at) for p in prepared.errors}, source
+        assert any(expected in p.msg for p in prepared.errors), (source, prepared.errors)
+
+
+def test_edge_anchors_need_a_declared_source(graph: MemoryGraph, tmp_path: Path) -> None:
+    (tmp_path / "sources/Autoformer@09994619/layers").mkdir(parents=True)
+    (tmp_path / "sources/Autoformer@09994619/layers/AC.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    assert graph.submit(DLINEAR).ok
+    edge = doc("""
+        create:
+          code_0001:
+            source: [Autoformer@09994619]
+          $c:
+            kind: Code
+            name: Autoformer
+            source: [Autoformer@09994619]
+            IMPLEMENTS:
+              method_0002: {anchor: [ANCHOR]}
+        """)
+    undeclared = doc("""
+        create:
+          $c:
+            kind: Code
+            name: Autoformer
+            IMPLEMENTS:
+              method_0002: {anchor: [Autoformer@09994619::layers/AC.py::1:2]}
+        """)
+    prepared = graph.dry_run(undeclared)
+    assert "not declared by any Paper or Code" in prepared.errors[0].msg
+    for anchor in ("Autoformer@09994619::layers/AC.py::1:2", "Autoformer@09994619::./layers/AC.py", "Autoformer@09994619", "2205.13504v3"):
+        text = edge.replace("ANCHOR", anchor).replace("  code_0001:\n    source: [Autoformer@09994619]\n", "")
+        prepared = graph.dry_run(text)
+        assert prepared.ok, (anchor, prepared.errors)
+    for anchor, expected in [("Autoformer@09994619::layers/AC.py::3:4", "outside"), ("Autoformer@09994619::x.py::1:1", "not a file"),
+                             ("Autoformer@09994619::1:2", "need the file")]:
+        prepared = graph.dry_run(edge.replace("ANCHOR", anchor).replace("  code_0001:\n    source: [Autoformer@09994619]\n", ""))
+        assert any(expected in p.msg for p in prepared.errors), (anchor, prepared.errors)
+    stored = graph.submit(edge.replace("ANCHOR", "Autoformer@09994619::./layers/AC.py::1:2").replace("  code_0001:\n    source: [Autoformer@09994619]\n", ""))
+    assert stored.ok
+    assert edges(graph, "code_0002", "IMPLEMENTS")["method_0002"]["anchor"] == ["Autoformer@09994619::layers/AC.py::1:2"]
+
+
+def test_an_edge_takes_no_paper(ingested: MemoryGraph) -> None:
+    prepared = ingested.dry_run(doc("""
+        create:
+          code_0001:
+            IMPLEMENTS:
+              method_0001: {paper: paper_0001, anchor: [2205.13504v3::20:21]}
+        """))
+    assert "takes no paper" in prepared.errors[0].msg
 
 
 def test_required_fields_and_edges(graph: MemoryGraph) -> None:
@@ -133,14 +216,14 @@ def test_required_fields_and_edges(graph: MemoryGraph) -> None:
           $p:
             kind: Paper
             name: P
-            material: papers/2023-DLinear/paper.md
+            source: [2205.13504v3]
           $e:
             kind: Experiment
             paper: $p
-            anchor: [1:2]
+            anchor: [2205.13504v3::1:2]
           $c:
             kind: Contribution
-            anchor: [1:2]
+            anchor: [2205.13504v3::1:2]
             description: x
           $t:
             kind: Task
@@ -220,7 +303,7 @@ def test_pasting_a_read_back_into_set_changes_nothing(ingested: MemoryGraph) -> 
           exp_0001:
             kind: Experiment
             paper: paper_0001
-            anchor: [198:240]
+            anchor: [2205.13504v3::198:240]
             figures: [S5.T2, A3.T9]
             description: |
               Compare DLinear with Transformer baselines on nine datasets.
@@ -289,11 +372,11 @@ def test_change_an_edge_target(ingested: MemoryGraph) -> None:
             revise:
               reason: |
                 The table reports ETT as a whole, not ETTh1.
-              anchor: [198:205]
+              anchor: [2205.13504v3::198:205]
         """))
     assert prepared.ok, prepared.errors
     assert set(edges(ingested, "exp_0001", "USES")) == {"dataset_0001"}
-    assert prepared.revisions["exp_0001"]["anchor"] == ["198:205"]
+    assert prepared.revisions["exp_0001"]["anchor"] == ["2205.13504v3::198:205"]
 
 
 # ── 查重 ──────────────────────────────────────────────────────────────
@@ -348,10 +431,15 @@ def test_grounded_edits_need_reason_and_anchor(ingested: MemoryGraph) -> None:
               DLinear outperforms Transformers in most of the 9 datasets.
         """)
     assert rules(ingested.dry_run(text)) == {"revision"}
-    fixed = text + "confirm:\n  claim_0001:\n    revise:\n      reason: closer to the abstract\n      anchor: [10:12]\n"
-    prepared = ingested.submit(fixed)
+    confirm = "confirm:\n  claim_0001:\n    revise:\n      reason: closer to the abstract\n      anchor: [ANCHOR]\n"
+    for anchor, expected in [("10:12", "lacks its source"), ("2211.14730v2::10:12", "not a source of paper_0001"),
+                             ("2205.13504v3::10:999", "outside")]:
+        problems = ingested.dry_run(text + confirm.replace("ANCHOR", anchor)).errors
+        assert [(p.rule, p.at) for p in problems] == [("anchor", "confirm.claim_0001.revise.anchor[0]")], anchor
+        assert expected in problems[0].msg
+    prepared = ingested.submit(text + confirm.replace("ANCHOR", '"2205.13504v3 :: 10-12"'))
     assert prepared.ok, prepared.errors
-    assert prepared.revisions == {"claim_0001": {"reason": "closer to the abstract", "anchor": ["10:12"]}}
+    assert prepared.revisions == {"claim_0001": {"reason": "closer to the abstract", "anchor": ["2205.13504v3::10:12"]}}
 
 
 def test_adding_an_edge_to_a_record_needs_only_an_anchor(ingested: MemoryGraph) -> None:
@@ -363,7 +451,7 @@ def test_adding_an_edge_to_a_record_needs_only_an_anchor(ingested: MemoryGraph) 
                 role: evaluation_data
         """)
     assert rules(ingested.dry_run(bare)) == {"revision"}
-    anchored = bare.replace("role: evaluation_data", "role: evaluation_data\n        anchor: [200:201]")
+    anchored = bare.replace("role: evaluation_data", "role: evaluation_data\n        anchor: [2205.13504v3::200:201]")
     assert ingested.dry_run(anchored).ok
 
 
@@ -392,7 +480,7 @@ def test_changing_a_records_paper_moves_from_and_rechecks_anchors(ingested: Memo
           $p2:
             kind: Paper
             name: PatchTST
-            material: papers/2023-PatchTST/paper.md
+            source: [2211.14730v2]
         set:
           claim_0001:
             paper: $p2
@@ -400,8 +488,11 @@ def test_changing_a_records_paper_moves_from_and_rechecks_anchors(ingested: Memo
           claim_0001:
             revise:
               reason: it is PatchTST's claim
-              anchor: [10:14]
+              anchor: [2211.14730v2::10:14]
         """)
+    kept = ingested.dry_run(text)  # 锚点仍在原论文的来源中
+    assert [(p.rule, p.at) for p in kept.errors] == [("anchor", "set.claim_0001.anchor[0]")]
+    text = text.replace("    paper: $p2\n", "    paper: $p2\n    anchor: [2211.14730v2::10:14]\n")
     prepared = ingested.submit(text)
     assert prepared.ok, prepared.errors
     assert set(edges(ingested, "claim_0001", "FROM")) == {"paper_0002"}

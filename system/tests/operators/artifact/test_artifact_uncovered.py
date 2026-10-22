@@ -11,19 +11,19 @@ from conftest import LEADERBOARD, Writer
 from paperweave.artifact.stale import stale
 from paperweave.store import Store
 
-SECOND = "papers/2024-Other/paper.md"
+SECOND = "sources/2401.00001v1/paper.md"
 OTHER_PAPER = """graph-doc: v0.2
 create:
   $other:
     kind: Paper
     name: Another forecasting paper
     year: 2024
-    material: papers/2024-Other/paper.md
+    source: [2401.00001v1]
     description: A later paper that also reports ETTh1.
   $exp:
     kind: Experiment
     paper: $other
-    anchor: [3:5]
+    anchor: [2401.00001v1::3:5]
     figures: [S4.T1]
     description: Multivariate forecasting on ETTh1 against DLinear.
     EVALUATES:
@@ -60,8 +60,8 @@ def test_a_paper_missing_from_the_table_is_uncovered(store: Store, writers: dict
 
     edit = claude.fetch("art_0001")["items"][0]["path"]
     text = claude.read(edit).replace(
-        "| paper_0001 DLinear | Table 2 (paper_0001::5.2 Comparison::10:20) | no |",
-        "| paper_0001 DLinear | Table 2 (paper_0001::5.2 Comparison::10:20) | no |\n"
+        "| paper_0001 DLinear | Table 2 (2205.13504v1::5.2 Comparison::10:20) | no |",
+        "| paper_0001 DLinear | Table 2 (2205.13504v1::5.2 Comparison::10:20) | no |\n"
         "| paper_0002 Other | left out: univariate setting | no |",
     )
     claude.write(edit, text)

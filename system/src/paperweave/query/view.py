@@ -1,8 +1,8 @@
 """读取投影：把库中状态写成 graph-doc 同形的节点（docs/designs/v3/tools.md）。
 
 **读写同形。** ``get`` 返回的节点就是 ``set`` 下的一个节点：原样贴进 ``set`` 没有改动，改其中几个值就是修改。
-为此系统维护的内容按写入时的拼写还原：Label → ``kind``，NameKey → ``alias``，``FROM`` → ``paper``，Material →
-``material``（路径），``extra`` 的 JSON → 映射；系统字段与检索用的派生字段不出现。
+为此系统维护的内容按写入时的拼写还原：Label → ``kind``，NameKey → ``alias``，``FROM`` → ``paper``，``extra`` 的
+JSON → 映射；系统字段与检索用的派生字段不出现。
 
 **只读字段**（``_`` 开头，写入时忽略）：``_formed_by``、``_formed_at``、``_edges_in``（各类入边的条数）、Claim 的
 ``_supported_by`` 与 ``_opposed_by``、``_used_by``（用到它的产物）。检索结果中的描述摘录叫 ``_excerpt``，不叫
@@ -42,10 +42,10 @@ from .render import render
 EXCERPT = 280  # 摘录的字数上限
 PARTICIPANTS = 4  # 紧凑投影中每类关系最多列出的终点
 USED_BY = 3
-_ORDER = ("kind", "name", "alias", "identities", "year", "material", "paper", "anchor", "figures", "description", "extra", "stub")
+_ORDER = ("kind", "name", "alias", "identities", "year", "source", "paper", "anchor", "figures", "description", "extra", "stub")
 _HIDDEN_EDGE = SYSTEM_REL_PROPS | DERIVED_FIELDS | {"search_text"}
 
-Sections = Callable[[str, list[str]], list[str]]  # (材料 id, 锚点) → 章节
+Sections = Callable[[list[str]], list[str]]  # 锚点 → 所在的章节
 
 
 @dataclass
@@ -135,20 +135,16 @@ def _fields(
     alias = aliases_of(node_id, state)
     if alias:
         props["alias"] = alias
-    material = current_material(node_id, state)
-    if material is not None and material in state.nodes:
-        props["material"] = state.nodes[material].props.get("path")
     if kind in CONTENT:
         source = _paper_edge(node_id, state)
         if source is not None:
             props["paper"] = source.dst
             view.names[source.dst] = label(source.dst, state)
-            anchors = props.get("anchor") or []
-            ref = state.edges[source].get("material_ref")
-            if sections and anchors and isinstance(ref, str):
-                found = sections(ref, anchors)
-                if found:
-                    view.notes[(node_id, "anchor")] = "; ".join(found)
+        anchors = props.get("anchor") or []
+        if sections and anchors:
+            found = sections(anchors)
+            if found:
+                view.notes[(node_id, "anchor")] = "; ".join(found)
     out: dict[str, Any] = {"kind": kind}
     out.update((k, props.pop(k)) for k in _ORDER if k in props)
     out.update(sorted(props.items()))
@@ -161,11 +157,8 @@ def _edge_props(
     props = {k: v for k, v in state.edges[key].items() if k not in _HIDDEN_EDGE}
     if isinstance(props.get("extra"), str):
         props["extra"] = json.loads(props["extra"])
-    if "paper" in props:
-        view.names[props["paper"]] = label(props["paper"], state)
-    ref = state.edges[key].get("material_ref")
-    if sections and props.get("anchor") and isinstance(ref, str):
-        found = sections(ref, props["anchor"])
+    if sections and props.get("anchor"):
+        found = sections(props["anchor"])
         if found:
             view.notes[(src, key.type, key.dst, "anchor")] = "; ".join(found)
     return props or None
@@ -221,9 +214,8 @@ def compact(node_id: str, state: GraphState, view: View, sections: Sections | No
             view.names[source.dst] = label(source.dst, state)
         if props.get("anchor"):
             out["anchor"] = props["anchor"]
-            ref = state.edges[source].get("material_ref") if source is not None else None
-            if sections and isinstance(ref, str):
-                found = sections(ref, props["anchor"])
+            if sections:
+                found = sections(props["anchor"])
                 if found:
                     view.notes[(node_id, "anchor")] = "; ".join(found)
     else:
@@ -232,7 +224,7 @@ def compact(node_id: str, state: GraphState, view: View, sections: Sections | No
         if alias:
             out["alias"] = alias
         if kind == "Paper":
-            out.update((k, props[k]) for k in ("identities", "year") if k in props)
+            out.update((k, props[k]) for k in ("identities", "year", "source") if k in props)
         if props.get("stub"):
             out["stub"] = True
     if props.get("description"):
@@ -309,7 +301,7 @@ def aliases_of(node_id: str, state: GraphState) -> list[str]:
 
 
 def current_material(node_id: str, state: GraphState) -> str | None:
-    """Paper 或产物当前的材料：经 ``MATERIAL_OF`` 指向它、没有被新版本取代的 Material。"""
+    """产物当前的文档：经 ``MATERIAL_OF`` 指向它、没有被新版本取代的 Material。"""
     owners = sorted(
         k.src
         for k in state.edges

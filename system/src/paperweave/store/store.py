@@ -1,4 +1,4 @@
-"""读取算子共用的环境：连接、版本化的图、材料根目录与查询向量的入口，以及契约错误。"""
+"""读取算子共用的环境：连接、版本化的图、材料根目录、来源目录与查询向量的入口，以及契约错误。"""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from neo4j import Driver, RoutingControl
 from graph_vc import RESERVED_LABELS, GraphVCError, VersionedGraph
 
 from ..model.schema import ARTIFACT, kind_of
+from .sources import SourceDir
 
 Embed = Callable[[list[str]], list[list[float]]]
 
@@ -39,6 +40,11 @@ class Store:
     material_root: Path
     database: str | None = None
     embed: Embed | None = None
+    source_root: Path | None = None  # 只读来源目录（PAPERWEAVE_SOURCES）；不给时为材料根目录下的 sources/
+
+    @property
+    def sources(self) -> SourceDir:
+        return SourceDir(self.source_root or self.material_root / "sources")
 
     def query(self, cypher: str, **params: Any) -> list[dict[str, Any]]:
         records = self.driver.execute_query(

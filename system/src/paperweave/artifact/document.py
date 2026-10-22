@@ -51,7 +51,7 @@ class Document:
 
     @property
     def material_id(self) -> str:
-        """与论文材料相同的 id 规则（paperweave.commit.translate）。"""
+        """Material 的 id 规则：内容哈希的前 12 位。"""
         return f"material_{self.sha256[:12]}"
 
 

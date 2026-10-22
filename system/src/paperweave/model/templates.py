@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .schema import CHOICES, EDGE_GLOSS, FIELD_GLOSS, FIELDS, KIND_SPECS, RELATIONSHIPS, ROLES, endpoints
 
-_ORDER = ("name", "alias", "identities", "year", "material", "paper", "anchor", "figures", "description", "extra", "stub")
+_ORDER = ("name", "alias", "identities", "year", "source", "paper", "anchor", "figures", "description", "extra", "stub")
 _REQUIRED_NOTE = {"Entity": ("name",), "Concept": ("name", "description"), "Content": ("paper", "anchor", "description")}
 
 
@@ -25,7 +25,7 @@ def template(kind: str) -> str:
             lines += [f"    {name}: |".ljust(35) + f" # {note}", "      ..."]
         elif name == "extra":
             lines += [f"    {name}:".ljust(35) + f" # {note}", "      key: value"]
-        elif name in ("alias", "identities", "anchor", "figures"):
+        elif name in ("alias", "identities", "source", "anchor", "figures"):
             lines.append(f"    {name}: []".ljust(35) + f" # {note}")
         else:
             lines.append(f"    {name}:".ljust(35) + f" # {note}")

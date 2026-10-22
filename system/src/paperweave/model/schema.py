@@ -4,7 +4,9 @@
 （:mod:`paperweave.query`）、``checkout`` 给出的空白模板与 MCP 工具说明中的 kind 列表都从这里生成，不在别处另写一份。
 
 - 三类证据节点：Entity（有外部标识的资源）、Concept（共享概念）、Content（某篇论文在某处说的话）。
-- 系统记录：NameKey（名称与别名）、Material（论文与产物文档的文件）；产物 Artifact 只有主 Label。
+- 系统记录：NameKey（名称与别名）、Material（固定来源与产物文档的文件）；产物 Artifact 只有主 Label。
+- 证据的来源是外部来源 ID（论文 ``2205.13504v2``、代码 ``<仓库>@<commit>``），Paper 与 Code 用 ``source`` 声明，
+  锚点写作 ``<来源 ID>::<起>:<止>``（docs/experiments/f3/2026-10-22-f3-design.md §4.1）。
 - 关系都是“具名类型 + description + extra + anchor”的同一结构，词表由工作负载推出，词表外的语义用 ``RELATES_TO``。
 """
 
@@ -28,9 +30,9 @@ class Kind:
 
 
 KIND_SPECS: dict[str, Kind] = {
-    "Paper": Kind("Entity", "paper", "a paper's bibliographic object", ("year", "material"), stub=True),
+    "Paper": Kind("Entity", "paper", "a paper's bibliographic object", ("year", "source"), stub=True),
     "Dataset": Kind("Entity", "dataset", "data itself, or a named benchmark suite (members via PART_OF)", stub=True),
-    "Code": Kind("Entity", "code", "a code repository", stub=True),
+    "Code": Kind("Entity", "code", "a code repository", ("source",), stub=True),
     "Model": Kind(
         "Entity",
         "model",
@@ -62,7 +64,7 @@ ARTIFACT_TYPES = ("Leaderboard", "CompareSettings", "Verify", "Summarize", "Note
 SYSTEM_LABELS = frozenset({"NameKey", "Material"})
 
 # ── 节点字段 ──────────────────────────────────────────────────────────
-# 写者可写的字段。``kind`` 由 Label 表达；``alias`` 存为 NameKey；``paper`` 存为 FROM 边；``material`` 登记为 Material；
+# 写者可写的字段。``kind`` 由 Label 表达；``alias`` 存为 NameKey；``paper`` 存为 FROM 边；``source`` 登记为 Material；
 # ``extra`` 存为一个 JSON 字符串。
 
 FAMILY_FIELDS = {
@@ -76,7 +78,7 @@ REQUIRED_FIELDS = {
     **{kind: frozenset({"name", "description"}) for kind in CONCEPT},
     **{kind: frozenset({"paper", "anchor", "description"}) for kind in CONTENT},
 }
-LIST_FIELDS = frozenset({"alias", "identities", "anchor", "figures"})
+LIST_FIELDS = frozenset({"alias", "identities", "anchor", "figures", "source"})
 SYSTEM_FIELDS = frozenset({"formed_by", "formed_at", "exp_key", "embedding", "embedding_key", "search_text"})
 DERIVED_FIELDS = frozenset({"embedding", "embedding_key", "search_text"})  # 不受版本管理，提交后补算
 
@@ -91,16 +93,15 @@ FIELD_GLOSS = {
     "extra": "other details as key: value lines (venue, authors, cited_as, caveat ...)",
     "stub": "true when only mentioned, not yet described: the name is enough; add identities if known, so others find it",
     "year": "publication year",
-    "material": "the paper's Markdown file, relative to the material root",
+    "source": "the fixed sources it is read from, by id: a paper with its version like 2205.13504v2, code like Autoformer@09994619",
     "paper": "the id of the paper it comes from",
-    "anchor": "the paper's line ranges it rests on, like [120:135, 210:214]",
+    "anchor": "the source lines it rests on, <source id>::<start>:<end>, like [2205.13504v2::120:135]",
     "figures": "tables and figures it covers, main one first, like [S4.T3, A1.T8]",
 }
 EDGE_GLOSS = {
-    "anchor": "the paper's line ranges this edge rests on",
+    "anchor": "the source lines this edge rests on, <source id>::<start>:<end> (code: <source id>::<file>::<start>:<end>)",
     "description": "what the relation is, in a sentence",
     "extra": "other details as key: value lines",
-    "paper": "the paper the anchor lines are in (only when the start node is not a paper or paper content)",
     "role": (
         "EVALUATES: target | baseline; USES: evaluation_data | training_data | analysis_input | tooling | retrieval_corpus; "
         "a list when one edge plays two, like [training_data, evaluation_data]"
@@ -109,9 +110,15 @@ EDGE_GLOSS = {
     "printed_as": "the name as printed in the paper, like ECL",
 }
 
-# 原文锚点：论文 Markdown 的行号范围 <起始行>:<结束行>，行号从 1 起
+# 外部来源 ID：论文为带版本的 arXiv 编号，代码为 <仓库>@<8 位 commit>（docs/experiments/f3/2026-10-22-f3-design.md §4）
+PAPER_SOURCE = re.compile(r"\d{4}\.\d{4,5}v\d+")
+CODE_SOURCE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*@[0-9a-f]{8}")
+SOURCE_ID = re.compile(rf"{PAPER_SOURCE.pattern}|{CODE_SOURCE.pattern}")
+UNVERSIONED = re.compile(r"\d{4}\.\d{4,5}")  # 不带版本的 arXiv 编号：锚点中拒绝，提示写出版本
+# 行号范围 <起始行>:<结束行>，行号从 1 起
 ANCHOR = re.compile(r"(?P<start>\d+):(?P<end>\d+)")
-# 来源引用 <论文或产物 id>::[<章节>::]<start>:<end> 中 :: 之后的定位部分；章节可省略，只作提示
+# 来源引用 <来源、产物或材料 id>::[<章节>::]<start>:<end> 中 :: 之后的定位部分；论文的章节可省略，只作提示，
+# 代码的这一段是仓库内的文件路径
 LOCATOR = re.compile(r"(?:(?P<section>.+)::)?(?P<start>\d+):(?P<end>\d+)")
 
 # ── 关系 ──────────────────────────────────────────────────────────────
@@ -132,7 +139,7 @@ def _k(*names: str) -> frozenset[str]:
     return frozenset(names)
 
 
-EDGE_FIELDS = ("anchor", "description", "extra", "paper")  # 所有关系共有；paper 只在起点不是 Content、Paper 时用于锚点
+EDGE_FIELDS = ("anchor", "description", "extra")  # 所有关系共有；锚点自带来源 ID
 
 RELATIONSHIPS: dict[str, Relationship] = {
     # 实验参与

@@ -25,7 +25,7 @@ def state_of(store: Store, ids: Iterable[str]) -> GraphState:
 def get_view(
     store: Store, ids: list[str], extra: Extra | None = None, window: tuple[int, int] | None = None
 ) -> tuple[View, list[str]]:
-    """``ids`` 的全量投影；返回投影与不存在的 id。修订过的有据层记录带 ``_revised``（最近一次修订），锚点写在论文旧材料上的
+    """``ids`` 的全量投影；返回投影与不存在的 id。修订过的有据层记录带 ``_revised``（最近一次修订），锚点写在论文旧版本上的
     带 ``_anchor_version``。"""
     kinds = store.kinds(ids)
     missing = [i for i in ids if i not in kinds]

@@ -53,6 +53,7 @@ def mcp_config(
     log: Path | None = None,
     data: Path | None = None,
     workdir: Path | None = None,
+    sources: Path | None = None,
 ) -> dict[str, Any]:
     """``.pi/mcp.json`` 的内容。stdio 服务只拿到这里写出的环境变量，连接参数因此都写明。服务在仓库中运行，
     ``workdir``（写者的工作目录）因此也写明，commit 的文件只从那里读，checkout 也写到那里。"""
@@ -63,6 +64,8 @@ def mcp_config(
         env["PAPERWEAVE_AGENT"] = agent
     if data is not None:
         env["PAPERWEAVE_DATA"] = str(data)
+    if sources is not None:
+        env["PAPERWEAVE_SOURCES"] = str(sources)
     if log is not None:
         env["PAPERWEAVE_MCP_LOG"] = str(log)
     if no_embed:

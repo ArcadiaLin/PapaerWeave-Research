@@ -25,7 +25,8 @@ TEST_AUTH = (
     os.environ.get("GRAPH_VC_TEST_NEO4J_PASSWORD", "password"),
 )
 AT = "2026-10-16T12:00:00+00:00"
-MATERIAL = "papers/2205.13504/paper.md"
+SOURCE = "2205.13504v1"
+MATERIAL = f"sources/{SOURCE}/paper.md"  # 来源目录默认在材料根目录下
 PAPER_TEXT = "".join(
     ["# Are Transformers Effective\n", "## Abstract\n", *[f"abstract line {i}\n" for i in range(3, 10)],
      "## 5 Experiments\n", "### 5.2 Comparison\n", *[f"comparison line {i}\n" for i in range(12, 61)], "- •\n"]
@@ -55,7 +56,7 @@ create:
     name: Are Transformers Effective for Time Series Forecasting?
     identities: [arxiv:2205.13504]
     year: 2023
-    material: papers/2205.13504/paper.md
+    source: [2205.13504v1]
     description: Questions whether Transformers are effective for LTSF and introduces DLinear.
   $dlinear:
     kind: Method
@@ -68,7 +69,7 @@ create:
   $main:
     kind: Experiment
     paper: $paper
-    anchor: [12:20]
+    anchor: [2205.13504v1::12:20]
     figures: [S5.T2]
     description: Multivariate long-term forecasting comparing DLinear with Transformer baselines.
     EVALUATES:
@@ -81,14 +82,14 @@ create:
   $claim:
     kind: Claim
     paper: $paper
-    anchor: [3:5]
+    anchor: [2205.13504v1::3:5]
     description: A one-layer linear model outperforms Transformer forecasters on long-term benchmarks.
     ABOUT:
       $dlinear:
   $main2claim:
     kind: Contribution
     paper: $paper
-    anchor: [6:7]
+    anchor: [2205.13504v1::6:7]
     description: Introduces DLinear as an embarrassingly simple baseline.
     ABOUT:
       $dlinear:

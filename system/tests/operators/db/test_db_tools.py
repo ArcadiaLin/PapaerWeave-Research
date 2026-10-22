@@ -62,7 +62,7 @@ def test_results_are_commented_yaml(writer: Writer) -> None:
 def test_get_gives_fields_edges_and_sections(writer: Writer) -> None:
     out = writer.call("get", ids=["exp_0001", "nope_0001"])
     node = out.details["nodes"]["exp_0001"]
-    assert node["paper"] == "paper_0001" and node["anchor"] == ["12:20"]
+    assert node["paper"] == "paper_0001" and node["anchor"] == ["2205.13504v1::12:20"]
     assert node["EVALUATES"]["method_0003"] == {"role": "target", "result": "own"}
     assert out.details["missing"] == ["nope_0001"]
     assert "# 5.2 Comparison" in out.text and "# DLinear" in out.text
@@ -79,9 +79,20 @@ def test_traverse_walks_hops_with_via(writer: Writer) -> None:
 
 
 def test_read_evidence_without_a_section(writer: Writer) -> None:
-    items = writer.call("read_evidence", source_refs=["paper_0001::12:13", "paper_0001::5.2 Comparison::12:12"]).details["items"]
+    items = writer.call("read_evidence", source_refs=["2205.13504v1::12:13", "2205.13504v1::5.2 Comparison::12:12"]).details["items"]
     assert [i["state"] for i in items] == ["available", "available"]
+    assert items[0]["source"] == "2205.13504v1"
     assert items[0]["section"] == "5.2 Comparison" and "12| comparison line 12" in items[0]["text"]
+
+
+def test_read_evidence_reads_sources_by_id_only(writer: Writer) -> None:
+    by_paper, unopened, whole, bare = writer.call(
+        "read_evidence", source_refs=["paper_0001::12:13", "2301.00001v1::1:2", "2205.13504v1", "12:13"]
+    ).details["items"]
+    assert by_paper["state"] == "missing" and "the source of paper_0001: 2205.13504v1" in by_paper["reason"]
+    assert unopened["state"] == "missing" and "not an available source" in unopened["reason"]
+    assert whole["state"] == "missing" and "<start>:<end>" in whole["reason"]
+    assert bare["state"] == "missing"
 
 
 # ── checkout 与 commit ───────────────────────────────────────────────
@@ -113,7 +124,7 @@ create:
     description: Channel-independent patch Transformer for long-term forecasting.
   exp_0001:
     EVALUATES:
-      $patchtst: {role: baseline, result: cited, anchor: [14:15]}
+      $patchtst: {role: baseline, result: cited, anchor: [2205.13504v1::14:15]}
 """
     judged = confirmed(writer, doc)
     done = writer.commit(judged)
@@ -140,7 +151,7 @@ def test_edges_on_records_need_anchors(writer: Writer) -> None:
 def test_an_edge_with_two_roles_writes_role_as_a_list(writer: Writer) -> None:
     doc = (
         "graph-doc: v0.2\nset:\n  exp_0001:\n    USES:\n      dataset_0001: {role: [training_data, evaluation_data]}\n"
-        "confirm:\n  exp_0001: {revise: {reason: \"the model is also trained on this dataset\", anchor: [12:20]}}\n"
+        "confirm:\n  exp_0001: {revise: {reason: \"the model is also trained on this dataset\", anchor: [2205.13504v1::12:20]}}\n"
     )
     assert writer.commit(doc, dry_run=True)["status"] == "ready"
     bad = writer.commit(doc.replace("training_data", "train"), dry_run=True)
@@ -153,14 +164,14 @@ def test_an_arxiv_identity_has_no_version(writer: Writer) -> None:
 
 
 def test_an_anchor_on_a_line_without_text_blocks(writer: Writer) -> None:
-    doc = "graph-doc: v0.2\ncreate:\n  claim_0001:\n    ABOUT:\n      task_0001: {anchor: [61:61]}\n"
+    doc = "graph-doc: v0.2\ncreate:\n  claim_0001:\n    ABOUT:\n      task_0001: {anchor: [2205.13504v1::61:61]}\n"
     blocked = writer.commit(doc, dry_run=True)
     assert blocked["status"] == "blocked"
     assert any("nearest line with text is 60" in e["msg"] for e in blocked["errors"]), blocked
 
 
 def test_a_reversed_edge_says_how_to_write_it(writer: Writer) -> None:
-    doc = "graph-doc: v0.2\ncreate:\n  claim_0001:\n    SUPPORTS:\n      exp_0001: {anchor: [12:13]}\n"
+    doc = "graph-doc: v0.2\ncreate:\n  claim_0001:\n    SUPPORTS:\n      exp_0001: {anchor: [2205.13504v1::12:13]}\n"
     blocked = writer.commit(doc, dry_run=True)
     assert "write it the other way, under exp_0001: SUPPORTS: {claim_0001: ...}" in blocked["errors"][0]["msg"]
 
@@ -176,7 +187,7 @@ create:
       method_0003:
   exp_0001:
     EVALUATES:
-      $m: {role: target, result: own, anchor: [12:13]}
+      $m: {role: target, result: own, anchor: [2205.13504v1::12:13]}
 confirm:
   $m: {distinct_from: []}
 """
@@ -187,47 +198,48 @@ confirm:
     assert not [w for w in writer.commit(stub, dry_run=True).get("warnings", []) if w["rule"] == "model"]
 
 
-def test_anchors_on_a_superseded_material_are_marked(store: Store, writer: Writer) -> None:
-    newer = store.material_root / "papers/2205.13504v2/paper.md"
+def test_anchors_on_an_older_version_are_marked(store: Store, writer: Writer) -> None:
+    older = (store.sources.root / "2205.13504v1/paper.md").read_text(encoding="utf-8")
+    newer = store.sources.root / "2205.13504v2/paper.md"
     newer.parent.mkdir(parents=True, exist_ok=True)
-    older = (store.material_root / "papers/2205.13504/paper.md").read_text(encoding="utf-8")
-    newer.write_text(older + "Appendix line 62\n", encoding="utf-8")  # 材料按内容登记：新版本要有不同的内容
-    moved = writer.commit("graph-doc: v0.2\nset:\n  paper_0001:\n    material: papers/2205.13504v2/paper.md\n")
+    newer.write_text(older + "Appendix line 62\n", encoding="utf-8")
+    moved = writer.commit("graph-doc: v0.2\nset:\n  paper_0001:\n    source: [2205.13504v1, 2205.13504v2]\n")
     assert moved["status"] == "committed", moved
     view = writer.call("get", ids=["exp_0001", "method_0003"]).details["nodes"]
     note = view["exp_0001"]["_anchor_version"]
-    # 前面的测试给 exp_0001 加过一条带锚点的 EVALUATES：记录本身与这条边的锚点都写在旧材料上
-    assert note.startswith("EVALUATES method_0004, anchor written against material_") and "::<start>:<end>" in note
+    # 前面的测试给 exp_0001 加过一条带锚点的 EVALUATES：记录本身与这条边的锚点都写在旧版本上
+    assert note.startswith("anchor, EVALUATES method_0004 cite 2205.13504v1; paper_0001 now also has the newer version 2205.13504v2")
     assert "_anchor_version" not in view["method_0003"]
 
     rewritten = """graph-doc: v0.2
 set:
   exp_0001:
-    anchor: [12:21]
+    anchor: [2205.13504v2::12:21]
 confirm:
-  exp_0001: {revise: {reason: "the table runs to line 21 in the new version", anchor: [12:21]}}
+  exp_0001: {revise: {reason: "the table runs to line 21 in the new version", anchor: [2205.13504v2::12:21]}}
 """
-    assert writer.commit(rewritten)["status"] == "committed"  # 改写记录的锚点：它换到新材料，边的锚点还在旧材料上
+    assert writer.commit(rewritten)["status"] == "committed"  # 改写记录的锚点：它换到新版本，边的锚点还在旧版本上
     note = writer.call("get", ids=["exp_0001"]).details["nodes"]["exp_0001"]["_anchor_version"]
-    assert note.startswith("EVALUATES method_0004 written against material_")
+    assert note.startswith("EVALUATES method_0004 cite 2205.13504v1;")
 
 
-def test_a_revision_in_the_commit_that_switches_the_material_anchors_in_the_new_one(store: Store, writer: Writer) -> None:
-    older = (store.material_root / "papers/2205.13504v2/paper.md").read_text(encoding="utf-8")
+def test_a_revision_in_the_commit_that_adds_the_version_anchors_in_the_new_one(store: Store, writer: Writer) -> None:
+    older = (store.sources.root / "2205.13504v2/paper.md").read_text(encoding="utf-8")
     total = len(older.splitlines())
-    newer = store.material_root / "papers/2205.13504v3/paper.md"
+    newer = store.sources.root / "2205.13504v3/paper.md"
     newer.parent.mkdir(parents=True, exist_ok=True)
     newer.write_text(older + "Appendix table, first row\nAppendix table, second row\n", encoding="utf-8")
-    lines = f"{total + 1}:{total + 2}"  # 只在新版本中存在的行
+    lines = f"2205.13504v3::{total + 1}:{total + 2}"  # 只在新版本中存在的行
     doc = f"""graph-doc: v0.2
 set:
   paper_0001:
-    material: papers/2205.13504v3/paper.md
+    source: [2205.13504v1, 2205.13504v2, 2205.13504v3]
   exp_0001:
     anchor: [{lines}]
 confirm:
   exp_0001: {{revise: {{reason: "the table moved to the appendix in the new version", anchor: [{lines}]}}}}
 """
+    assert writer.commit(doc.replace(", 2205.13504v3]", "]"), dry_run=True)["status"] == "blocked"  # 还没声明 v3
     assert writer.commit(doc)["status"] == "committed"
 
 

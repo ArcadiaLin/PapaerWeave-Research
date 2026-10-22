@@ -49,8 +49,8 @@ def test_create_checks_before_writing(store: Store, writers: dict[str, Writer]) 
     edges = used(store, "art_0001")
     assert set(edges) == {"task_0001", "dataset_0001", "method_0001", "method_0002", "paper_0001"}
     assert edges["dataset_0001"]["role"] == ["dataset"]
-    assert edges["paper_0001"]["role"] == ["paper"] and edges["paper_0001"]["material_ref"].startswith("material_")
-    assert "5.2 Comparison::10:12" in edges["paper_0001"]["locators"]
+    assert edges["paper_0001"]["role"] == ["paper"] and "material_ref" not in edges["paper_0001"]
+    assert "2205.13504v1::5.2 Comparison::10:12" in edges["paper_0001"]["locators"]  # 来源引用连到声明它的论文
     assert stale(store, ["art_0001"]) == {"art_0001": []}
 
 
@@ -76,7 +76,7 @@ def test_fetch_gives_id_base_and_hint(store: Store, writers: dict[str, Writer]) 
 def test_editing_others_rows_needs_a_reason(store: Store, writers: dict[str, Writer]) -> None:
     bob = writers["bob"]
     text = bob.read(PATH).replace(
-        ROW + " paper_0001::5.2 Comparison::12 |", ROW.replace("0.865", "0.866") + " paper_0001::5.2 Comparison::12 |"
+        ROW + " 2205.13504v1::5.2 Comparison::12 |", ROW.replace("0.865", "0.866") + " 2205.13504v1::5.2 Comparison::12 |"
     )
     bob.write(PATH, text + "\nBaselines are copied from DLinear's own table.\n")
     checked = bob.check_in(PATH, message="Fix the Transformer MSE; add a note.")
@@ -159,7 +159,7 @@ def test_record_reference_pins_the_version(store: Store, writers: dict[str, Writ
 def test_references_must_exist(store: Store, writers: dict[str, Writer]) -> None:
     alice = writers["alice"]
     bad = "---\ntype: Note\ntitle: Bad\nabs: Bad refs.\n---\n"
-    bad += "See [exp_9999].\nAnd [paper_0001::5.2 Comparison::59:70].\n"
+    bad += "See [exp_9999].\nAnd [2205.13504v1::5.2 Comparison::59:70].\n"
     alice.write("bad.md", bad)
     alice.write("fine.md", "---\ntype: Note\ntitle: Fine\nabs: Fine.\n---\nSee [exp_0001].\n")
     head = store.graph.head()
@@ -168,6 +168,22 @@ def test_references_must_exist(store: Store, writers: dict[str, Writer]) -> None
     assert store.graph.head() == head
     missing = alice.check_in("fine.md", confirm=True)["items"][0]
     assert missing["action"] == "create"
+
+
+def test_source_references_start_with_a_source_id(store: Store, writers: dict[str, Writer]) -> None:
+    alice = writers["alice"]
+    (store.sources.root / "2301.00002v1").mkdir(parents=True, exist_ok=True)
+    (store.sources.root / "2301.00002v1/paper.md").write_text("one\ntwo\n", encoding="utf-8")
+    bad = "---\ntype: Note\ntitle: Old refs\nabs: Old refs.\n---\nOld [paper_0001::10:12].\n\nNot opened [2301.00001v1::1:2].\n"
+    alice.write("old.md", bad)
+    result = alice.check_in("old.md")
+    msgs = [e["msg"] for e in result.get("errors", [])]
+    assert rules(result) == [("reference", "old.md:6"), ("reference", "old.md:8")], result
+    assert "not by paper_0001" in msgs[0] and "not an available source" in msgs[1]
+    alice.write("free.md", "---\ntype: Note\ntitle: Free source\nabs: Undeclared.\n---\nSee [2301.00002v1::1:2].\n")
+    done = alice.check_in("free.md", confirm=True)
+    assert done["status"] == "committed", done
+    assert used(store, done["items"][0]["artifact"]) == {}  # 没有实体声明的来源：引用合法，不连边
 
 
 def test_paper_forms_go_through_commit(writers: dict[str, Writer]) -> None:
@@ -213,7 +229,7 @@ def test_light_rules_warnings_and_notes(store: Store, writers: dict[str, Writer]
     assert ("number", f"{PATH}:16") in warnings and ("number", f"{PATH}:17") not in warnings
     assert ("structure", f"{PATH}:14") in warnings  # 缺 origin 列
 
-    bad = text.replace("| 12 | paper_0001::5.2 Comparison::12 |", "| twelve | paper_0001::5.2 Comparison::12 |")
+    bad = text.replace("| 12 | 2205.13504v1::5.2 Comparison::12 |", "| twelve | 2205.13504v1::5.2 Comparison::12 |")
     claude.write(PATH, bad)
     assert rules(claude.check_in(PATH)) == [("schema", f"{PATH}:17")]
 
@@ -237,16 +253,16 @@ def test_cited_artifact_has_a_newer_version(store: Store) -> None:
 
 
 def test_paper_new_version_supersedes_rows(store: Store, writers: dict[str, Writer]) -> None:
-    v2 = MATERIAL.replace("paper.md", "v2/paper.md")
-    file = store.material_root / v2
+    file = store.sources.root / "2205.13504v2/paper.md"
     file.parent.mkdir(parents=True, exist_ok=True)
     file.write_text("".join(f"line {i} (v2)\n" for i in range(1, 61)), encoding="utf-8")
-    new = commit_doc(store, f"graph-doc: v0.2\nset:\n  paper_0001:\n    material: {v2}\n")
+    new = commit_doc(store, "graph-doc: v0.2\nset:\n  paper_0001:\n    source: [2205.13504v1, 2205.13504v2]\n")
     assert new["status"] == "committed", new
+    assert "art_0001" in [a["artifact"] for a in new["affected_artifacts"]["artifacts"]]  # 提交告诉写者哪些产物可能过期
 
     reasons = stale(store, ["art_0001"])["art_0001"]
-    assert {r["reason"] for r in reasons} == {"superseded"}
-    assert {r["ref"] for r in reasons} >= {"paper_0001::5.2 Comparison::10:12", "paper_0001::5.2 Comparison::12:12"}
+    assert {(r["reason"], r["by"]) for r in reasons} == {("superseded", "2205.13504v2")}
+    assert {r["ref"] for r in reasons} >= {"2205.13504v1::5.2 Comparison::10:12", "2205.13504v1::5.2 Comparison::12:12"}
     item = writers["bob"].fetch("art_0001")["items"][0]
     assert [s["at"] for s in item["notes"]["superseded_sources"]] == [16, 17]
 
@@ -276,7 +292,7 @@ create:
   $exp:
     kind: Experiment
     paper: paper_0001
-    anchor: [20:30]
+    anchor: [2205.13504v1::20:30]
     figures: [S5.T3]
     description: DLinear on ETTh1 and ILI with a longer look-back window.
     EVALUATES:

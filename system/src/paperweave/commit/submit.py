@@ -86,7 +86,7 @@ def prepare(text: str, ctx: Context, ids: Mapping[str, str] | None = None) -> Pr
         local,
         translation.added_edges,
         ctx.reader,
-        ctx.material_root,
+        ctx.sources,
         lambda node_id: refs.get(node_id, node_id),
     )
     problems += revision_problems

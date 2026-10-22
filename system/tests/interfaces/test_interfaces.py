@@ -348,24 +348,24 @@ def test_results_are_yaml_for_the_agent(history: History) -> None:
 # ── 历史读取用到的两处算子改动 ───────────────────────────────────────
 
 
-def test_read_evidence_at_resolves_materials_of_that_commit(history: History, tmp_path: Path) -> None:
+def test_read_evidence_at_resolves_documents_of_that_commit(history: History, tmp_path: Path) -> None:
     text = "".join(f"line {i}\n" for i in range(1, 11))
-    (tmp_path / "paper.md").write_text(text, encoding="utf-8")
+    (tmp_path / "doc.md").write_text(text, encoding="utf-8")
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    material = NodeChange.create("material_0001", ["Material"], {"path": "paper.md", "content_hash": digest})
-    paper = NodeChange.create("paper_0001", ["Entity", "Paper"], {"name": "DLinear"})
-    owns = EdgeChange.create("material_0001", "MATERIAL_OF", "paper_0001")
-    with_material = history.add(Changeset(nodes=(paper, material), edges=(owns,)), source="paper")
-    lost = NodeChange.delete("material_0001", ["Material"], {"path": "paper.md", "content_hash": digest})
-    disowned = EdgeChange.delete("material_0001", "MATERIAL_OF", "paper_0001")
+    material = NodeChange.create("material_0001", ["Material"], {"path": "doc.md", "content_hash": digest})
+    art = NodeChange.create("art_0001", ["Artifact"], {"title": "Notes"})
+    paper = NodeChange.create("paper_0001", ["Entity", "Paper"], {"name": "DLinear", "source": ["2205.13504v1"]})
+    owns = EdgeChange.create("material_0001", "MATERIAL_OF", "art_0001")
+    with_material = history.add(Changeset(nodes=(art, paper, material), edges=(owns,)), source="artifact")
+    lost = NodeChange.delete("material_0001", ["Material"], {"path": "doc.md", "content_hash": digest})
+    disowned = EdgeChange.delete("material_0001", "MATERIAL_OF", "art_0001")
     history.add(Changeset(nodes=(lost,), edges=(disowned,)), source="x")
     store: Any = Store(None, history, tmp_path)  # type: ignore[arg-type]
-    refs = ["paper_0001::1 Intro::2:3", "material_0001::1 Intro::4:4"]
+    refs = ["art_0001::1 Intro::2:3", "material_0001::4:4", "paper_0001::2:3"]
     then = call(Context(store, AT), {"op": "read_evidence", "source_refs": refs, "at": with_material}).details
-    assert [i["state"] for i in then["items"]] == ["available", "available"]
+    assert [i["state"] for i in then["items"]] == ["available", "available", "missing"]
     assert then["items"][0]["text"] == "2| line 2\n3| line 3\n" and then["coverage"]["at"] == with_material
-    now = call(Context(store, AT), {"op": "read_evidence", "source_refs": refs, "at": "main"}).details
-    assert now["missing"] == refs  # 材料节点已删除：只能按旧提交读到
+    assert "the source of paper_0001: 2205.13504v1" in then["items"][2]["reason"]  # 论文按来源 ID 读
 
 
 class _Moving:

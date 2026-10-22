@@ -3,14 +3,13 @@
 过期在读取时计算，不存状态，只是提示，不修改、不删除。``_stale`` 逐项列出原因 ``{ref, reason}``：
 
 - ``document``：Artifact 的文档文件不在，或内容与登记的哈希不同；
-- ``removed``：文档中引用的对象（或记录所属的 Artifact、来源引用的材料）已不在库中。删除节点时 graph-doc 一并
+- ``removed``：文档中引用的对象（或记录所属的 Artifact）已不在库中。删除节点时 graph-doc 一并
   删掉指向它的 ``USED`` 边，所以按文档本身核对，而不是看现存的边。共同产物的引用由类型契约从当前版本的文档中
   找出（:func:`references`），旧版 Agent 算子的产物按文档头部的 ``nodes_used``；
-- ``material``：所用材料的文件不在，或哈希与登记的不同；
-- ``superseded``：所用材料已被新版本取代（材料上的 ``superseded_by``），另带 ``by`` 给出新材料：论文有了新版本，
-  或所引的产物有了新版本。共同产物按原样保存，引用常以节点 id 开头（如 ``paper_0001::5.2::10:12``、
-  ``art_0003#<行键>``），它们按 ``USED`` 边上记下的 ``material_ref``（写入时所读的版本，:func:`pinned`）判断；
-  旧版产物的文档已写成材料 id，直接判断；
+- ``material``：来源引用解析不了：来源不在来源目录中、文件不在或行号越界，或不以来源 ID 开头；
+- ``superseded``：所引的来源或产物有了新版本，另带 ``by`` 给出新版本。来源引用自带版本（``2205.08897v3::10:12``），
+  库中有 Paper 声明了同一 arXiv 编号的更新版本即是（:func:`paperweave.query.sources.newer`）；所引的产物（``art_0003``、
+  ``art_0003#<行键>``）按 ``USED`` 边上记下的 ``material_ref``（写入时所读的版本，:func:`pinned`）判断；
 - ``revised``：所用的有据层记录（Content）在产物当前版本形成之后被修订过（改了内容或出边），另带 ``commit`` 指出
   最早的那次提交，可以用 show 查看改了什么。实体与概念的改动（如补别名、描述）不算，否则提示会被噪声淹没；
 - ``stale input``：所用的 Artifact 本身可能过期。
@@ -30,7 +29,9 @@ from graph_vc import Changeset
 
 from ..model.refs import parse_ref
 from ..model.schema import ARTIFACT, CONTENT, kind_of
-from ..query.materials import load_lines, materials
+from ..commit.anchors import check
+from ..query.materials import materials
+from ..store.sources import declared, newer
 from ..store.store import Store
 from .document import header_of, parse, strip_checkout
 from .types import TYPES
@@ -83,24 +84,18 @@ def stale(store: Store, ids: Iterable[str]) -> dict[str, list[dict[str, str]]]:
         heads = {r.head for r in refs}
         kinds = store.kinds(heads)
         pins = pinned(store, art_id)
-        sources = {r.head: pins.get(r.head, r.head) for r in refs if r.kind == "source"}
-        resolved = materials(store, set(sources.values()))
-        found = {head: resolved[at] for head, at in sources.items() if at in resolved}
+        owners = declared(store) if any(r.kind == "source" for r in refs) else {}
         versions = materials(store, {pins[h] for h in heads if kinds.get(h) == ARTIFACT and h in pins})
-        lines: dict[str, bool] = {}
         reasons: list[dict[str, str]] = []
         for ref in refs:
             if ref.kind == "source":
-                head = found.get(ref.head)
-                if head is None:
-                    reasons.append({"ref": ref.text, "reason": "removed"})
-                    continue
-                if head["id"] not in lines:
-                    lines[head["id"]] = load_lines(store, head) is not None
-                if not lines[head["id"]]:
+                problem = None if ref.external else "not a source id"
+                if problem is None:
+                    _, problem = check(ref.text, store.sources, None, grounded=False, require_text=False)
+                if problem is not None:
                     reasons.append({"ref": ref.text, "reason": "material"})
-                elif head.get("superseded_by"):
-                    reasons.append({"ref": ref.text, "reason": "superseded", "by": head["superseded_by"]})
+                elif later := newer(ref.head, owners):
+                    reasons.append({"ref": ref.text, "reason": "superseded", "by": later})
             elif ref.head not in kinds:
                 reasons.append({"ref": ref.text, "reason": "removed"})
             elif kinds[ref.head] == ARTIFACT:
@@ -146,7 +141,7 @@ def _leaderboard_inputs(store: Store, dataset: Any, covered: list[str]) -> tuple
 
 
 def pinned(store: Store, art_id: str) -> dict[str, str]:
-    """产物 ``USED`` 边上记下的材料：终点 → 写入时所读的材料 id（论文的某个版本、所引产物的某个版本）。"""
+    """产物 ``USED`` 边上记下的材料：终点 → 写入时所读的材料 id（所引产物的某个版本）。"""
     rows = store.query(
         """MATCH (:Artifact {id: $id})-[u:USED]->(x) WHERE u.material_ref IS NOT NULL
            RETURN x.id AS id, u.material_ref AS material""",

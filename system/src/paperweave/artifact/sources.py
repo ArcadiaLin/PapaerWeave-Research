@@ -1,43 +1,36 @@
-"""共同产物的轻度规则与附注所需的来源：来源引用 → 所指的材料及所引的行（paperweave.artifact.types.Lookup）。
+"""共同产物的轻度规则与附注所需的来源：来源引用 → 所指的来源及所引的行（paperweave.artifact.types.Lookup）。
 
-文档按原样保存，来源引用常以论文 id 开头（如 ``paper_0001::5.2::10:12``）。它在写入时指论文当时的版本，``USED``
-边上的 ``material_ref`` 记下了这个版本（:func:`paperweave.artifact.stale.pinned`）；读取已保存的产物时按它解析，论文有了
-新版本时才能看出“这一行引的是旧版本”。检入校验时按库中当前的版本解析，即写者刚读到的版本。
+产物中的来源引用自带来源 ID（``2205.13504v2::120:135``、``<仓库>@<commit>::<文件>::<起>:<止>``），按只读来源目录解析；
+``owners`` 是库中声明这个来源的 Paper 或 Code，``superseded_by`` 是库中声明过的同一 arXiv 编号的更新版本
+（docs/experiments/f3/2026-10-22-f3-design.md §4.1）。
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-
 from ..model.refs import parse_ref
-from ..model.schema import LOCATOR
-from ..query.materials import load_lines, materials
+from ..store.sources import declared, newer
 from ..store.store import Store
 from .types import Lookup, Source
 
 
-def lookup(store: Store, pinned: Mapping[str, str] | None = None) -> Lookup:
-    """来源引用的解析；``pinned`` 是节点 → 固定的材料 id，以节点 id 开头的引用按它解析。结果缓存在返回的函数中。"""
-    pinned = dict(pinned or {})
-    found: dict[str, dict | None] = {}
-    lines: dict[str, list[str] | None] = {}
+def lookup(store: Store) -> Lookup:
+    """来源引用的解析；结果缓存在返回的函数中。不是外部来源的引用、来源未开放时为 ``None``。"""
+    sources = store.sources
+    owners: dict[str, list[str]] | None = None
 
     def get(text: str) -> Source | None:
+        nonlocal owners
         ref = parse_ref(text)
-        if ref is None or ref.kind != "source":
+        if ref is None or not ref.external or not sources.available(ref.head):
             return None
-        head = pinned.get(ref.head, ref.head)
-        if head not in found:
-            found[head] = materials(store, {head}).get(head)
-        material = found[head]
-        match = LOCATOR.fullmatch(ref.locator or "")
-        if material is None or match is None:
-            return None
-        if material["id"] not in lines:
-            lines[material["id"]] = load_lines(store, material)
-        text_lines = lines[material["id"]]
-        cited = None if text_lines is None else text_lines[int(match["start"]) - 1 : int(match["end"])]
-        return Source(material["id"], material["owner"], material["superseded_by"], cited)
+        if owners is None:
+            owners = declared(store)
+        cited = None
+        if ref.lines is not None:
+            lines = sources.lines(ref.head, ref.file)
+            start, end = ref.lines
+            cited = lines[start - 1 : end] if lines is not None and end <= len(lines) else None
+        return Source(ref.head, tuple(owners.get(ref.head, ())), newer(ref.head, owners), cited)
 
     return get
 

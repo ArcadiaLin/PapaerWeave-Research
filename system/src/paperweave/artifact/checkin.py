@@ -12,8 +12,9 @@
 2. 头部带 ``id`` 与 ``base`` 时是更新：``base`` 须是该产物最新版本的提交，否则 ``conflict``，让写者重新取出、
    合并后再交；不带时是新建；
 3. 类型自己的校验；身份键已有另一份产物时拒绝（``identity``），退回已有的那份；
-4. 文档中的引用都要在库中：对象存在；记录所属的产物的当前版本有这一行；来源引用的材料存在、文件与登记的哈希
-   一致、行号不越界（``reference``）。由引用得出 ``USED`` 边；
+4. 文档中的引用都要可解析：对象在库中；记录所属的产物的当前版本有这一行；来源引用以来源 ID 开头、来源已开放、
+   行号不越界（``reference``）。由引用得出 ``USED`` 边，来源引用连到声明该来源的 Paper 或 Code，``locators`` 记所引的
+   来源引用；没有实体声明的来源不连边；
 5. 去掉 ``id``、``base`` 两行后与最新版本相同时为 ``noop``；没有身份键的类型新建时，内容与同一编辑者写的同类
    产物的某个版本相同，视为重试（``existing``）；
 6. 与基础版本逐单位比对，得出改动与 ``others``（:mod:`paperweave.artifact.versions`）；
@@ -48,8 +49,10 @@ from graph_vc import Changeset, ConflictError, EdgeChange, FileRef, NodeChange
 
 from ..draft import Draft
 from ..model.refs import parse_ref
-from ..model.schema import ARTIFACT, LOCATOR, SEARCHABLE
-from ..query.materials import load_lines, materials
+from ..commit.anchors import check
+from ..model.schema import ARTIFACT, SEARCHABLE
+from ..query.materials import materials
+from ..store.sources import declared
 from ..store.database import setup_database
 from ..store.store import ContractError, Store
 from ..yamlfmt import dump
@@ -318,9 +321,8 @@ def _resolve(store: Store, item: Item, mentions: list[Mention], problems: Proble
     parsed = [(m, parse_ref(m.text)) for m in mentions]
     heads = {r.head for _, r in parsed if r is not None}
     kinds = store.kinds(heads)
-    sources = materials(store, {r.head for _, r in parsed if r is not None and r.kind == "source"})
+    owners = declared(store) if any(r is not None and r.external for _, r in parsed) else {}
     current = materials(store, {h for h in heads if kinds.get(h) == ARTIFACT})
-    lines: dict[str, list[str] | None] = {}
     keys: dict[str, set[str]] = {}
     roles: dict[str, list[str]] = {}
     locators: dict[str, list[str]] = {}
@@ -333,7 +335,7 @@ def _resolve(store: Store, item: Item, mentions: list[Mention], problems: Proble
         if ref is None:
             report(
                 m,
-                f"not a reference: {m.text!r}; an object id, <material or node>::<section>::<start>:<end>, "
+                f"not a reference: {m.text!r}; an object id, <source id>::<start>:<end> (code: <source id>::<file>::<start>:<end>), "
                 "or <artifact>#<row key>",
             )
             continue
@@ -341,24 +343,17 @@ def _resolve(store: Store, item: Item, mentions: list[Mention], problems: Proble
             report(m, "an artifact cannot use itself")
             continue
         if ref.kind == "source":
-            material = sources.get(ref.head)
-            if material is None or material["owner"] is None:
-                report(m, f"{ref.head} is not a material or a node with a material")
+            if not ref.external:
+                report(m, f"cite source lines by source id, like 2205.13504v2::120:135, not by {ref.head}; cite a store object by its id alone")
                 continue
-            if material["id"] not in lines:
-                lines[material["id"]] = load_lines(store, material)
-            total = lines[material["id"]]
-            match = LOCATOR.fullmatch(ref.locator or "")
-            assert match is not None
-            if total is None:
-                report(m, f"material {material['id']} is missing or changed since it was registered")
+            text, problem = check(ref.text, store.sources, None, grounded=False, require_text=False)
+            if problem is not None:
+                report(m, problem)
                 continue
-            if not 1 <= int(match["start"]) <= int(match["end"]) <= len(total):
-                report(m, f"lines {match['start']}:{match['end']} are outside 1:{len(total)} of {material['id']}")
-                continue
-            target = material["owner"]
-            pinned.setdefault(target, material["id"])
-            locators.setdefault(target, []).append(ref.locator or "")
+            if not owners.get(ref.head):
+                continue  # 没有实体声明的来源：引用合法，不连 USED 边（工程记录 B6）
+            target = owners[ref.head][0]
+            locators.setdefault(target, []).append(text or ref.text)
         elif ref.head not in kinds:
             report(m, f"{ref.head} is not in the store")
             continue
@@ -598,9 +593,8 @@ def _notes(store: Store, item: Item, me: str, number: int) -> dict[str, Any]:
     assert item.kind is not None and item.doc is not None and item.changes is not None
     blamed = blame(item.kind, [*item.history, (me, number, item.doc)])
     authors = {b.unit.line: (b.author, b.version) for b in blamed}
-    pinned = {t: p["material_ref"] for t, p in item.used.items() if "material_ref" in p}
     changed = {c["at"] for c in (*item.changes.added, *item.changes.modified)}
-    return relocate(item.kind.notes(item.doc, authors, lookup(store, pinned), changed), item.at)
+    return relocate(item.kind.notes(item.doc, authors, lookup(store), changed), item.at)
 
 
 def relocate(value: Any, at: Callable[[int], Any]) -> Any:

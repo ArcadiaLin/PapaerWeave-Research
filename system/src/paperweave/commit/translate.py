@@ -11,18 +11,17 @@
 - ``kind`` → 主 Label、次级 Label 与公共 Label ``Searchable``；``set`` 中写了 kind 必须与现状相同。
 - ``name`` 与 ``alias`` → ``(:NameKey)-[:NAMES]->(对象)``；同一文档中从一个对象移到另一个对象的名称改指，而不是删了再建。
 - ``extra`` → 一个 JSON 字符串属性；``set`` 中按键合并，键写 ``null`` 即删除。边上的 ``extra`` 相同。
-- Content 的 ``paper`` → 指向论文的 ``FROM`` 边，边上记下写入时论文的材料（``material_ref``）；改写 ``anchor`` 时随之更新。
-- 节点与边的 ``anchor`` 是论文 Markdown 的行号范围，写入时按论文的当前材料检查不越界；带锚点的边另记 ``material_ref``。
-  边的论文取起点所在的论文（Content 的 ``paper``、Paper 本身），起点是 Entity 或 Concept 时边上另写 ``paper``。
-- Paper 的 ``material`` → ``(:Material)-[:MATERIAL_OF]->(Paper)``；换成新文件即为新版本，旧材料留着并记上
-  ``superseded_by``，已有的锚点按材料 id 固定在旧版本上。
+- Content 的 ``paper`` → 指向论文的 ``FROM`` 边。
+- Paper 与 Code 的 ``source`` 是它们读自的外部来源 ID 列表（论文 ``2205.13504v2``、代码 ``<仓库>@<commit>``），须已开放
+  （在只读来源目录中）。论文的新版本是加进 ``source`` 的另一个来源 ID，已有的锚点仍指旧版本。
+- 节点与边的 ``anchor`` 是来源引用 ``<来源 ID>::<起>:<止>``，逐条按 :mod:`paperweave.commit.anchors` 检查并存为规范写法：
+  Content 的锚点须在所属 Paper 声明的来源中，边的锚点须是库中某个 Paper 或 Code 声明过的来源。
 - 新建的节点与边补上 ``formed_by``、``formed_at``；Experiment 补查重键 ``exp_key``（``<论文 id>::<主表图>``）。
 - 桩（``stub: true``）在 ``set`` 中补上 ``description`` 时自动去掉 ``stub``。
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from collections.abc import Mapping
@@ -35,9 +34,9 @@ from graph_vc import EdgeKey, FileRef, GraphState, NodeState
 
 from ..model.namekey import NORMALIZER, name_key, normalize
 from ..model.schema import (
-    ANCHOR,
     ARTIFACT,
     CHOICES,
+    CODE_SOURCE,
     CONTENT,
     EDGE_FIELDS,
     FIELDS,
@@ -46,15 +45,21 @@ from ..model.schema import (
     LIST_FIELDS,
     NAMED,
     NAMESPACES,
+    PAPER_SOURCE,
     RELATIONSHIPS,
     ROLES,
     SYSTEM_FIELDS,
     SYSTEM_RELS,
+    SOURCE_ID,
+    UNVERSIONED,
     endpoints,
     kind_of,
     labels_of,
     relation_types,
 )
+from ..model.refs import normalize_ref
+from ..store.sources import SourceDir
+from .anchors import check
 from .problems import Problem
 from .reader import Reader
 from .review import Deduper
@@ -67,27 +72,29 @@ def _as_url(text: str) -> str:
     return text if text.lower().startswith(("http://", "https://")) else f"https://{text}"
 
 
-_WORD = re.compile(r"[^\W_]{2,}")  # 一行里至少有一个词：空行、列表符号、分隔线不算
+class _Declared:
+    """边的锚点允许的来源：库中（或本次写入后）有 Paper 或 Code 声明了它。"""
+
+    def __init__(self, translator: _Translator):
+        self.translator = translator
+
+    def __contains__(self, source: object) -> bool:
+        return isinstance(source, str) and self.translator.declared(source)
+
+    def __iter__(self):
+        return iter(())
+
+    def __len__(self) -> int:
+        return 0
 
 
-def _nearest_text(lines: list[str], line: int) -> int | None:
-    """离第 ``line`` 行（从 1 起）最近的有字的行，先往后找。"""
-    for d in range(1, 6):
-        for n in (line + d, line - d):
-            if 1 <= n <= len(lines) and _WORD.search(lines[n - 1]):
-                return n
-    return None
-
-
-def _cut_line(line: str, width: int = 80) -> str:
-    return repr(line if len(line) <= width else line[:width] + "…")
 _ARXIV_VERSION = re.compile(r"(\d{4}\.\d{4,5})v\d+")
 
 
 @dataclass(frozen=True, slots=True)
 class Context:
     """一次写入的环境：读取现状的入口、来源标签（记入 NameKey.registered_from 与提交的 source）、形成时间、
-    材料的根目录、查重的入口（``None`` 表示不查重）。``user`` 是写入者的登录身份，记为 ``formed_by``；
+    材料的根目录（产物文档）、查重的入口（``None`` 表示不查重）。``user`` 是写入者的登录身份，记为 ``formed_by``；
     ``agent`` 是所用的 Agent 与模型，记入提交的 ``meta.agent``。二者由服务端给出，不由写入者声明。"""
 
     reader: Reader
@@ -97,6 +104,11 @@ class Context:
     user: str | None
     deduper: Deduper | None = None
     agent: str | None = None
+    source_root: Path | None = None  # 只读来源目录；不给时为材料根目录下的 sources/
+
+    @property
+    def sources(self) -> SourceDir:
+        return SourceDir(self.source_root or self.material_root / "sources")
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,16 +127,6 @@ def translate(doc: Document, ctx: Context, ids: Mapping[str, str] | None = None)
 
 
 @dataclass
-class _Material:
-    path: str
-    sha256: str
-
-    @property
-    def id(self) -> str:
-        return f"material_{self.sha256[:12]}"
-
-
-@dataclass
 class _Translator:
     doc: Document
     ctx: Context
@@ -136,9 +138,9 @@ class _Translator:
     files: list[FileRef] = field(default_factory=list)
     kinds: dict[str, str] = field(default_factory=dict)  # 文档中节点 id → 写入后的 kind
     names: dict[str, tuple[Any, Any]] = field(default_factory=dict)  # 写了 name 或 alias 的节点 → (name, alias)
-    new_materials: dict[str, _Material] = field(default_factory=dict)  # Paper id → 本次登记的材料
     papers: dict[str, str] = field(default_factory=dict)  # 本次新建或改了 paper 的 Content id → 论文 id
-    lines: dict[str, list[str] | None] = field(default_factory=dict)  # 材料 id → 各行文字
+    sources: SourceDir | None = None
+    declared_by: dict[str, set[str]] = field(default_factory=dict)  # 来源 ID → 库中声明它的节点（缓存）
     added: dict[str, list[tuple[str, str, bool]]] = field(default_factory=dict)
 
     def run(self) -> Translation:
@@ -146,6 +148,7 @@ class _Translator:
             self.error("identity", "", "the writer is unknown: the server was started without PAPERWEAVE_USER")
         if self.doc.is_empty():
             self.error("format", "", "nothing to do: write the changes under create, set or delete")
+        self.sources = self.ctx.sources
         self.fetch()
         for ref, node in self.doc.create.items():  # 先登记新节点的 kind：引用可以出现在定义之前
             kind = node.props.get("kind")
@@ -198,48 +201,25 @@ class _Translator:
     # ── 读取现状 ──────────────────────────────────────────────────────
 
     def fetch(self) -> None:
-        """取出文档涉及的局部现状：节点、关系终点、``paper`` 指向的论文，以及要登记的材料。"""
+        """取出文档涉及的局部现状：节点、关系终点与 ``paper`` 指向的论文。"""
         wanted: set[str] = set()
         for section in (self.doc.create, self.doc.set):
             for ref, node in section.items():
                 wanted.add(self.r(ref))
                 for _, edge in node.edges():
                     wanted.add(self.r(edge.to))
-                    if isinstance(edge.props.get("paper"), str):
-                        wanted.add(self.r(edge.props["paper"]))
                 if isinstance(node.props.get("paper"), str):
                     wanted.add(self.r(node.props["paper"]))
-                path = node.props.get("material")
-                if isinstance(path, str):
-                    material = self.hash_material(f"{self.section_of(ref)}.{ref}.material", path)
-                    if material is not None:
-                        self.new_materials[self.r(ref)] = material
-                        wanted.add(material.id)
         for ref, rels in self.doc.delete.items():
             wanted.add(self.r(ref))
             wanted.update(self.r(to) for targets in (rels or {}).values() for to in targets)
         self.local = self.ctx.reader.local_state(sorted(wanted))
-        # 论文的材料：论文常常只是邻居（局部现状只含它的节点，不含它的 MATERIAL_OF），补取论文的局部现状
-        papers = {k.dst for k in self.local.edges if k.type == FROM}
-        papers |= {i for i, n in self.local.nodes.items() if "Paper" in n.labels}
-        if papers:
-            self.merge(self.ctx.reader.local_state(sorted(papers)))
 
     def merge(self, extra: GraphState) -> None:
         self.local = GraphState({**extra.nodes, **self.local.nodes}, {**extra.edges, **self.local.edges})
 
     def section_of(self, ref: str) -> str:
         return "create" if ref in self.doc.create else "set"
-
-    def hash_material(self, at: str, path: str) -> _Material | None:
-        if Path(path).is_absolute() or ".." in Path(path).parts:
-            self.error("material", at, "the material path is relative to the material root, like papers/<id>/paper.md")
-            return None
-        file = self.ctx.material_root / path
-        if not file.is_file():
-            self.error("material", at, f"{path} does not exist under the material root")
-            return None
-        return _Material(path, hashlib.sha256(file.read_bytes()).hexdigest())
 
     # ── create ────────────────────────────────────────────────────────
 
@@ -260,8 +240,8 @@ class _Translator:
                 self.node_prop(f"{at}.{key}", node_id, kind, key, value, props, None)
         node = self.frag(node_id)  # paper 已经在上面写进了 FROM
         self.nodes[node_id] = FragmentNode(labels=labels_of(kind), props=props, rels=node.rels, new=True)
-        if "anchor" in props:
-            self.check_anchor(f"{at}.anchor", self.paper_of(node_id), props["anchor"])
+        if "anchor" in props and kind in CONTENT:
+            props["anchor"] = self.check_anchor(f"{at}.anchor", self.paper_of(node_id), props["anchor"])
         for rel_type, edge in doc_node.edges():
             self.edge(f"{at}.{rel_type}.{edge.to}", node_id, rel_type, edge, "create")
 
@@ -303,15 +283,13 @@ class _Translator:
                 self.node_prop(f"{at}.{key}", node_id, kind, key, value, props, current)
         if current.props.get("stub") is True and "stub" not in doc_node.props and props.get("description"):
             props["stub"] = None  # 补全桩
+        if kind in CONTENT and props.get("anchor"):
+            kept = set() if node_id in self.papers else set(current.props.get("anchor") or [])  # 原样贴回的不再检查
+            props["anchor"] = self.check_anchor(f"{at}.anchor", self.paper_of(node_id), props["anchor"], kept)
+        elif kind in CONTENT and node_id in self.papers:  # 换了论文：现有的锚点也要在新论文的来源中
+            self.check_anchor(f"{at}.anchor", self.paper_of(node_id), list(current.props.get("anchor") or []))
         if props:
             self.frag(node_id).props.update(props)
-        if kind in CONTENT and ("anchor" in props or node_id in self.papers):
-            anchor = props.get("anchor") or current.props.get("anchor") or []
-            self.check_anchor(f"{at}.anchor", self.paper_of(node_id), anchor)
-            paper = self.paper_of(node_id)
-            if "anchor" in props and node_id not in self.papers and paper is not None:
-                # 改写了锚点、论文没变：锚点按当前材料检查过，FROM 上的材料随之更新
-                self.frag(node_id).rels.setdefault(FROM, {})[paper] = self.material_ref(paper)
         for rel_type, edge in doc_node.edges():
             self.edge(f"{at}.{rel_type}.{edge.to}", node_id, rel_type, edge, "set")
 
@@ -377,8 +355,8 @@ class _Translator:
                 self.error("field", at, "extra is a mapping of keys to values, written as a block")
                 return
             props[key] = merge_extra(current.props.get("extra") if current else None, value)
-        elif key == "material":
-            self.attach_material(at, node_id)
+        elif key == "source":
+            self.declare_sources(at, kind, value, props)
         elif key == "paper":
             self.set_paper(at, node_id, value, current)
         elif key in ("anchor", "figures"):
@@ -410,7 +388,7 @@ class _Translator:
     def clear(self, at: str, node_id: str, kind: str, key: str, props: dict[str, Any], current: NodeState | None) -> None:
         if current is None:
             return  # 新节点上写 null：等于没写
-        if key in ("paper", "material"):
+        if key == "paper":
             self.error("field", at, f"{key} cannot be cleared")
         elif key == "name":
             self.error("field", at, "name cannot be cleared")
@@ -434,7 +412,7 @@ class _Translator:
                 msg = f"{identity!r}: the namespace is one of {', '.join(NAMESPACES)}{hint}"
                 self.error("identity", f"{at}[{i}]", msg)
             elif namespace == "arxiv" and (bare := _ARXIV_VERSION.fullmatch(rest)):
-                msg = f"write the arXiv id without its version: arxiv:{bare[1]} (the version is the paper's material)"
+                msg = f"write the arXiv id without its version: arxiv:{bare[1]} (the version goes in the Paper's source, like source: [2211.14730v2])"
                 self.error("identity", f"{at}[{i}]", msg)
             elif NAMESPACES[namespace]:
                 others = self.ctx.reader.find("identities", identity, label="Entity") - {node_id} - self.deleted()
@@ -444,7 +422,7 @@ class _Translator:
     def deleted(self) -> set[str]:
         return {self.r(ref) for ref in self.doc.deleted_nodes()}
 
-    # ── 论文、材料与锚点 ──────────────────────────────────────────────
+    # ── 论文、来源与锚点 ──────────────────────────────────────────────
 
     def set_paper(self, at: str, node_id: str, value: Any, current: NodeState | None) -> None:
         if not isinstance(value, str):
@@ -459,7 +437,7 @@ class _Translator:
         if old == paper:
             return
         node = self.frag(node_id)
-        node.rels.setdefault(FROM, {})[paper] = self.material_ref(paper)
+        node.rels.setdefault(FROM, {})[paper] = {}
         self.papers[node_id] = paper
         if old is not None:
             self.nodes[node_id] = FragmentNode(node.labels, node.props, node.rels, node.new, node.edge_deletes | {(FROM, old)})
@@ -471,92 +449,67 @@ class _Translator:
         papers = sorted(k.dst for k in self.local.edges if k.src == node_id and k.type == FROM)
         return papers[0] if papers else None
 
-    def material(self, paper: str) -> str | None:
-        if paper in self.new_materials:
-            return self.new_materials[paper].id
-        owners = sorted(
-            k.src
-            for k in self.local.edges
-            if k.dst == paper
-            and k.type == "MATERIAL_OF"
-            and not (k.src in self.local.nodes and self.local.nodes[k.src].props.get("superseded_by"))
-        )
-        return owners[0] if owners else None
-
-    def material_ref(self, paper: str) -> dict[str, Any]:
-        material = self.material(paper)
-        return {"material_ref": material} if material else {}
-
-    def attach_material(self, at: str, node_id: str) -> None:
-        material = self.new_materials.get(node_id)
-        if material is None:
-            return  # 路径有误，已在 fetch 中报告
-        owners = sorted(
-            k.src
-            for k in self.local.edges
-            if k.dst == node_id
-            and k.type == "MATERIAL_OF"
-            and not (k.src in self.local.nodes and self.local.nodes[k.src].props.get("superseded_by"))
-        )
-        current = owners[0] if owners else None
-        if current == material.id:
+    def declare_sources(self, at: str, kind: str, value: Any, props: dict[str, Any]) -> None:
+        """Paper 与 Code 的 ``source``：外部来源 ID 的列表，论文带版本，须已开放。"""
+        shape, example = (PAPER_SOURCE, "2205.13504v2") if kind == "Paper" else (CODE_SOURCE, "Autoformer@09994619")
+        if not (isinstance(value, list) and value and all(isinstance(v, str) for v in value)):
+            hint = "; quote an id that reads as a number" if isinstance(value, list) and any(isinstance(v, (int, float)) for v in value) else ""
+            self.error("field", at, f"source is a list of source ids, like [{example}]{hint}")
             return
-        if current is not None:  # 新版本：旧材料留着，标出被谁取代
-            self.nodes[current] = FragmentNode(props={"superseded_by": material.id})
-        existing = self.local.nodes.get(material.id)
-        if existing is None:
-            props = {"path": material.path, "format": "markdown", "content_hash": material.sha256}
-            self.nodes[material.id] = FragmentNode(
-                frozenset({"Material"}), props, {"MATERIAL_OF": {node_id: {}}}, new=True
-            )
-        else:
-            taken = [k.dst for k in self.local.edges if k.src == material.id and k.type == "MATERIAL_OF"]
-            if taken:
-                self.error("material", at, f"{material.path} is already the material of {taken[0]}", tuple(taken))
-                return
-            self.nodes[material.id] = FragmentNode(rels={"MATERIAL_OF": {node_id: {}}})
-        self.files.append(FileRef(material.path, material.sha256))
+        value = list(dict.fromkeys(v.strip() for v in value))
+        for i, source in enumerate(value):
+            if not shape.fullmatch(source):
+                if kind == "Paper" and UNVERSIONED.fullmatch(source):
+                    msg = f"write the version too, like {source}v1 (the id read_source returns)"
+                elif SOURCE_ID.fullmatch(source):
+                    msg = f"{source} is not a source id for a {kind}; a {kind} source looks like {example}"
+                else:
+                    msg = f"{source!r} is not a source id; a {kind} source looks like {example} (the id read_source takes)"
+                self.error("source", f"{at}[{i}]", msg)
+            elif not self.sources.available(source):
+                self.error("source", f"{at}[{i}]", f"{source} is not an available source; fetch it with read_source first")
+        props["source"] = value
 
-    def check_anchor(self, at: str, paper: str | None, value: list[str]) -> None:
-        """锚点的格式，以及在论文当前材料中不越界。"""
+    def sources_of(self, node_id: str) -> list[str]:
+        """Paper 或 Code 写入后声明的来源。"""
+        written = self.nodes.get(node_id)
+        if written is not None and "source" in written.props:
+            return list(written.props["source"] or [])
+        node = self.local.nodes.get(node_id)
+        return list(node.props.get("source") or []) if node is not None else []
+
+    def declared(self, source: str) -> bool:
+        """库中（或本次写入后）有 Paper 或 Code 声明了 ``source``。"""
+        written = {n for n, f in self.nodes.items() if "source" in f.props}
+        if any(source in (self.nodes[n].props["source"] or []) for n in written):
+            return True
+        if source not in self.declared_by:
+            self.declared_by[source] = self.ctx.reader.find("source", source, label="Entity")
+        return bool(self.declared_by[source] - written - self.deleted())
+
+    def check_anchor(self, at: str, paper: str | None, value: list[str], kept: set[str] = frozenset()) -> list[str]:
+        """Content 的锚点：在所属 Paper 声明的来源中，带行范围。返回规范写法；``kept`` 中的（现有的锚点）不再检查。"""
         if paper is None:
-            return  # 没有论文：由必填检查或边的 paper 规则报告
-        material = self.material(paper)
-        if material is None:
-            self.error(
-                "anchor",
-                at,
-                f"{self.ref(paper)} has no material to anchor in: give the Paper material: <path of the paper's Markdown "
-                "file, as you read it, e.g. papers/2211.14730v2/paper.md> (a stub paper has no text)",
-            )
-            return
-        text = self.material_lines(material)
-        total = len(text) if text is not None else None
-        for i, anchor in enumerate(value):
-            m = ANCHOR.fullmatch(anchor.strip()) if isinstance(anchor, str) else None
-            item_at = f"{at}[{i}]"
-            if m is None:
-                self.error("anchor", item_at, f"{anchor!r} is not <start>:<end>, the paper's line numbers like 120:135")
-            elif total is None:
-                self.error("anchor", item_at, f"material {material} cannot be read")
-            elif not 1 <= int(m["start"]) <= int(m["end"]) <= total:
-                self.error("anchor", item_at, f"lines {anchor} are outside the paper (1:{total})")
-            elif not any(_WORD.search(line) for line in text[int(m["start"]) - 1 : int(m["end"])]):
-                near = _nearest_text(text, int(m["start"]))
-                hint = f"; the nearest line with text is {near}: {_cut_line(text[near - 1])}" if near else ""
-                self.error("anchor", item_at, f"lines {anchor} hold no text (blank or markup only){hint}")
+            return value  # 没有论文：由必填检查报告
+        allowed = self.sources_of(paper)
+        listed = ", ".join(allowed) if allowed else "none yet"
+        whose = f"a source of {self.ref(paper)} (its source: {listed}); add it to that Paper's source first"
+        return self.anchors(at, value, allowed, whose, grounded=True, kept=kept)
 
-    def material_lines(self, material: str) -> list[str] | None:
-        if material not in self.lines:
-            path = next((m.path for m in self.new_materials.values() if m.id == material), None)
-            node = self.local.nodes.get(material)
-            if path is None and node is not None:
-                path = node.props.get("path")
-            file = self.ctx.material_root / path if isinstance(path, str) else None
-            self.lines[material] = (
-                file.read_text(encoding="utf-8").splitlines() if file is not None and file.is_file() else None
-            )
-        return self.lines[material]
+    def anchors(
+        self, at: str, value: list[str], allowed: Any, whose: str, *, grounded: bool, kept: set[str] = frozenset()
+    ) -> list[str]:
+        out = []
+        assert self.sources is not None
+        for i, item in enumerate(value):
+            if normalize_ref(item) in kept:
+                out.append(normalize_ref(item))
+                continue
+            text, problem = check(item, self.sources, allowed, whose, grounded=grounded)
+            if problem is not None:
+                self.error("anchor", f"{at}[{i}]", problem)
+            out.append(text if text is not None else item)
+        return out
 
     # ── 边 ────────────────────────────────────────────────────────────
 
@@ -623,6 +576,9 @@ class _Translator:
     ) -> None:
         spec = RELATIONSHIPS[rel_type]
         allowed = (*EDGE_FIELDS, *spec.props)
+        if name == "paper":
+            self.error("field", at, "an edge takes no paper: its anchor starts with the source id, like 2205.13504v2::120:135")
+            return
         if name not in allowed:
             self.error("field", at, f"{rel_type} has no property {name}; its properties are {', '.join(allowed)}")
             return
@@ -649,41 +605,18 @@ class _Translator:
                 self.error("field", at, "description is text; write it as a block (description: |)")
                 return
             value = value.strip()
-        elif name == "paper":
-            if self.kind(src) in CONTENT | {"Paper"}:
-                self.error("field", at, "the anchor's paper is the record's own paper here; do not write paper on this edge")
-                return
-            if not isinstance(value, str) or self.kind(self.r(value)) != "Paper":
-                self.error("reference", at, "paper is the id of the paper the anchor lines are in")
-                return
-            value = self.r(value)
         elif name == "anchor":
             if isinstance(value, str):
                 value = [value]
             if not (isinstance(value, list) and value and all(isinstance(v, str) for v in value)):
-                self.error("field", at, "anchor is a list of line ranges like [120:135]")
+                self.error("field", at, "anchor is a list of source references like [2205.13504v2::120:135]")
                 return
-            paper = self.edge_paper(src, edge, current)
-            if paper is None:
-                self.error("anchor", at, "say which paper these lines are in: add paper: <paper id> to this edge")
-                return
-            self.check_anchor(at, paper, value)
-            props.update(self.material_ref(paper))
+            whose = "declared by any Paper or Code in the store; add it to the source of the Paper or Code it belongs to"
+            value = self.anchors(at, value, _Declared(self), whose, grounded=False)
         elif name == "printed_as" and not isinstance(value, str):
             self.error("field", at, "printed_as is the name as printed in the paper")
             return
         props[name] = value
-
-    def edge_paper(self, src: str, edge: DocEdge, current: dict[str, Any] | None) -> str | None:
-        kind = self.kind(src)
-        if kind == "Paper":
-            return src
-        if kind in CONTENT:
-            return self.paper_of(src)
-        written = edge.props.get("paper")
-        if isinstance(written, str):
-            return self.r(written)
-        return current.get("paper") if current else None
 
     # ── 名称与查重键 ──────────────────────────────────────────────────
 

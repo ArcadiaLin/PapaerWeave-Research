@@ -77,6 +77,7 @@ def execute(ctx: Context, request: Mapping[str, Any]) -> dict[str, Any]:
         user=ctx.formed_by,
         deduper=SearchDeduper(store),
         agent=ctx.agent,
+        source_root=store.source_root,
     )
     art_args = {
         "at": ctx.at,

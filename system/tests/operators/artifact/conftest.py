@@ -29,7 +29,8 @@ TEST_AUTH = (
     os.environ.get("GRAPH_VC_TEST_NEO4J_PASSWORD", "password"),
 )
 AT = "2026-10-14T12:00:00+00:00"
-MATERIAL = "papers/2023-DLinear/paper.md"
+SOURCE = "2205.13504v1"
+MATERIAL = f"sources/{SOURCE}/paper.md"  # 来源目录默认在材料根目录下
 
 GRAPH = """
 graph-doc: v0.2
@@ -50,7 +51,7 @@ create:
     kind: Paper
     name: Are Transformers Effective for Time Series Forecasting?
     year: 2023
-    material: papers/2023-DLinear/paper.md
+    source: [2205.13504v1]
     description: Questions whether Transformers are effective for LTSF and introduces DLinear.
   $dlinear:
     kind: Method
@@ -59,7 +60,7 @@ create:
   $main:
     kind: Experiment
     paper: $paper
-    anchor: [10:20]
+    anchor: [2205.13504v1::10:20]
     figures: [S5.T2]
     description: Multivariate long-term forecasting comparing DLinear with Transformer baselines.
     EVALUATES:
@@ -84,14 +85,14 @@ setting: {variate: multivariate}
 
 | method | variant | paper | role | lookback | pred_len | MSE | source |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| method_0002 DLinear |  | paper_0001 DLinear | target | 336 | 96 | 0.375 | paper_0001::5.2 Comparison::10:12 |
-| method_0001 Transformer |  | paper_0001 DLinear | baseline | 96 | 96 | 0.865 | paper_0001::5.2 Comparison::12 |
+| method_0002 DLinear |  | paper_0001 DLinear | target | 336 | 96 | 0.375 | 2205.13504v1::5.2 Comparison::10:12 |
+| method_0001 Transformer |  | paper_0001 DLinear | baseline | 96 | 96 | 0.865 | 2205.13504v1::5.2 Comparison::12 |
 
 ## Papers covered
 
 | paper | tables | complete |
 | --- | --- | --- |
-| paper_0001 DLinear | Table 2 (paper_0001::5.2 Comparison::10:20) | no |
+| paper_0001 DLinear | Table 2 (2205.13504v1::5.2 Comparison::10:20) | no |
 """
 
 

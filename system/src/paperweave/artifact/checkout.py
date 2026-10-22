@@ -28,7 +28,6 @@ from ..store.store import ContractError, Store
 from .checkin import relocate
 from .document import Parsed, add_checkout, line_map
 from .sources import lookup
-from .stale import pinned as pins
 from .types import TYPES, ArtifactType
 from .versions import Version, blame, history, load, since
 
@@ -131,8 +130,7 @@ def _one(
     out["hint"] = _hint(kind, versions, docs, me, lines)
     history_docs = [(v.author, v.number, d) for v, d in zip(versions, docs, strict=True)]
     authors = {b.unit.line: (b.author, b.version) for b in blame(kind, history_docs)}
-    pinned = pins(store, art_id) if target.number == latest.number else {}  # 旧版本按当时的库解析，不另求
-    notes = kind.notes(doc, authors, lookup(store, pinned))
+    notes = kind.notes(doc, authors, lookup(store))
     if notes:
         out["notes"] = relocate(notes, lambda n: lines[n - 1] if 0 < n <= len(lines) else n)
     return out

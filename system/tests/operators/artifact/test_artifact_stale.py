@@ -24,14 +24,14 @@ from paperweave.operators.db.read_evidence import read_evidence
 from paperweave.store import Store
 from paperweave.tools import TOOLS
 
-SOURCE = "paper_0001::5.2 Comparison::10:12"
+SOURCE = "2205.13504v1::5.2 Comparison::10:12"
 ROW = "art_0001#method_0002++paper_0001+96+336"  # Leaderboard 中 DLinear 的一行
 REVISE_EXP = """graph-doc: v0.2
 set:
   exp_0001:
     description: Multivariate long-term forecasting comparing DLinear with Transformer and linear baselines.
 confirm:
-  exp_0001: {revise: {reason: "the table compares linear models too", anchor: [10:20]}}
+  exp_0001: {revise: {reason: "the table compares linear models too", anchor: [2205.13504v1::10:20]}}
 """
 
 
@@ -69,12 +69,12 @@ def test_revisions_of_used_records_mark_artifacts(store: Store, writers: dict[st
     ]
     marked = get(store, ["exp_0001"]).details["nodes"]["exp_0001"]["_revised"]  # 修订标记随记录出现在 get 中
     assert marked["commit"] == revision["commit"] and marked["by"] == "maintainer"
-    assert marked["reason"] == "the table compares linear models too" and marked["anchor"] == ["10:20"]
+    assert marked["reason"] == "the table compares linear models too" and marked["anchor"] == ["2205.13504v1::10:20"]
     assert "_revised" not in get(store, ["dataset_0001"]).details["nodes"]["dataset_0001"]
     echoed = doc(f"  exp_0001:\n    _revised: {{commit: {revision['commit']}}}\n")
     assert commit_doc(store, echoed, commit=False)["status"] == "noop"  # 只读字段原样抄回不算改动
 
-    anchored = doc("  exp_0001:\n    USES:\n      dataset_0001: {anchor: [12:14]}\n", "create")
+    anchored = doc("  exp_0001:\n    USES:\n      dataset_0001: {anchor: [2205.13504v1::12:14]}\n", "create")
     assert commit_doc(store, anchored)["status"] == "blocked"  # 已有的边：create 不能改属性
     again = commit_doc(store, REVISE_EXP.replace("linear baselines", "simple linear baselines"))
     assert again["status"] == "committed" and "affected_artifacts" not in again  # 已经报过的不再重复
@@ -88,9 +88,9 @@ def test_staleness_follows_inputs(store: Store, writers: dict[str, Writer], tmp_
     assert [(r["ref"], r["reason"]) for r in before[board]] == [("exp_0001", "revised")]
     assert before[later] == [{"ref": ROW, "reason": "stale input"}]
 
-    root = tmp_path / "root"  # 改动论文材料：用到它的行范围的产物可能过期
+    root = tmp_path / "root"  # 来源不在来源目录中：引用它的产物可能过期
     shutil.copytree(store.material_root, root)
-    (root / MATERIAL).write_text("edited\n" * 60, encoding="utf-8")
+    (root / MATERIAL).unlink()
     edited = stale(dataclasses.replace(store, material_root=root), [board, later])
     assert {r["reason"] for r in edited[board]} == {"material", "revised"} and SOURCE in {r["ref"] for r in edited[board]}
     assert edited[later] == [{"ref": ROW, "reason": "stale input"}]
@@ -123,7 +123,7 @@ def test_artifacts_only_reads_documents_but_not_papers(store: Store) -> None:
     assert [i["state"] for i in read_evidence(store, refs)["items"]] == ["available", "available"]
     document, paper = read_evidence(store, refs, scope="artifacts")["items"]
     assert document["state"] == "available" and document["path"].startswith("artifacts/")
-    assert paper["state"] == "missing" and "source papers are not available" in paper["reason"]
+    assert paper["state"] == "missing" and "sources are not available" in paper["reason"]
     assert "text" not in paper
 
 
