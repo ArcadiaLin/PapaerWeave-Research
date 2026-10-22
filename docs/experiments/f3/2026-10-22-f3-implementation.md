@@ -233,6 +233,8 @@ M1 开始实现前要先定的细节（取自设计 §10），逐项与用户敲
 
 ### 5.2 待用户复核
 
+**任务数：** 完成标准第 5 项写“40 个任务”，取自设计 §7：38 个 build、build-overlap、update 任务写着 `papers/<id>/paper.md`，2 个 note-i6 任务写着 `code/`。B2（2026-10-22 与用户敲定）把范围扩到 50 个：另有 compare 4、verify-own 3、verify-later 3 共 10 个任务，按 B1 点出来源 ID。实际改写 50 个，以 B2 为准；第 1.1 节的“40”是 B2 之前的数字。
+
 完成标准第 5 项要求任务文字改写与材料表经用户确认。本轮 goal 授权“实验中不需要问我，先做决定，并进入文档”，因此先行冻结。改写规则是 B1、B2 中已与用户敲定的写法，由脚本机械执行；与 B2 示例的唯一出入是 verify-later 的所有格（4.4 第 2 条）。正式开跑前请复核：`plan-f3.yml` 中改写的 50 个任务（`git diff --no-index tasks/plan.yml tasks/plan-f3.yml`）与 `materials.yml`。
 
 ## 6 冒烟结果
