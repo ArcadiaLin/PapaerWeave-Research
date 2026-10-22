@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -599,43 +600,64 @@ def _backup_config(tmp_path: Path) -> dict:
 def test_the_checkpoint_store_is_dumped_offline_and_restarted(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / "A3/data/artifacts").mkdir(parents=True)
     (tmp_path / "A3/data/artifacts/lb.v1.md").write_text("x\n")
+    (tmp_path / "A3/sources/2106.13008v5").mkdir(parents=True)
+    (tmp_path / "A3/sources/2106.13008v5/paper.md").write_text("# p\n")
+    digest = timeline._sha256(tmp_path / "A3/sources/2106.13008v5/paper.md")
+    tl = Timeline([], IDENTITIES, HINTS, READER, [], [], {"seed": [], "sessions": [],
+                                                          "sources": {"2106.13008v5": {"sha256": digest}}})  # fmt: skip
     calls = []
 
     def docker(*args: str) -> str:
         calls.append(args[0])
         if args[0] == "inspect":
             return json.dumps([{"HostConfig": {"AutoRemove": False}, "Config": {"Image": "neo4j:ubi10"},
-                                "Mounts": [{"Source": "/srv/a3/data", "Destination": "/data"}]}])  # fmt: skip
+                                "Image": "sha256:feed", "Mounts": [{"Source": "/srv/a3/data", "Destination": "/data"}]}])  # fmt: skip
         if args[0] == "run":
             assert args[args.index("-v") + 1] == "/srv/a3/data:/data" and args[-2:] == ("neo4j", "--to-path=/backups")
+            assert "sha256:feed" in args and "neo4j:ubi10" not in args  # 用实际运行的镜像 ID（审查第 4 条）
             Path(args[args.index("-v", args.index("-v") + 1) + 1].split(":")[0], "neo4j.dump").write_bytes(b"dump")
         return ""
 
     monkeypatch.setattr(timeline, "_docker", docker)
     monkeypatch.setattr(timeline, "checkpoints", lambda run: {"A3": {10: "commit_000020"}})
     monkeypatch.setattr(timeline, "version", lambda config, run, arm: "commit_000020")
-    timeline.backup(_backup_config(tmp_path), tmp_path, "A3", 10)
+    timeline.backup(_backup_config(tmp_path), tmp_path, "A3", 10, tl)
     assert calls == ["inspect", "stop", "run", "start"]
     out = tmp_path / "backups/A3/k10"
     meta = yaml.safe_load((out / "meta.yml").read_text())
-    assert meta["version"] == "commit_000020" and set(meta["sha256"]) == {"neo4j.dump", "data.tar.gz"}
+    assert meta["version"] == "commit_000020" and set(meta["sha256"]) == {"neo4j.dump", "data.tar.gz", "sources.tar.gz"}
+    assert meta["image_id"] == "sha256:feed" and meta["sources"] == {"2106.13008v5": digest}
     with tarfile.open(out / "data.tar.gz") as tar:
         assert "data/artifacts/lb.v1.md" in tar.getnames()
+    with tarfile.open(out / "sources.tar.gz") as tar:  # 审查第 5 条：恢复所需的来源随备份
+        assert "sources/2106.13008v5/paper.md" in tar.getnames()
     calls.clear()
-    timeline.backup(_backup_config(tmp_path), tmp_path, "A3", 10)  # 已有完整备份：不再停库
+    timeline.backup(_backup_config(tmp_path), tmp_path, "A3", 10, tl)  # 已有完整备份：不再停库
     assert calls == []
+    assert timeline.backup_complete(out, "A3", 10, "commit_000020")
+    assert not timeline.backup_complete(out, "A3", 20, "commit_000020")  # 别的检查点的备份不算
+    assert not timeline.backup_complete(out, "A3", 10, "commit_000031")
     (out / "neo4j.dump").write_bytes(b"changed")
     assert not timeline.backup_complete(out, "A3")  # 哈希不符即不完整
+    timeline.backup(_backup_config(tmp_path), tmp_path, "A3", 10, tl)  # 不合格的另存后重做
+    assert calls == ["inspect", "stop", "run", "start"] and timeline.backup_complete(out, "A3", 10, "commit_000020")
+    assert len(list(out.parent.glob("k10.invalid-*"))) == 1
+    (tmp_path / "A3/sources/2106.13008v5/paper.md").write_text("edited\n")
+    shutil.rmtree(out)
+    with pytest.raises(RuntimeError, match="do not match materials.yml"):
+        timeline.backup(_backup_config(tmp_path), tmp_path, "A3", 10, tl)
 
 
 def test_the_store_is_restarted_even_if_the_dump_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / "A3/data").mkdir(parents=True)
+    (tmp_path / "A3/sources").mkdir(parents=True)
     calls = []
 
     def docker(*args: str) -> str:
         calls.append(args[0])
         if args[0] == "inspect":
-            return json.dumps([{"HostConfig": {}, "Config": {"Image": "i"}, "Mounts": [{"Source": "/d", "Destination": "/data"}]}])
+            return json.dumps([{"HostConfig": {}, "Config": {"Image": "i"}, "Image": "sha256:i",
+                                "Mounts": [{"Source": "/d", "Destination": "/data"}]}])  # fmt: skip
         if args[0] == "run":
             raise RuntimeError("docker run failed")
         return ""

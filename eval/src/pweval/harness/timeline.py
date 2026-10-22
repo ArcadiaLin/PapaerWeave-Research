@@ -922,39 +922,49 @@ SNAPSHOT_COUNTS = {"A0": ("files", "commits"), "A4": ("nodes", "edges")}  # 其�
 
 
 BACKUP_DB = "neo4j"  # 被测系统用 Neo4j 的默认库
-BACKUP_FILES = ("neo4j.dump", "data.tar.gz")
+BACKUP_FILES = ("neo4j.dump", "data.tar.gz", "sources.tar.gz")
 
 
-def backup(config: dict[str, Any], run: Path, arm: str, papers: int) -> None:
+def backup(config: dict[str, Any], run: Path, arm: str, papers: int, timeline: Timeline | None = None) -> None:
     """A3、A2 检查点上的库备份 ``backups/<组>/k<篇数>/``，供读者事后在检查点的库上作答（写读分离，V3 §7 第 9 条）。
     快照（:func:`snapshot`）去掉了向量，恢复它要重算向量，读者看到的就不是写者留下的那个库；备份是原样。
 
-    - ``data.tar.gz``：材料根目录（论文副本与产物文档的各个版本）；
-    - ``neo4j.dump``：停下图库的容器（检查点上没有写者会话，MCP 服务也没有起），用同一镜像的 ``neo4j-admin database
-      dump`` 离线导出，再启动容器，等库可连后核对分支头仍是检查点的版本；
-    - ``meta.yml``：组、检查点、库版本、容器与镜像、两个文件的 SHA-256。
+    - ``data.tar.gz``：材料根目录（产物文档的各个版本）；
+    - ``sources.tar.gz``：组的已开放来源目录（``sources/``，即 ``PAPERWEAVE_SOURCES``），打包前按材料表逐个核对哈希。
+      恢复后提交校验、``read_evidence`` 与过时检测都要读它，缺了会把来源缺失误判成产物过时（审查第 5 条）；
+    - ``neo4j.dump``：停下图库的容器（检查点上没有写者会话，MCP 服务也没有起），用该容器实际运行的镜像（镜像 ID，
+      不是标签）的 ``neo4j-admin database dump`` 离线导出，再启动容器，等库可连后核对分支头仍是检查点的版本；
+    - ``meta.yml``：组、检查点（篇数）、记录的库版本、容器、镜像标签与 ID、三个文件的 SHA-256，以及开放的来源及其
+      哈希（``sources``）。
 
-    先写到 ``k<篇数>.partial/``，完整后改名。已有完整备份（哈希一致）时跳过。恢复：``neo4j-admin database load`` 到
-    新容器的数据目录，材料根目录解包，读者的 MCP 服务指向二者。"""
+    先写到 ``k<篇数>.partial/``，完整后改名。已有备份只在完整且属于这个检查点（篇数与 ``checkpoints.yml`` 记录的版本
+    都对得上，:func:`backup_complete`）时跳过；不合格的另存为 ``k<篇数>.invalid-<时刻>`` 后重做，不静默接受。
+    恢复：``neo4j-admin database load`` 到新容器的数据目录，材料根目录与来源目录解包，读者的 MCP 服务指向三者。"""
     if arm not in GRAPH or papers == 0:
         return
     out = run / "backups" / arm / f"k{papers}"
-    if backup_complete(out, arm):
+    expected = checkpoints(run)[arm][papers]
+    if backup_complete(out, arm, papers, expected):
         return
+    if out.exists():
+        out.rename(out.with_name(f"{out.name}.invalid-{datetime.now(UTC).strftime('%Y%m%dT%H%M%S')}"))
     container = config["arms"][arm].get("neo4j_container")
     if not container:
         raise RuntimeError(f"{arm}: neo4j_container is not configured; the checkpoint store cannot be backed up")
-    expected = at_checkpoint(config, run, arm, papers)
-    image, data_dir = container_of(container)
+    at_checkpoint(config, run, arm, papers)
+    image, image_id, data_dir = container_of(container)
+    opened = _verified_sources(run, arm, timeline)
     partial = out.with_name(out.name + ".partial")
     shutil.rmtree(partial, ignore_errors=True)
     partial.mkdir(parents=True)
     with tarfile.open(partial / "data.tar.gz", "w:gz") as tar:
         tar.add(arm_dir(run, arm) / "data", arcname="data")
+    with tarfile.open(partial / "sources.tar.gz", "w:gz") as tar:
+        tar.add(sources_dir(run, arm), arcname="sources")
     _docker("stop", container)
     try:
         partial.chmod(0o777)  # 容器中的 neo4j 用户（7474）要往这里写 dump
-        _docker("run", "--rm", "-v", f"{data_dir}:/data", "-v", f"{partial}:/backups", image,
+        _docker("run", "--rm", "-v", f"{data_dir}:/data", "-v", f"{partial}:/backups", image_id,
                 "neo4j-admin", "database", "dump", BACKUP_DB, "--to-path=/backups")  # fmt: skip
     finally:
         partial.chmod(0o755)
@@ -963,31 +973,48 @@ def backup(config: dict[str, Any], run: Path, arm: str, papers: int) -> None:
     if (now := version(config, run, arm)) != expected:
         raise RuntimeError(f"{arm}: after the backup the store is at {now}, not at checkpoint {papers} ({expected})")
     meta = {"arm": arm, "papers": papers, "version": expected, "container": container, "image": image,
-            "created": datetime.now(UTC).isoformat(timespec="seconds"),
-            "sha256": {n: _sha256(partial / n) for n in BACKUP_FILES}}  # fmt: skip
+            "image_id": image_id, "created": datetime.now(UTC).isoformat(timespec="seconds"),
+            "sha256": {n: _sha256(partial / n) for n in BACKUP_FILES}, "sources": opened}  # fmt: skip
     (partial / "meta.yml").write_text(yaml.safe_dump(meta, sort_keys=False), encoding="utf-8")
     partial.rename(out)
 
 
-def backup_complete(out: Path, arm: str) -> bool:
+def _verified_sources(run: Path, arm: str, timeline: Timeline | None) -> dict[str, str]:
+    """组的来源目录中的来源 → 内容哈希；给出 ``timeline`` 时逐个与材料表核对，不一致即停。"""
+    root = sources_dir(run, arm)
+    found = sorted(p.name for p in root.iterdir() if p.is_dir() and not p.name.endswith(".partial")) if root.exists() else []
+    digests = {s: source_digest(root, s) for s in found}
+    if timeline is not None and timeline.materials:
+        wrong = [s for s, d in digests.items() if timeline.materials["sources"].get(s, {}).get("sha256") != d]
+        if wrong:
+            raise RuntimeError(f"{arm}: opened sources do not match materials.yml: {wrong}")
+    return digests
+
+
+def backup_complete(out: Path, arm: str, papers: int | None = None, version: str | None = None) -> bool:
+    """备份是否完整，且属于检查点 ``papers``、库版本 ``version``（审查第 4 条：文件哈希自洽但属于别的检查点的备份
+    不算）。版本取 ``checkpoints.yml`` 的记录，不取在线库的当前分支头（早期检查点早已过去）。"""
     try:
         meta = yaml.safe_load((out / "meta.yml").read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError):
         return False
     if not isinstance(meta, dict) or meta.get("arm") != arm or not isinstance(meta.get("sha256"), dict):
         return False
+    if (papers is not None and meta.get("papers") != papers) or (version is not None and meta.get("version") != version):
+        return False
     return all((out / n).exists() and meta["sha256"].get(n) == _sha256(out / n) for n in BACKUP_FILES)
 
 
-def container_of(name: str) -> tuple[str, str]:
-    """图库容器的镜像与挂到 ``/data`` 的宿主机目录。``docker run --rm`` 起的容器停下即被删除，拒绝。"""
+def container_of(name: str) -> tuple[str, str, str]:
+    """图库容器的镜像标签、实际运行的镜像 ID 与挂到 ``/data`` 的宿主机目录。``docker run --rm`` 起的容器停下即被
+    删除，拒绝。dump 用镜像 ID：标签之后可能指向别的镜像。"""
     info = json.loads(_docker("inspect", name))[0]
     if info["HostConfig"].get("AutoRemove"):
         raise RuntimeError(f"container {name} was started with --rm: stopping it for the backup would delete it")
     data = [m["Source"] for m in info["Mounts"] if m["Destination"] == "/data"]
     if not data:
         raise RuntimeError(f"container {name} has no /data mount on the host")
-    return info["Config"]["Image"], data[0]
+    return info["Config"]["Image"], info["Image"], data[0]
 
 
 def _docker(*args: str) -> str:
@@ -1177,7 +1204,7 @@ def run_arm(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, unt
                 if step["papers"] not in (checkpoints(run).get(arm) or {}):
                     checkpoint(config, run, arm, step["papers"])
                 snapshot(config, run, arm, step["papers"])
-                backup(config, run, arm, step["papers"])  # 读者之前：读者以后也可以在备份上离线作答
+                backup(config, run, arm, step["papers"], timeline)  # 读者之前：读者以后也可以在备份上离线作答
                 answers = {}
                 for group in GROUPS:
                     if with_readers:
