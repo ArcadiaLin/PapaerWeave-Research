@@ -3,7 +3,7 @@
 （写读分离，V3 §7 第 9 条；f3 的 M2）。
 
     python -m pweval.harness.timeline <运行名> [--config eval/config/f3-ltsf.yml] [--arms A3,A2]
-        [--until <序号>] [--neo4j A3=bolt://…,A2=…] [--reset] [--allow-config-change]
+        [--until <序号>] [--neo4j A3=bolt://…,A2=…] [--reset] [--allow-config-change] [--allow-code-change]
 
 f3 只接通了 A3、A2（M1）；A0、A4 的写者条件属 M3、M4，在此之前拒绝运行。
 
@@ -1048,19 +1048,49 @@ def _comparable(config: dict[str, Any]) -> dict[str, Any]:
     return {**config, "runner": runner}
 
 
+SESSION_CODE = (  # 写者会话实际执行的代码（相对仓库根目录）：被测系统、A2 的消融服务、沙箱内外的转发与来源服务、运行器
+    "system/src", "system/pyproject.toml", "packages/graph-doc/src", "packages/graph-doc/pyproject.toml",
+    "packages/graph-vc/src", "packages/graph-vc/pyproject.toml", "eval/baselines",
+    "eval/src/pweval/harness/bridge.py", "eval/src/pweval/harness/source_server.py",
+    "eval/src/pweval/harness/sandbox.py", "eval/src/pweval/harness/timeline.py", "eval/src/pweval/harness/export.py",
+    "pyproject.toml", "uv.lock",
+)  # fmt: skip
+
+
+def code_fingerprint(repo: Path = REPO) -> dict[str, Any]:
+    """写者会话所执行代码的指纹（审查第 3 条）：``SESSION_CODE`` 下已跟踪与未跟踪（不含忽略的）文件，按路径排序，
+    逐个文件的 路径、NUL、磁盘上内容的 SHA-256。按磁盘内容算，未提交的改动也计入；只看提交号或 dirty 标志不够。"""
+    listed = _git(repo, "ls-files", "-co", "--exclude-standard", "-z", "--", *SESSION_CODE).split("\0")
+    files = sorted({f for f in listed if f and (repo / f).is_file()})
+    digest = hashlib.sha256()
+    for f in files:
+        digest.update(f"{f}\0".encode() + hashlib.sha256((repo / f).read_bytes()).digest())
+    return {"sha256": digest.hexdigest(), "files": len(files)}
+
+
+def check_code(run: Path, expected: dict[str, Any]) -> None:
+    """会话开始前：执行的代码仍是这次调用开始时的（MCP 服务、来源服务每个会话从工作区重新加载）。运行中有人改了
+    这些文件，这一组停下，不让同一条时间线中途换实现。"""
+    if (now := code_fingerprint()) != expected:
+        raise RuntimeError(f"{run.name}: the session code changed during the run ({expected['sha256'][:12]} → "
+                           f"{now['sha256'][:12]}); restart with --allow-code-change if the change is intended")  # fmt: skip
+
+
 def _record_run(run: Path, config_path: Path, config: dict[str, Any], argv: list[str], *,
-                allow_change: bool = False) -> None:  # fmt: skip
+                allow_change: bool = False, code: dict[str, Any] | None = None,
+                allow_code_change: bool = False) -> None:  # fmt: skip
     """``run.yml``：每次调用追加一条——时间、参数、实际生效的配置（含 ``--neo4j`` 的覆盖）、仓库与题库的提交、
     pi 的版本。种子与会话可以分几次调用完成。续跑时生效的配置（只影响用时的项除外）或题库的提交与第一次不同，
-    就拒绝运行，除非给出 ``--allow-config-change``（改动随这次调用记下）。运行框架自身的提交可以变（修正），
-    各次的提交都留在记录中。"""
+    就拒绝运行，除非给出 ``--allow-config-change``（改动随这次调用记下）。给出 ``code``（写者会话所执行代码的指纹，
+    :func:`code_fingerprint`）时，它与第一次不同也拒绝，除非给出 ``--allow-code-change``：工程修正与正式实验代码不变
+    分开处理，修正须显式放行并记下。仓库其余部分的提交可以变（如读者侧的开发），各次的提交都留在记录中。"""
     path = run / "run.yml"
     with _locked(path):
-        _record_invocation(path, config_path, config, argv, allow_change)
+        _record_invocation(path, config_path, config, argv, allow_change, code, allow_code_change)
 
 
-def _record_invocation(path: Path, config_path: Path, config: dict[str, Any], argv: list[str],
-                       allow_change: bool) -> None:  # fmt: skip
+def _record_invocation(path: Path, config_path: Path, config: dict[str, Any], argv: list[str], allow_change: bool,
+                       code: dict[str, Any] | None = None, allow_code_change: bool = False) -> None:  # fmt: skip
     run = path.parent
     record = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {"invocations": []}
 
@@ -1076,12 +1106,16 @@ def _record_invocation(path: Path, config_path: Path, config: dict[str, Any], ar
         if changed and not allow_change:
             raise SystemExit(f"{run}: {' and '.join(changed)} differ from the first invocation; "
                              "pass --allow-config-change to continue with them")  # fmt: skip
+        if code is not None and first.get("code") != code and not allow_code_change:
+            raise SystemExit(f"{run}: the session code differs from the first invocation ({first.get('code')} → {code}); "
+                             "pass --allow-code-change to continue with it")  # fmt: skip
     record["invocations"].append({
         "started": datetime.now(UTC).isoformat(timespec="seconds"),
         "argv": argv,
         "config_file": str(config_path),
         "config": effective,
         "repo": commit(REPO),
+        **({"code": code, "allow_code_change": allow_code_change} if code is not None else {}),
         "probes": probes,
         "pi": pi_version(),
         "sandbox_python": site_record(),
@@ -1124,7 +1158,7 @@ def emit(kind: str, arm: str, **fields: Any) -> None:
 
 
 def run_arm(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, until: int | None, reset: bool,
-            with_readers: bool = False) -> None:  # fmt: skip
+            with_readers: bool = False, code: dict[str, Any] | None = None) -> None:  # fmt: skip
     """一组的写者时间线。``with_readers`` 留给 f3 之前的检查点读者；f3 的读者在备份上离线作答（M2），不经这里。"""
     if 0 not in (checkpoints(run).get(arm) or {}):
         setup(config, timeline, run, arm, reset=reset)
@@ -1162,6 +1196,8 @@ def run_arm(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, unt
             return
         if (arm, step["seq"]) in done:
             continue
+        if code is not None:
+            check_code(run, code)
         open_sources(config, timeline, run, arm, timeline.opened_through(step["seq"]))  # 会话开始时开放（f3 §3.2）
         record, rerun_of = None, None
         if inflight and inflight["seq"] == step["seq"]:
@@ -1171,6 +1207,8 @@ def run_arm(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, unt
             record = session(config, timeline, run, arm, step)
             if rerun_of:
                 record["rerun_after_interruption"] = rerun_of
+        if code is not None:
+            record["code"] = code["sha256"]
         _append(run, record)
         _inflight(run, arm).unlink(missing_ok=True)
         done.add((arm, step["seq"]))
@@ -1190,6 +1228,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--neo4j", help="覆盖图库地址，如 A3=bolt://localhost:7695（A4 为 Graphiti 的库）")
     parser.add_argument("--reset", action="store_true",
                         help="起点建立前库不空时清空（A3、A2 清整个图库，A4 清配置中的 group）；已有会话记录的组拒绝重建")
+    parser.add_argument("--allow-code-change", action="store_true",
+                        help="续跑时允许写者会话所执行的代码与第一次调用不同（工程修正；指纹记入 run.yml）")
     parser.add_argument("--allow-config-change", action="store_true",
                         help="续跑时允许生效的配置或题库提交与第一次调用不同（改动记入 run.yml）")
     args = parser.parse_args(argv)
@@ -1207,8 +1247,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise SystemExit("services are not reachable:\n" + "\n".join(problems))
     run = config["workdir_root"] / args.name
     run.mkdir(parents=True, exist_ok=True)
+    code = code_fingerprint()
     _record_run(run, config_path, config, list(argv) if argv is not None else sys.argv[1:],
-                allow_change=args.allow_config_change)
+                allow_change=args.allow_config_change, code=code, allow_code_change=args.allow_code_change)
     timeline = timeline_of(config)
     emit("RUN", "-", name=args.name, arms=",".join(arms), pid=os.getpid())
 
@@ -1218,7 +1259,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if not mine:
                     emit("ERROR", arm, error="another process is running this arm; not started")
                     return False
-                run_arm(config, timeline, run, arm, args.until, args.reset)
+                run_arm(config, timeline, run, arm, args.until, args.reset, code=code)
             return True
         except BaseException as exc:
             emit("ERROR", arm, error=f"{type(exc).__name__}: {exc}"[:500])

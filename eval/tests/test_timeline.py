@@ -371,6 +371,48 @@ def test_resuming_with_a_changed_config_is_refused(tmp_path: Path, monkeypatch: 
     assert invocations[0]["config"]["probes_repo"] == str(probes)
 
 
+def test_the_session_code_is_frozen_for_a_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """审查第 3 条：写者会话所执行的代码按磁盘内容取指纹（未提交的改动也算）。续跑时不同即拒绝，除非显式放行；
+    运行中改动则在下一个会话前停下。仓库其余部分的改动不影响。"""
+    repo = tmp_path / "repo"
+    (repo / "system/src").mkdir(parents=True)
+    (repo / "eval/src/pweval/harness").mkdir(parents=True)
+    (repo / "system/src/a.py").write_text("x = 1\n")
+    (repo / "eval/src/pweval/harness/readers.py").write_text("r = 1\n")
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "x"], check=True)
+    first = timeline.code_fingerprint(repo)
+    (repo / "eval/src/pweval/harness/readers.py").write_text("r = 2\n")  # 读者侧的开发：不在会话代码中
+    assert timeline.code_fingerprint(repo) == first
+    (repo / "system/src/a.py").write_text("x = 2\n")  # 未提交的改动
+    second = timeline.code_fingerprint(repo)
+    (repo / "system/src/a.py").write_text("x = 3\n")  # 另一处未提交的改动：dirty 标志相同，指纹不同
+    assert len({first["sha256"], second["sha256"], timeline.code_fingerprint(repo)["sha256"]}) == 3
+    (repo / "system/src/new.py").write_text("y = 1\n")  # 未跟踪的新文件也算
+    assert timeline.code_fingerprint(repo)["files"] == 2
+
+    probes = tmp_path / "probes"
+    probes.mkdir()
+    for args in (["init", "-q"], ["commit", "-q", "--allow-empty", "-m", "x"]):
+        subprocess.run(["git", "-C", str(probes), "-c", "user.name=t", "-c", "user.email=t", *args], check=True)
+    monkeypatch.setattr(timeline, "pi_version", lambda: "pi 1.2.0")
+    run = _run(tmp_path, {})
+    config = {"probes_repo": probes, "arms": {}, "runner": {}}
+    timeline._record_run(run, tmp_path / "c.yml", config, ["f3"], code=first)
+    timeline._record_run(run, tmp_path / "c.yml", config, ["f3"], code=first)
+    with pytest.raises(SystemExit, match="session code differs"):
+        timeline._record_run(run, tmp_path / "c.yml", config, ["f3"], code=second)
+    timeline._record_run(run, tmp_path / "c.yml", config, ["f3"], code=second, allow_code_change=True)
+    invocations = yaml.safe_load((run / "run.yml").read_text())["invocations"]
+    assert [i["allow_code_change"] for i in invocations] == [False, False, True]
+    monkeypatch.setattr(timeline, "code_fingerprint", lambda: second)
+    timeline.check_code(run, second)
+    with pytest.raises(RuntimeError, match="session code changed during the run"):
+        timeline.check_code(run, first)
+
+
 # ---------------------------------------------------------------- 复审 2026-10-19 的三条与 A4 的内容指纹
 
 
