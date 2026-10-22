@@ -50,12 +50,13 @@ def report(config: dict, timeline: tl.Timeline, run: Path, log: Path) -> list[st
         out.append(f"log {log.name}: last write {_age(time.time() - log.stat().st_mtime)} ago, {errors} ERROR lines")
         out += [f"  {line}" for line in [x for x in lines if x.split(" ", 1)[0].isupper()][-3:]]
     out.append(threads())
-    problems = tl.preflight(config, list(tl.ARMS))
+    arms = [a for a in tl.ARMS if a in config["arms"]]
+    problems = tl.preflight(config, arms)
     out.append("services: " + ("all reachable" if not problems else "; ".join(problems)))
     sessions = tl.read_jsonl(run / "sessions.jsonl", repair=False)
     total = sum(1 for s in timeline.steps if "seq" in s)
     checkpoints = tl.checkpoints(run)
-    for arm in tl.ARMS:
+    for arm in arms:
         mine = [r for r in sessions if r["arm"] == arm]
         if not mine and arm not in checkpoints:
             out.append(f"{arm}: not started")
@@ -100,7 +101,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     run = config["workdir_root"] / args.name
     if not run.exists():
         raise SystemExit(f"no run at {run}")
-    timeline = tl.load_timeline(config["probes_repo"])
+    timeline = tl.timeline_of(config)
     print(f"status at {datetime.now(UTC).isoformat(timespec='seconds')}")
     print("\n".join(report(config, timeline, run, Path(args.log) if args.log else run / "timeline.log")))
     return 0

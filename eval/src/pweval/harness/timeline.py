@@ -1,44 +1,53 @@
-"""V3 正式时间线的一次运行：建立四组的起点（种子），按题库的会话序列逐个运行写者会话，在检查点记下库的版本、
-导出快照、让读者作答。
+"""正式时间线的一次运行（f3，docs/experiments/f3/2026-10-22-f3-design.md）：建立各组的起点（种子），按题库的会话
+序列逐个运行写者会话，在检查点记下库的版本、导出快照与备份。读者不在写者时间线中作答，事后在检查点备份上离线作答
+（写读分离，V3 §7 第 9 条；f3 的 M2）。
 
-    python -m pweval.harness.timeline <运行名> [--config eval/config/formal-ltsf.yml] [--arms A3,A2,A0,A4]
-        [--until <序号>] [--neo4j A3=bolt://…,A2=…] [--reset] [--no-readers] [--allow-config-change]
+    python -m pweval.harness.timeline <运行名> [--config eval/config/f3-ltsf.yml] [--arms A3,A2]
+        [--until <序号>] [--neo4j A3=bolt://…,A2=…] [--reset] [--allow-config-change]
+
+f3 只接通了 A3、A2（M1）；A0、A4 的写者条件属 M3、M4，在此之前拒绝运行。
 
 会话序列、身份与任务文字由题库仓库（``probes_repo``）给出，各组相同（tmps/probes/writer-tasks.md）：
 
-- ``tasks/plan.yml``：70 个会话与三个检查点，按顺序；每个会话有身份、类型与任务文字；
+- ``tasks/plan-f3.yml``（配置项 ``plan``）：70 个会话与三个检查点，按顺序；每个会话有身份、类型与任务文字；
+- ``tasks/materials.yml``（配置项 ``materials``，f3 工程记录 B1）：种子来源、每个会话点出与新开放的来源、各来源的
+  内容哈希；
 - ``tasks/identities.yml``：10 个写者身份（登录身份与背景，背景接在任务之前）；
 - ``tasks/hints.yml``：任务文字中 ``{WRITE}`` 与 ``{TOOLS}`` 的逐组原文；
 - ``tasks/reader.yml``、``probes/sample.yml``：检查点上的读者与 200 道题（严格规则：金标准依赖的论文全部入库才作答）；
   另有辅助组的代码题（``manual-rendered.yml`` 中 ``group: auxiliary``），同样作答，单独存放、不进主检验；
-- ``seed/``：起点。A3、A2 由系统的命令行重放两次提交（锚点与种子论文；三张排行榜），A0 是 ``seed/a0/store``
-  的文件分两次 git 提交，A4 是 ``seed/a4/episodes.yaml`` 的 30 条记忆，经 Graphiti 的 MCP 服务逐条写入。
+- ``seed/f3/``（配置项 ``seed``，B7）：起点。A3、A2 由系统的命令行重放两次提交（锚点与种子论文；三张排行榜），A0 是
+  ``a0/store`` 的文件分两次 git 提交，A4 是 ``a4/episodes.yaml`` 的 30 条记忆，经 Graphiti 的 MCP 服务逐条写入。
 
 运行目录 ``<workdir_root>/<运行名>/``：
 
 - ``run.yml``：每次调用的时间、参数、实际生效的配置、仓库与题库的提交、pi 的版本（续跑时配置或题库变了即拒绝）；
-- ``sessions.jsonl``：每个会话一行（组、序号、类型、身份、退出码、用时、事件流与会话记录、会话前后的库版本、
-  联网的命令；A0 另记会话结束时没有提交的改动——留在工作区，下一位写者会看到，不替它提交）；
+- ``sessions.jsonl``：每个会话一行（组、序号、类型、身份、会话目录、退出码、用时、事件流与会话记录、会话前后的
+  库版本、材料清单 ``materials``（点出、新开放的来源与此时可取的来源数）、来源服务的请求统计 ``read_source``、
+  会话归档、联网的命令）；
 - ``checkpoints.yml``：各组每个检查点（0、10、20、30 篇）的库版本（A4 为 group 的指纹，见 :func:`version`）；
 - ``snapshots/<组>/k<篇数>/``：检查点的快照（:func:`snapshot`），供事后的库健康度审计与判分核对；
 - ``backups/<组>/k<篇数>/``：A3、A2 在检查点上的库备份（:func:`backup`：Neo4j 的离线 dump 与材料根目录），读者事后
   在检查点的库上作答用；
-- ``<组>/inflight.json``：正在运行的写者会话与它开始前的库版本，记账后删除（:func:`recover`）；
-- ``<组>/session-snapshots/<序号>-{before,after}-<时刻>.tar.gz``：每个写者会话（每次尝试）前后的工作目录与 ``home/``
-  （:func:`workdir_snapshot`）；
+- ``<组>/inflight.json``：正在运行的写者会话、它的会话目录与开始前的库版本，记账后删除（:func:`recover`）；
+- ``<组>/sessions/<序号>-<时刻>/``：每个写者会话（每次尝试）全新的目录：``work/``（沙箱的 ``/work``，含本次取到的
+  ``sources/``）、``home/``、事件流 ``runs/``、来源服务的请求记录 ``sources.jsonl``。后续会话不挂载它；
+- ``<组>/session-snapshots/<序号>-{after,interrupted}-<时刻>.tar.gz``：会话结束（或被中断）时的 ``work/`` 与
+  ``home/``，只供审计（:func:`archive`）；
+- ``<组>/sources/``：本组到此为止开放过的来源（论文 ``<ID>/paper.md``，代码 ``<仓库>@<commit>/``），按材料表在会话
+  开始时从语料复制并核对哈希，是 A3、A2 的 MCP 服务的只读来源目录（``PAPERWEAVE_SOURCES``）；
 - ``answers/<组>/k<篇数>.jsonl``：检查点上读者的回答，一题一行（题号、题面原文、回答原文、库版本、事件流与会话记录、
   用时、token、工具调用、联网命令）。运行时不判分，全部运行结束后按题号对回冻结的金标准统一判分；
-- ``<组>/``：A3、A2 的材料根目录 ``data/``（论文副本与产物文档）；A0 的共享仓库 ``repo/``；各组的论文副本与
-  代码副本；``writers/<身份>/``：写者的沙箱目录（:mod:`pweval.harness.sandbox`）。
+- ``<组>/``：A3、A2 的材料根目录 ``data/``（产物文档）；A0 的共享仓库 ``repo/``。
 
-论文副本起初没有三篇论文的新版本，版本更新的会话开始前才放进去；代码副本同样（新版本对应的固定 commit）。
+写者的沙箱断网（V3 §7 第 5 条），不挂载论文与代码（f3 §2）：材料只经来源服务 ``read_source`` 按来源 ID 取得，任务
+文字末尾接环境说明（``ENV_NOTE``）与写者的来源说明（``WRITER_NOTE``）。
 
-写者的沙箱断网（V3 §7 第 5 条）：大模型服务与 A4 的 Graphiti 经转发进入，任务文字末尾接环境说明（``ENV_NOTE``）。
+各组的存储互不相干，组内按序号逐个运行（写者轮流写），各组同时运行。
 
-各组的存储互不相干，组内按序号逐个运行（写者轮流写；到检查点时写者暂停，读者答完再继续），各组同时运行。
-
-中断后用同一个运行名重跑：已记账的会话、已导出的快照、已答的题跳过；中断时正在运行的会话，库没变就重跑，变了就
-按中断记账、不重跑；检查点上还有工作（快照、备份、读者）时先核对库仍在检查点版本。评测代码不导入被测系统：A3、A2
+中断（只指运行框架或基础设施退出，B4）后用同一个运行名重跑：已记账的会话、已导出的快照与备份跳过；中断时正在
+运行的会话，库没变就在全新目录中重跑（被中断那次归档），变了就按中断记账、不重跑；写者自己的超时、调用上限与报错
+照实记账，不重跑。检查点上还有工作（快照、备份）时先核对库仍在检查点版本。评测代码不导入被测系统：A3、A2
 的库只经命令行、MCP 与 Cypher 读取接触，A4 的库经 Graphiti 的 MCP 服务与 Cypher 读取接触；检查点备份另经 docker
 停启图库的容器、用同一镜像的 ``neo4j-admin`` 离线 dump。
 """
@@ -74,11 +83,25 @@ import yaml
 from ..paths import EVAL, REPO
 from . import export
 from .mcp_client import HttpClient
-from .sandbox import ENV_NOTE, GRAPH, Arm, Paths, Writer, pi_version, prepare, run_session, site_record
+from .sandbox import (
+    ENV_NOTE,
+    GRAPH,
+    WRITER_NOTE,
+    Arm,
+    Paths,
+    ReadSource,
+    Writer,
+    pi_version,
+    prepare,
+    run_session,
+    site_record,
+)
+from .source_server import tree_sha256
 
-CONFIG = EVAL / "config/formal-ltsf.yml"
+CONFIG = EVAL / "config/f3-ltsf.yml"
 A0_KIT = EVAL / "baselines/a0"  # A0 的约定（AGENTS.md）与模板，内容与 A3 的工具说明、空白模板对等
 ARMS = ("A3", "A2", "A0", "A4")
+F3_ARMS = ("A3", "A2")  # f3 已接通的组；A0、A4 属 M3、M4
 PROTECTED = {7687, 7688}  # 不清空的图库端口
 SEED_USER = "seed"
 SEED_MESSAGES = (  # 与 seed/README.md 相同，各组一致
@@ -132,27 +155,47 @@ class Timeline:
     reader: dict[str, Any]  # tasks/reader.yml：读者的登录身份、提示语、种子中的论文
     probes: list[dict[str, Any]]  # probes/sample.yml 的 200 题，题面与金标准取自 auto.yml、manual-rendered.yml
     aux: list[dict[str, Any]] = field(default_factory=list)  # 辅助组的代码题（T16–T18），单独报告
+    materials: dict[str, Any] = field(default_factory=dict)  # tasks/materials.yml（f3）：seed、sessions、sources
+
+    def opens(self, seq: int) -> list[str]:
+        """会话 ``seq`` 开始时新开放的来源。"""
+        return next((list(r.get("opens", [])) for r in self.materials["sessions"] if r["seq"] == seq), [])
+
+    def named(self, seq: int) -> list[str]:
+        """会话 ``seq`` 的任务文字点出的来源。"""
+        return next((list(r.get("named", [])) for r in self.materials["sessions"] if r["seq"] == seq), [])
+
+    def opened_through(self, seq: int) -> list[str]:
+        """会话 ``seq`` 开始时可取的来源：种子，加上序号不大于它的会话新开放的来源（开放后一直可读）。"""
+        out = list(self.materials["seed"])
+        for row in self.materials["sessions"]:
+            if row["seq"] <= seq:
+                out += [s for s in row.get("opens", []) if s not in out]
+        return out
 
     def group(self, name: str) -> list[dict[str, Any]]:
         return self.aux if name == "aux" else self.probes
-
-    @property
-    def later_versions(self) -> dict[str, str]:
-        """版本更新会话带来的新版本 → 它所替换的早期版本。"""
-        return {s["paper"]: s["from"] for s in self.steps if s.get("type") == "update"}
 
 
 def load_config(path: Path) -> dict[str, Any]:
     config = yaml.safe_load(path.read_text(encoding="utf-8"))
     for key in ("probes_repo", "corpus_papers", "code", "workdir_root"):
         config[key] = Path(config[key]).expanduser()
+    for key in ("plan", "materials", "seed"):  # 题库中的位置（f3）
+        if key not in config:
+            raise SystemExit(f"{path}: {key} is not configured (the runner since f3 needs plan, materials and seed)")
     if log := config["arms"].get("A4", {}).get("graphiti_log"):
         config["arms"]["A4"]["graphiti_log"] = Path(log).expanduser()
     return config
 
 
-def load_timeline(probes: Path) -> Timeline:
-    steps = yaml.safe_load((probes / "tasks/plan.yml").read_text(encoding="utf-8"))
+def timeline_of(config: dict[str, Any]) -> Timeline:
+    """配置所指的会话序列与材料表。"""
+    return load_timeline(config["probes_repo"], config["plan"], config["materials"])
+
+
+def load_timeline(probes: Path, plan: str = "tasks/plan.yml", materials: str | None = None) -> Timeline:
+    steps = yaml.safe_load((probes / plan).read_text(encoding="utf-8"))
     identities = {i["id"]: i for i in yaml.safe_load((probes / "tasks/identities.yml").read_text(encoding="utf-8"))}
     hints = yaml.safe_load((probes / "tasks/hints.yml").read_text(encoding="utf-8"))
     reader = yaml.safe_load((probes / "tasks/reader.yml").read_text(encoding="utf-8"))
@@ -161,7 +204,8 @@ def load_timeline(probes: Path) -> Timeline:
         pool |= {p["id"]: p for p in yaml.safe_load((probes / "probes" / name).read_text(encoding="utf-8"))}
     sample = yaml.safe_load((probes / "probes/sample.yml").read_text(encoding="utf-8"))
     aux = [p for p in pool.values() if p.get("group") == "auxiliary"]
-    return Timeline(steps, identities, hints, reader, [pool[p["id"]] for p in sample], aux)
+    table = yaml.safe_load((probes / materials).read_text(encoding="utf-8")) if materials else {}
+    return Timeline(steps, identities, hints, reader, [pool[p["id"]] for p in sample], aux, table)
 
 
 def papers_at(timeline: Timeline, papers: int) -> set[str]:
@@ -186,13 +230,15 @@ def reader_prompt(timeline: Timeline, arm: str, probe: dict[str, Any]) -> str:
 
 
 def prompt(timeline: Timeline, arm: str, step: dict[str, Any]) -> str:
-    """身份背景 + 任务文字（``{WRITE}`` 按会话的产物类型、``{TOOLS}`` 按组替换）+ 环境说明（V3 §7 第 5 条，各组相同）。"""
+    """身份背景 + 任务文字（``{WRITE}`` 按会话的产物类型、``{TOOLS}`` 按组替换）+ 环境说明（V3 §7 第 5 条）+ 写者的
+    来源说明（f3 B2），后两者各组相同。"""
     hint = timeline.hints[arm.lower()]
     task = step["task"].replace("{WRITE}", hint["WRITE"].format(type=step.get("writes", "")))
     task = task.replace("{TOOLS}", hint["TOOLS"])
     if "{" in task:
         raise ValueError(f"unfilled placeholder in session {step['seq']}: {task}")
-    return f"{timeline.identities[step['identity']]['background'].strip()}\n\n{task.strip()}\n\n{ENV_NOTE}\n"
+    background = timeline.identities[step["identity"]]["background"].strip()
+    return f"{background}\n\n{task.strip()}\n\n{ENV_NOTE}\n{WRITER_NOTE}\n"
 
 
 def writer_of(config: dict[str, Any], identity: dict[str, Any]) -> Writer:
@@ -207,60 +253,46 @@ def arm_dir(run: Path, arm: str) -> Path:
     return run / arm
 
 
-def papers_of(run: Path, arm: str) -> Path:
-    """组的论文副本：A3、A2 在材料根目录下（MCP 服务与写者看到同一份），其余组单独一份。"""
-    return arm_dir(run, arm) / ("data/papers" if arm in GRAPH else "papers")
+def sources_dir(run: Path, arm: str) -> Path:
+    """组的已开放来源：A3、A2 的 MCP 服务的只读来源目录（``PAPERWEAVE_SOURCES``）。"""
+    return arm_dir(run, arm) / "sources"
 
 
-def copy_papers(config: dict[str, Any], target: Path, arxivs: list[str]) -> None:
-    target.mkdir(parents=True, exist_ok=True)
-    for arxiv in arxivs:
-        if not (target / arxiv).exists():
-            shutil.copytree(config["corpus_papers"] / arxiv, target / arxiv)
-
-
-def code_rows(source: Path) -> tuple[str, list[tuple[str, set[str], str]]]:
-    """code/README.md 拆成表头与各行：(目录名, 对应的论文版本, 原行)。"""
-    head, rows = [], []
-    for line in (source / "README.md").read_text(encoding="utf-8").splitlines():
-        cells = [c.strip() for c in line.strip("|").split("|")]
-        if line.startswith("| ") and cells[0].endswith("/") and "@" in cells[0]:
-            rows.append((cells[0].rstrip("/"), {v.strip() for v in cells[-1].split(",")}, line))
+def open_sources(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, ids: list[str]) -> list[str]:
+    """把来源 ``ids`` 从语料复制进组的来源目录（已有的跳过），按材料表核对内容哈希，返回这次新放进去的。先复制到
+    ``<ID>.partial`` 再改名：目录存在即完整。"""
+    added = []
+    for source in ids:
+        target = sources_dir(run, arm) / source
+        if target.exists():
+            continue
+        code = "@" in source
+        origin = config["code"] / source if code else config["corpus_papers"] / source / "paper.md"
+        expected = timeline.materials["sources"][source]["sha256"]
+        actual = tree_sha256(origin) if code else _sha256(origin)
+        if actual != expected:
+            raise RuntimeError(f"{source}: the corpus copy does not match materials.yml ({actual} != {expected})")
+        partial = target.with_name(target.name + ".partial")
+        shutil.rmtree(partial, ignore_errors=True)
+        if code:
+            shutil.copytree(origin, partial)
         else:
-            head.append(line)
-    return "\n".join(head) + "\n", rows
-
-
-def sync_code(config: dict[str, Any], target: Path, hidden: set[str]) -> None:
-    """组的代码副本：只对应 ``hidden`` 中论文版本的仓库先不放（版本更新时再放），README 只列放进来的。"""
-    head, rows = code_rows(config["code"])
-    shown = [(name, line) for name, versions, line in rows if not versions <= hidden]
-    target.mkdir(parents=True, exist_ok=True)
-    for name, _ in shown:
-        if not (target / name).exists():
-            shutil.copytree(config["code"] / name, target / name)
-    (target / "README.md").write_text(head + "\n".join(line for _, line in shown) + "\n", encoding="utf-8")
-
-
-def bring_version(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, new: str) -> None:
-    """版本更新会话之前：新版本的论文与代码此刻才出现在组的副本中。"""
-    copy_papers(config, papers_of(run, arm), [new])
-    done = {s["paper"] for s in timeline.steps if s.get("type") == "update" and _recorded(run, arm, s["seq"])}
-    sync_code(config, arm_dir(run, arm) / "code", set(timeline.later_versions) - done - {new})
+            partial.mkdir(parents=True)
+            shutil.copyfile(origin, partial / "paper.md")
+        partial.rename(target)
+        added.append(source)
+    return added
 
 
 # ---------------------------------------------------------------- 起点
 
 
 def setup(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, *, reset: bool) -> None:
-    """组的起点：论文与代码副本，以及种子。已记录检查点 0 的组不再建立。"""
+    """组的起点：种子来源开放，种子入库。已记录检查点 0 的组不再建立。"""
     if any(a == arm for a, _ in _done(run)):  # 检查点 0 没有记录却已有会话：记录有误，不能重建（--reset 会清库）
         raise SystemExit(f"{arm}: sessions are recorded in {run} but checkpoint 0 is not; refusing to rebuild the start")
-    later = set(timeline.later_versions)
-    initial = sorted(p.name for p in config["corpus_papers"].iterdir() if p.is_dir() and p.name not in later)
-    copy_papers(config, papers_of(run, arm), initial)
-    sync_code(config, arm_dir(run, arm) / "code", later)
-    seed = config["probes_repo"] / "seed"
+    open_sources(config, timeline, run, arm, list(timeline.materials["seed"]))
+    seed = config["probes_repo"] / config["seed"]
     if arm in GRAPH:
         _seed_graph(config, run, arm, seed, reset=reset)
     elif arm == "A0":
@@ -275,6 +307,7 @@ def _system_env(config: dict[str, Any], run: Path, arm: str) -> dict[str, str]:
         "HOME": str(Path.home()),
         "PAPERWEAVE_NEO4J_URI": config["arms"][arm]["neo4j"],
         "PAPERWEAVE_DATA": str(arm_dir(run, arm) / "data"),
+        "PAPERWEAVE_SOURCES": str(sources_dir(run, arm)),
     }
 
 
@@ -375,18 +408,20 @@ def settle(config: dict[str, Any], limit_s: int = 3600) -> None:
 # ---------------------------------------------------------------- 会话
 
 
-def sandbox_arm(config: dict[str, Any], run: Path, arm: str) -> Arm:
-    """写者的沙箱，断网（V3 §7 第 5 条）：大模型服务经转发；A3、A2 的 MCP 服务本来就经 socket；A4 的 Graphiti 经转发。"""
+def sandbox_arm(config: dict[str, Any], run: Path, arm: str, opened: list[str] | None = None, session: str = "") -> Arm:
+    """写者的沙箱，断网（V3 §7 第 5 条）：大模型服务经转发；A3、A2 的 MCP 服务本来就经 socket；A4 的 Graphiti 经转发。
+    不挂载论文与代码；``opened`` 是本会话可取的来源，经来源服务取得（f3 §2、§4）。"""
     spec = config["arms"][arm]
-    papers, code, llm = papers_of(run, arm), arm_dir(run, arm) / "code", spec["llm"]
+    llm = spec["llm"]
+    read = ReadSource(config["corpus_papers"], config["code"], tuple(opened or ()), session)
     if arm in GRAPH:
         data = arm_dir(run, arm) / "data"
-        return Arm(arm, papers, code=code, neo4j=spec["neo4j"], data=data, ablate=tuple(spec.get("ablate") or ()),
-                   isolated_llm=llm)  # fmt: skip
+        return Arm(arm, None, neo4j=spec["neo4j"], data=data, ablate=tuple(spec.get("ablate") or ()), isolated_llm=llm,
+                   sources=sources_dir(run, arm), read_source=read)  # fmt: skip
     if arm == "A0":
-        return Arm("A0", papers, code=code, store=arm_dir(run, "A0") / "repo", isolated_llm=llm)
+        return Arm("A0", None, store=arm_dir(run, "A0") / "repo", isolated_llm=llm, read_source=read)
     graphiti = urlsplit(spec["graphiti"])
-    return Arm("A4", papers, code=code, graphiti=spec["graphiti"], isolated_llm=llm,
+    return Arm("A4", None, graphiti=spec["graphiti"], isolated_llm=llm, read_source=read,
                isolated_tcp=(f"{graphiti.hostname}:{graphiti.port}",))  # fmt: skip
 
 
@@ -438,12 +473,22 @@ def _a0_worktree(run: Path) -> str:
     return f"index={staged} worktree={worktree}"
 
 
+def session_paths(run: Path, arm: str, seq: int) -> Paths:
+    """一次会话（每次尝试）全新的目录 ``<组>/sessions/<序号>-<时刻>/``（f3 §2.1：不继承私人状态）。"""
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    root = arm_dir(run, arm) / "sessions" / f"{seq:03d}-{stamp}"
+    if root.exists():
+        raise FileExistsError(f"refusing to reuse a session directory: {root}")
+    return Paths(root)
+
+
 def session(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, step: dict[str, Any]) -> dict[str, Any]:
-    """一个写者会话。开始前把序号与库版本写进 ``<组>/inflight.json``（原子替换），会话记入 ``sessions.jsonl``
-    之后才删掉；中断后续跑时据此判断这个会话是否已经改了库（:func:`recover`）。"""
+    """一个写者会话，在全新的工作目录与 home 中。开始前把序号、会话目录与库版本写进 ``<组>/inflight.json``（原子
+    替换），会话记入 ``sessions.jsonl`` 之后才删掉；中断后续跑时据此判断这个会话是否已经改了库（:func:`recover`）。"""
     writer = writer_of(config, timeline.identities[step["identity"]])
-    box = sandbox_arm(config, run, arm)
-    paths = Paths(arm_dir(run, arm) / "writers" / writer.id)
+    paths = session_paths(run, arm, step["seq"])
+    opened = timeline.opened_through(step["seq"])
+    box = sandbox_arm(config, run, arm, opened, f"{arm}-{step['seq']:03d}")
     runner = config["runner"]
     prepare(
         paths,
@@ -457,24 +502,26 @@ def session(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, ste
         max_tokens=runner.get("max_output_tokens"),
     )
     before = version(config, run, arm)  # A4：前一个会话写入的记忆处理完，这个写者才开始
-    inflight = {"seq": step["seq"], "started": datetime.now(UTC).isoformat(timespec="seconds"),
-                "started_epoch": time.time(), "version_before": before,
-                "workdir_before": workdir_snapshot(run, arm, step["seq"], paths, "before")}  # fmt: skip
+    inflight = {"seq": step["seq"], "root": str(paths.root.relative_to(run)),
+                "started": datetime.now(UTC).isoformat(timespec="seconds"), "started_epoch": time.time(),
+                "version_before": before}  # fmt: skip
     if arm == "A0":
         inflight["worktree_before"] = _a0_worktree(run)
     _write_atomic(_inflight(run, arm), json.dumps(inflight, ensure_ascii=False))
     result = run_session(paths, box, writer, prompt(timeline, arm, step), timeout_s=runner["session_timeout_min"] * 60)
-    return _session_record(config, run, arm, step, writer, paths, inflight, result)
+    return _session_record(config, timeline, run, arm, step, writer, paths, inflight, result)
 
 
-def _session_record(config: dict[str, Any], run: Path, arm: str, step: dict[str, Any], writer: Writer, paths: Paths,
-                    inflight: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:  # fmt: skip
+def _session_record(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, step: dict[str, Any],
+                    writer: Writer, paths: Paths, inflight: dict[str, Any], result: dict[str, Any], *,
+                    archived_as: str = "after") -> dict[str, Any]:  # fmt: skip
     events = paths.root / result["events"] if result["events"] else None
     record = {
         "arm": arm,
         "seq": step["seq"],
         "type": step["type"],
         "identity": writer.id,
+        "root": str(paths.root.relative_to(run)),
         "started": inflight["started"],
         **result,
         "events": str(events.relative_to(run)) if events else None,
@@ -482,22 +529,38 @@ def _session_record(config: dict[str, Any], run: Path, arm: str, step: dict[str,
         "llm": config["arms"][arm]["llm"],
         "version_before": inflight["version_before"],
         "version_after": version(config, run, arm),
-        "workdir_before": inflight.get("workdir_before"),
-        "workdir_after": workdir_snapshot(run, arm, step["seq"], paths, "after"),
+        "materials": materials_record(timeline, step["seq"]),
+        "read_source": read_source_record(paths),
+        "archive": archive(run, arm, step["seq"], paths, archived_as),
         "network": network_calls(events) if events else [],
     }
     if arm == "A0":
-        record["uncommitted"] = _a0_status(run)  # 留在工作区，下一位写者会看到，不替它提交
+        record["uncommitted"] = _a0_status(run)
         record["worktree"] = _a0_worktree(run)
     return record
 
 
-def workdir_snapshot(run: Path, arm: str, seq: int, paths: Paths, when: str) -> dict[str, str]:
-    """V3 §7 第 7 条：写者会话前（``before``）或后（``after``）的工作目录（A0 为共享仓库，含 ``.git``）与 ``home/``
-    （pi 的配置与会话记录）存成 ``<组>/session-snapshots/<序号>-<when>-<时刻>.tar.gz``，连同库的版本，可以恢复到
-    任意会话之前。论文与代码是只读挂载，宿主机上的挂载点是空目录，不占空间。
+def materials_record(timeline: Timeline, seq: int) -> dict[str, Any]:
+    """会话的材料清单（f3 §7）：任务点出的来源、本会话新开放的来源、此时可取的来源数。"""
+    return {"named": timeline.named(seq), "opens": timeline.opens(seq), "available": len(timeline.opened_through(seq))}
 
-    文件名带时刻，从不覆盖：中断后重跑的会话有两个起点，被中断的那次记在 ``rerun_after_interruption`` 中，两份都留着。"""
+
+def read_source_record(paths: Paths) -> dict[str, Any]:
+    """来源服务的请求统计（逐次的记录在会话目录的 ``sources.jsonl``）：各结果的次数、取到的来源、拷贝的字节数。"""
+    rows = read_jsonl(paths.root / "sources.jsonl", repair=False)
+    outcomes: dict[str, int] = {}
+    for r in rows:
+        outcomes[r["outcome"]] = outcomes.get(r["outcome"], 0) + 1
+    fetched = sorted({r["resolved"] for r in rows if r.get("resolved")})
+    return {"requests": len(rows), "outcomes": outcomes, "fetched": fetched,
+            "bytes": sum(int(r.get("bytes") or 0) for r in rows)}  # fmt: skip
+
+
+def archive(run: Path, arm: str, seq: int, paths: Paths, when: str) -> dict[str, str]:
+    """会话结束（``after``）或被中断（``interrupted``）时的工作目录（含 ``sources/``；A0 为共享仓库，含 ``.git``）与
+    ``home/``，存成 ``<组>/session-snapshots/<序号>-<when>-<时刻>.tar.gz``，只供审计，不挂给后续会话（f3 B4）。
+
+    文件名带时刻，从不覆盖：中断后重跑的会话有两份归档，被中断那次的记在 ``rerun_after_interruption`` 中。"""
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     out = arm_dir(run, arm) / "session-snapshots" / f"{seq:03d}-{when}-{stamp}.tar.gz"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -513,33 +576,41 @@ def workdir_snapshot(run: Path, arm: str, seq: int, paths: Paths, when: str) -> 
     return {"path": str(out.relative_to(run)), "sha256": hashlib.sha256(out.read_bytes()).hexdigest()}
 
 
-def recover(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, step: dict[str, Any],
-            inflight: dict[str, Any]) -> dict[str, Any] | None:  # fmt: skip
-    """运行框架在会话中途或记账之前退出后，续跑到这个会话时：库没有变（A0 的工作区内容也没有变）就返回 ``None``，
-    照常重跑（基础设施中断）；库变了就不重跑——同一任务在已改变的库上再做一次会留下重复的贡献——把这次会话按
-    ``exit: interrupted`` 照实记账，事件流与会话记录有多少记多少。
-
-    重跑不恢复工作目录与 ``home/``：写者从被中断的那次留下的状态（如未提交的草稿）接着开始，不是从原起点重跑。
-    记录中写明（``rerun_inherits_workdir``），两次尝试的起点快照都保留（:func:`workdir_snapshot`）。"""
-    unchanged = version(config, run, arm) == inflight["version_before"]
-    if arm == "A0":
-        unchanged = unchanged and _a0_worktree(run) == inflight["worktree_before"]
-    if unchanged:
-        return None
-    writer = writer_of(config, timeline.identities[step["identity"]])
-    paths = Paths(arm_dir(run, arm) / "writers" / writer.id)
-    since = inflight["started_epoch"]
+def _interrupted_result(paths: Paths, since: float) -> dict[str, Any]:
+    """被中断那次留下的事件流与会话记录，有多少记多少。"""
     runs = sorted((p for p in (paths.root / "runs").glob("*.jsonl") if p.stat().st_mtime >= since),
                   key=lambda p: p.stat().st_mtime)  # fmt: skip
     sessions = sorted(p for p in (paths.home / "sessions").rglob("*.jsonl") if p.stat().st_mtime >= since)
-    result = {
+    return {
         "exit": "interrupted",
         "seconds": None,
         "events": str(runs[-1].relative_to(paths.root)) if runs else None,
         "session": [str(p.relative_to(paths.root)) for p in sessions],
         "tool_kills": [],
     }
-    return {**_session_record(config, run, arm, step, writer, paths, inflight, result), "recovered": True}
+
+
+def recover(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, step: dict[str, Any],
+            inflight: dict[str, Any]) -> dict[str, Any]:  # fmt: skip
+    """运行框架或基础设施在会话中途或记账之前退出后，续跑到这个会话时（f3 B4）：
+
+    - 库没有变：返回 ``{"rerun": 被中断那次}``，调用者在全新目录中重跑；被中断那次的目录照样归档
+      （``interrupted``），记在重跑记录的 ``rerun_after_interruption`` 中，重跑不继承它的任何文件；
+    - 库变了：不重跑——同一任务在已改变的库上再做一次会留下重复的贡献——把这次会话按 ``exit: interrupted`` 照实
+      记账（``recovered``），事件流与会话记录有多少记多少，目录归档为 ``interrupted``。
+
+    A3、A2 看库版本，A4 看内容指纹（:func:`version`）。"""
+    unchanged = version(config, run, arm) == inflight["version_before"]
+    if arm == "A0":
+        unchanged = unchanged and _a0_worktree(run) == inflight["worktree_before"]
+    writer = writer_of(config, timeline.identities[step["identity"]])
+    paths = Paths(run / inflight["root"])
+    if unchanged:
+        return {"rerun": {**inflight, "archive": archive(run, arm, step["seq"], paths, "interrupted")}}
+    result = _interrupted_result(paths, inflight["started_epoch"])
+    record = _session_record(config, timeline, run, arm, step, writer, paths, inflight, result,
+                             archived_as="interrupted")  # fmt: skip
+    return {"record": {**record, "recovered": True}}
 
 
 def network_calls(events: Path) -> list[str]:
@@ -1043,7 +1114,8 @@ def emit(kind: str, arm: str, **fields: Any) -> None:
 
 
 def run_arm(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, until: int | None, reset: bool,
-            with_readers: bool = True) -> None:  # fmt: skip
+            with_readers: bool = False) -> None:  # fmt: skip
+    """一组的写者时间线。``with_readers`` 留给 f3 之前的检查点读者；f3 的读者在备份上离线作答（M2），不经这里。"""
     if 0 not in (checkpoints(run).get(arm) or {}):
         setup(config, timeline, run, arm, reset=reset)
         checkpoint(config, run, arm, 0)
@@ -1080,19 +1152,15 @@ def run_arm(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, unt
             return
         if (arm, step["seq"]) in done:
             continue
-        if step["type"] == "update":
-            bring_version(config, timeline, run, arm, step["paper"])
-        record = None
+        open_sources(config, timeline, run, arm, timeline.opened_through(step["seq"]))  # 会话开始时开放（f3 §3.2）
+        record, rerun_of = None, None
         if inflight and inflight["seq"] == step["seq"]:
-            record = recover(config, timeline, run, arm, step, inflight)
-            rerun_of, inflight = (inflight if record is None else None), None
-        else:
-            rerun_of = None
+            outcome = recover(config, timeline, run, arm, step, inflight)
+            record, rerun_of, inflight = outcome.get("record"), outcome.get("rerun"), None
         if record is None:
             record = session(config, timeline, run, arm, step)
             if rerun_of:
                 record["rerun_after_interruption"] = rerun_of
-                record["rerun_inherits_workdir"] = True  # 重跑接着被中断那次留下的工作目录（见 recover）
         _append(run, record)
         _inflight(run, arm).unlink(missing_ok=True)
         done.add((arm, step["seq"]))
@@ -1107,12 +1175,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("name", help="运行名")
     parser.add_argument("--config", default=str(CONFIG))
-    parser.add_argument("--arms", default=",".join(ARMS))
+    parser.add_argument("--arms", default=",".join(F3_ARMS))
     parser.add_argument("--until", type=int, help="只跑到这个序号（试跑）")
     parser.add_argument("--neo4j", help="覆盖图库地址，如 A3=bolt://localhost:7695（A4 为 Graphiti 的库）")
     parser.add_argument("--reset", action="store_true",
                         help="起点建立前库不空时清空（A3、A2 清整个图库，A4 清配置中的 group）；已有会话记录的组拒绝重建")
-    parser.add_argument("--no-readers", action="store_true", help="检查点上不运行读者（试跑）")
     parser.add_argument("--allow-config-change", action="store_true",
                         help="续跑时允许生效的配置或题库提交与第一次调用不同（改动记入 run.yml）")
     args = parser.parse_args(argv)
@@ -1124,13 +1191,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     arms = args.arms.split(",")
     if unknown := set(arms) - set(ARMS):
         raise SystemExit(f"unknown arms: {sorted(unknown)}")
+    if pending := [a for a in arms if a not in F3_ARMS]:
+        raise SystemExit(f"{','.join(pending)}: the f3 writer conditions are not implemented for these arms yet (M3, M4)")
     if problems := preflight(config, arms):
         raise SystemExit("services are not reachable:\n" + "\n".join(problems))
     run = config["workdir_root"] / args.name
     run.mkdir(parents=True, exist_ok=True)
     _record_run(run, config_path, config, list(argv) if argv is not None else sys.argv[1:],
                 allow_change=args.allow_config_change)
-    timeline = load_timeline(config["probes_repo"])
+    timeline = timeline_of(config)
     emit("RUN", "-", name=args.name, arms=",".join(arms), pid=os.getpid())
 
     def guarded(arm: str) -> bool:  # 一组出错只停这一组，其他组照常跑完
@@ -1139,7 +1208,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if not mine:
                     emit("ERROR", arm, error="another process is running this arm; not started")
                     return False
-                run_arm(config, timeline, run, arm, args.until, args.reset, not args.no_readers)
+                run_arm(config, timeline, run, arm, args.until, args.reset)
             return True
         except BaseException as exc:
             emit("ERROR", arm, error=f"{type(exc).__name__}: {exc}"[:500])

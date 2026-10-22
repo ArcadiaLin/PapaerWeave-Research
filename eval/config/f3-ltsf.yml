@@ -1,0 +1,44 @@
+# f3 正式时间线（pweval.harness.timeline；docs/experiments/f3/2026-10-22-f3-design.md）：30 篇长期预测论文、
+# 10 个写者身份、70 个会话。与 formal-ltsf.yml（f1、f2）的不同只在材料：写者不挂载论文与代码，按材料表经来源服务
+# read_source 取得；任务表与种子换成 f3 的版本。服务、模型与预算不变。
+
+probes_repo: ~/pw-lab/probes          # tasks/identities.yml、tasks/hints.yml 与下面三项
+plan: tasks/plan-f3.yml               # 任务表（B2：由冻结的 plan.yml 改写来源说明）
+materials: tasks/materials.yml        # 材料表（B1）：种子来源、每个会话点出与新开放的来源、内容哈希
+seed: seed/f3                         # 种子（B7：anchor 与引用换成来源 ID）
+corpus_papers: ~/pw-lab/data/formal/papers   # 来源服务的论文库（<来源 ID>/paper.md）；只读，不进沙箱
+code: ~/pw-lab/code                   # 来源服务的代码库（<仓库>@<commit>/）；只读，不进沙箱
+workdir_root: ~/pw-lab/runs           # 运行目录 <workdir_root>/<运行名>/
+
+# 各组：图库、大模型服务（D16：A3 与 A0 用 30000，A2 与 A4 用 30001）。
+arms:
+  A3:
+    neo4j: bolt://localhost:7696
+    neo4j_container: neo4j-a3                    # 检查点上停下它做离线 dump（timeline.backup）；不能是 --rm 起的容器
+    llm: http://192.168.163.112:30000/v1
+  A2:
+    neo4j: bolt://localhost:7697
+    neo4j_container: neo4j-a2
+    llm: http://192.168.163.112:30001/v1
+    ablate: [dedup, revision, stale, affected]   # 同 schema 的裸图：四项机制全关
+  A0:
+    llm: http://192.168.163.112:30000/v1
+  A4:
+    graphiti: http://127.0.0.1:8765/mcp/
+    neo4j: bolt://localhost:7698               # Graphiti 的库（eval/baselines/a4/config.yaml）：只用 Cypher 读版本指纹与快照、清空 group
+    graphiti_log: ~/pw-lab/runs/graphiti.log   # Graphiti 服务的日志：安静 settle_quiet_s 秒即视为处理完排队的记忆
+    group_id: formal
+    llm: http://192.168.163.112:30001/v1
+
+runner:
+  agent: pi                  # 默认配置：自带系统提示与内置工具
+  model: sglang/qwen3.8-27b
+  thinking: medium           # pi 的默认思考级别（V3 先导未改）
+  context_window: 262144     # D14：sglang 实际支持的上下文
+  reserve_tokens: 32768      # D15：压缩时预留，摘要上限 0.8 倍
+  max_output_tokens: 98304   # 单次回复的输出上限，所有组统一（V3 §7 第 4 条；宿主机为 32768，f1 中 A4 有 3 个写者会话撞上）
+  http_idle_timeout_ms: null # pi 默认
+  session_timeout_min: 40    # 写者会话（V3 先导 2400 秒）
+  probe_timeout_min: 15      # 读者会话（V3 先导 900 秒）
+  settle_quiet_s: 60
+  reader_workers: 4          # f3 的读者离线作答（M2），这一项不经写者时间线使用

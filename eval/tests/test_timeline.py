@@ -16,7 +16,7 @@ import pytest
 import yaml
 
 from pweval.harness import timeline
-from pweval.harness.sandbox import ENV_NOTE, Paths
+from pweval.harness.sandbox import ENV_NOTE, WRITER_NOTE, Paths
 from pweval.harness.timeline import Timeline
 
 HINTS = {
@@ -32,7 +32,7 @@ def test_prompt_fills_the_arm_hints_after_the_background() -> None:
     step = {"seq": 5, "identity": "i3-a", "type": "compare", "writes": "CompareSettings",
             "task": "Are they comparable? {WRITE} {TOOLS}"}  # fmt: skip
     tl = Timeline([step], IDENTITIES, HINTS, READER, [])
-    note = f"\n\n{ENV_NOTE}\n"  # 环境说明接在任务文字之后（V3 §7 第 5 条），各组相同
+    note = f"\n\n{ENV_NOTE}\n{WRITER_NOTE}\n"  # 环境说明（V3 §7 第 5 条）与写者的来源说明（f3 B2），各组相同
     assert timeline.prompt(tl, "A3", step) == (
         "You maintain a benchmark.\n\nAre they comparable? Record it as a CompareSettings artifact. "
         "Use the PaperWeave tools." + note
@@ -51,11 +51,15 @@ CONFIG = {"arms": {"A3": {"neo4j": "bolt://x", "llm": "http://192.0.2.1:30000/v1
 
 
 def test_every_writer_sandbox_is_cut_off_from_the_network(tmp_path: Path) -> None:
+    config = {**CONFIG, "corpus_papers": tmp_path / "papers", "code": tmp_path / "code"}
     for arm in timeline.ARMS:
-        box = timeline.sandbox_arm(CONFIG, tmp_path, arm)
+        box = timeline.sandbox_arm(config, tmp_path, arm, ["s1v1"], "x")
         assert box.isolated_llm == CONFIG["arms"][arm]["llm"]  # 只经转发连本组的大模型服务（V3 §7 第 5 条）
         assert box.isolated_tcp == (("127.0.0.1:8765",) if arm == "A4" else ())  # A4 另转发 Graphiti
-    assert timeline.sandbox_arm(CONFIG, tmp_path, "A2").ablate == ("dedup",)
+        assert box.papers is None and box.code is None  # f3 §2：不挂载论文与代码
+        assert box.read_source is not None and box.read_source.opened == ("s1v1",)  # 四组接法相同
+    assert timeline.sandbox_arm(config, tmp_path, "A3").sources == tmp_path / "A3/sources"
+    assert timeline.sandbox_arm(config, tmp_path, "A2").ablate == ("dedup",)
 
 
 def test_graph_readers_read_papers_only_through_recorded_anchors(tmp_path: Path) -> None:
@@ -64,48 +68,68 @@ def test_graph_readers_read_papers_only_through_recorded_anchors(tmp_path: Path)
         assert box.read_only and box.evidence_scope == "anchored" and box.papers is None
 
 
-def test_a_writer_session_is_archived_before_and_after(tmp_path: Path) -> None:
-    paths = Paths(tmp_path / "A3/writers/w")
-    (paths.work / "draft.yaml").parent.mkdir(parents=True)
+def test_a_writer_session_is_archived_after_it_ends(tmp_path: Path) -> None:
+    paths = Paths(tmp_path / "A3/sessions/007-x")
+    (paths.work / "sources/2106.13008v5").mkdir(parents=True)
+    (paths.work / "sources/2106.13008v5/paper.md").write_text("# p\n")
     (paths.work / "draft.yaml").write_text("graph-doc: 1\n")
-    (paths.work / "papers").mkdir()  # 只读挂载的挂载点：宿主机上是空目录
     (paths.home / "sessions").mkdir(parents=True)
     (paths.home / "sessions/s.jsonl").write_text("{}\n")
-    rec = timeline.workdir_snapshot(tmp_path, "A3", 7, paths, "before")
-    assert re.fullmatch(r"A3/session-snapshots/007-before-\d{8}T\d{6}Z\.tar\.gz", rec["path"]) and len(rec["sha256"]) == 64
-    with tarfile.open(tmp_path / rec["path"]) as tar:
-        assert {"work/draft.yaml", "home/sessions/s.jsonl", "work/papers"} <= set(tar.getnames())
+    rec = timeline.archive(tmp_path, "A3", 7, paths, "after")
+    assert re.fullmatch(r"A3/session-snapshots/007-after-\d{8}T\d{6}Z\.tar\.gz", rec["path"]) and len(rec["sha256"]) == 64
+    with tarfile.open(tmp_path / rec["path"]) as tar:  # B4：/work（含 sources/）与 home
+        assert {"work/draft.yaml", "home/sessions/s.jsonl", "work/sources/2106.13008v5/paper.md"} <= set(tar.getnames())
     a0 = tmp_path / "A0/repo"
     a0.mkdir(parents=True)
     (a0 / "AGENTS.md").write_text("x\n")
-    rec = timeline.workdir_snapshot(tmp_path, "A0", 12, Paths(tmp_path / "A0/writers/w"), "after")
+    rec = timeline.archive(tmp_path, "A0", 12, Paths(tmp_path / "A0/sessions/012-x"), "after")
     with tarfile.open(tmp_path / rec["path"]) as tar:
         assert "work/AGENTS.md" in tar.getnames()  # A0 的工作目录是共享仓库
     assert not list((tmp_path / "A0/session-snapshots").glob("*.partial"))
 
 
-def _code(root: Path) -> Path:
-    src = root / "code"
-    for name in ("FiLM@ccd65d69", "FiLM@88af1c0c", "Autoformer@09994619"):
-        (src / name).mkdir(parents=True)
-        (src / name / "x.py").write_text("pass\n")
-    (src / "README.md").write_text(
-        "# Code\n\n| directory | repository | commit | commit date | paper versions (papers/) |\n| --- | --- | --- | --- | --- |\n"
-        "| Autoformer@09994619/ | u | c | d | 2106.13008v5 |\n"
-        "| FiLM@88af1c0c/ | u | c | d | 2205.08897v4 |\n"
-        "| FiLM@ccd65d69/ | u | c | d | 2205.08897v3 |\n"
-    )
-    return src
+MATERIALS = {
+    "seed": ["2012.07436v3"],
+    "sessions": [
+        {"seq": 1, "type": "build", "named": ["2106.13008v5"], "opens": ["2106.13008v5"]},
+        {"seq": 2, "type": "compare", "named": ["2012.07436v3", "2106.13008v5"]},
+        {"seq": 3, "type": "note-i6", "named": ["2106.13008v5", "Autoformer@09994619"], "opens": ["Autoformer@09994619"]},
+    ],
+}
 
 
-def test_code_for_a_later_version_arrives_with_the_update(tmp_path: Path) -> None:
-    config = {"code": _code(tmp_path)}
-    target = tmp_path / "arm/code"
-    timeline.sync_code(config, target, {"2205.08897v4"})
-    assert sorted(p.name for p in target.iterdir()) == ["Autoformer@09994619", "FiLM@ccd65d69", "README.md"]
-    assert "88af1c0c" not in (target / "README.md").read_text()
-    timeline.sync_code(config, target, set())
-    assert (target / "FiLM@88af1c0c/x.py").exists() and "88af1c0c" in (target / "README.md").read_text()
+def _corpus(tmp_path: Path) -> tuple[dict, Timeline]:
+    from pweval.harness.source_server import tree_sha256
+
+    papers, code = tmp_path / "corpus/papers", tmp_path / "corpus/code"
+    for source in ("2012.07436v3", "2106.13008v5", "2205.08897v4"):
+        (papers / source).mkdir(parents=True)
+        (papers / source / "paper.md").write_text(f"# {source}\n")
+    (code / "Autoformer@09994619/layers").mkdir(parents=True)
+    (code / "Autoformer@09994619/layers/a.py").write_text("x = 1\n")
+    hashes = {s: timeline._sha256(papers / s / "paper.md") for s in ("2012.07436v3", "2106.13008v5")}
+    hashes["Autoformer@09994619"] = tree_sha256(code / "Autoformer@09994619")
+    materials = {**MATERIALS, "sources": {s: {"sha256": h} for s, h in hashes.items()}}
+    return {"corpus_papers": papers, "code": code}, Timeline([], IDENTITIES, HINTS, READER, [], [], materials)
+
+
+def test_sources_open_when_the_session_that_first_gives_them_starts(tmp_path: Path) -> None:
+    """f3 §3.2、B1：种子在起点开放，此后按会话开放、一直可读；点出不开放；复制前按材料表核对哈希。"""
+    config, tl = _corpus(tmp_path)
+    assert tl.opened_through(0) == ["2012.07436v3"]
+    assert tl.opened_through(2) == ["2012.07436v3", "2106.13008v5"] and tl.opens(2) == []
+    assert tl.opened_through(3)[-1] == "Autoformer@09994619" and tl.named(3) == ["2106.13008v5", "Autoformer@09994619"]
+    assert timeline.materials_record(tl, 2) == {"named": ["2012.07436v3", "2106.13008v5"], "opens": [], "available": 2}
+    run = tmp_path / "run"
+    assert timeline.open_sources(config, tl, run, "A3", tl.opened_through(1)) == ["2012.07436v3", "2106.13008v5"]
+    assert timeline.open_sources(config, tl, run, "A3", tl.opened_through(2)) == []
+    timeline.open_sources(config, tl, run, "A3", tl.opened_through(3))
+    root = timeline.sources_dir(run, "A3")
+    assert sorted(p.name for p in root.iterdir()) == ["2012.07436v3", "2106.13008v5", "Autoformer@09994619"]
+    assert (root / "Autoformer@09994619/layers/a.py").read_text() == "x = 1\n"
+    (config["corpus_papers"] / "2106.13008v5/paper.md").write_text("changed\n")
+    with pytest.raises(RuntimeError, match="does not match materials.yml"):
+        timeline.open_sources(config, tl, tmp_path / "other", "A3", tl.opened_through(1))
 
 
 def test_network_calls_are_recorded(tmp_path: Path) -> None:
@@ -241,15 +265,18 @@ def test_checkpoints_are_never_read_half_written(tmp_path: Path, monkeypatch: py
 
 def _resume_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, now: str) -> tuple[Path, Timeline, list]:
     step = {"seq": 1, "identity": "i3-a", "type": "build", "paper": "p1v1", "task": "Add it. {TOOLS}"}
-    tl = Timeline([step], IDENTITIES, HINTS, READER, [])
+    tl = Timeline([step], IDENTITIES, HINTS, READER, [], [], {"seed": [], "sessions": [{"seq": 1, "opens": []}]})
     run = _run(tmp_path, {"A3": {0: "commit_000002"}})
     started = time.time() - 60
     (run / "A3").mkdir()
-    inflight = {"seq": 1, "started": "t", "started_epoch": started, "version_before": "commit_000002"}
+    inflight = {"seq": 1, "root": "A3/sessions/001-a", "started": "t", "started_epoch": started,
+                "version_before": "commit_000002"}  # fmt: skip
     (run / "A3/inflight.json").write_text(json.dumps(inflight))
-    events = run / "A3/writers/i3-a/runs/20261019T120000.jsonl"
+    events = run / "A3/sessions/001-a/runs/20261019T120000.jsonl"
     events.parent.mkdir(parents=True)
     events.write_text("")
+    (run / "A3/sessions/001-a/work").mkdir()
+    (run / "A3/sessions/001-a/work/draft.yaml").write_text("left by the interrupted attempt\n")
     calls: list = []
     monkeypatch.setattr(timeline, "version", lambda *a: now)
     monkeypatch.setattr(timeline, "snapshot", lambda *a: None)
@@ -267,16 +294,22 @@ def test_a_session_that_changed_the_store_is_not_rerun(tmp_path: Path, monkeypat
     (record,) = [json.loads(line) for line in (run / "sessions.jsonl").read_text().splitlines()]
     assert record["exit"] == "interrupted" and record["recovered"] is True
     assert record["version_before"] == "commit_000002" and record["version_after"] == "commit_000003"
-    assert record["events"] == "A3/writers/i3-a/runs/20261019T120000.jsonl"
+    assert record["events"] == "A3/sessions/001-a/runs/20261019T120000.jsonl"
+    assert record["root"] == "A3/sessions/001-a" and "-interrupted-" in record["archive"]["path"]
     assert not (run / "A3/inflight.json").exists()
 
 
 def test_a_session_that_left_the_store_unchanged_is_rerun(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """B4：库没变就重跑；被中断那次归档为 interrupted，重跑不继承它的文件（在全新目录中，见 session_paths）。"""
     run, tl, calls = _resume_setup(tmp_path, monkeypatch, now="commit_000002")
-    timeline.run_arm({}, tl, run, "A3", None, False, with_readers=False)
+    timeline.run_arm({"arms": {"A3": {}}, "runner": {"agent": "pi", "model": "m"}}, tl, run, "A3", None, False)
     assert len(calls) == 1
     (record,) = [json.loads(line) for line in (run / "sessions.jsonl").read_text().splitlines()]
-    assert record["rerun_after_interruption"]["version_before"] == "commit_000002"
+    rerun_of = record["rerun_after_interruption"]
+    assert rerun_of["version_before"] == "commit_000002" and rerun_of["root"] == "A3/sessions/001-a"
+    assert "rerun_inherits_workdir" not in record
+    with tarfile.open(run / rerun_of["archive"]["path"]) as tar:
+        assert tar.extractfile("work/draft.yaml").read() == b"left by the interrupted attempt\n"
     assert not (run / "A3/inflight.json").exists()
 
 
@@ -506,25 +539,12 @@ def test_an_arm_runs_in_one_process_at_a_time(tmp_path: Path) -> None:
         assert mine is True  # 持有的进程退出，锁随之释放
 
 
-def test_a_rerun_keeps_the_start_of_the_interrupted_attempt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    paths = Paths(tmp_path / "A3/writers/w")
-    paths.work.mkdir(parents=True)
-    (paths.work / "draft.yaml").write_text("first\n")
-    stamps = iter(["20261021T100000Z", "20261021T100500Z"])
-
-    class Clock:
-        @staticmethod
-        def now(tz):  # noqa: ANN001, ANN205
-            return SimpleNamespace(strftime=lambda fmt: next(stamps))
-
-    monkeypatch.setattr(timeline, "datetime", Clock)
-    first = timeline.workdir_snapshot(tmp_path, "A3", 7, paths, "before")
-    (paths.work / "draft.yaml").write_text("left by the interrupted attempt\n")
-    second = timeline.workdir_snapshot(tmp_path, "A3", 7, paths, "before")
-    assert first["path"] != second["path"]  # 重跑的起点另存，被中断那次的起点不被覆盖
-    assert timeline._sha256(tmp_path / first["path"]) == first["sha256"]
-    with tarfile.open(tmp_path / first["path"]) as tar:
-        assert tar.extractfile("work/draft.yaml").read() == b"first\n"
+def test_every_attempt_gets_a_fresh_directory(tmp_path: Path) -> None:
+    """f3 §2.1：同一序号的两次尝试、同一身份的两个会话，目录都不同，也都是新建的。"""
+    first = timeline.session_paths(tmp_path, "A3", 7)
+    second = timeline.session_paths(tmp_path, "A3", 7)
+    assert first.root != second.root and first.root.parent == tmp_path / "A3/sessions"
+    assert first.root.name.startswith("007-") and not first.root.exists()
 
 
 def _backup_config(tmp_path: Path) -> dict:

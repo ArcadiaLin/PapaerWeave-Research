@@ -4,10 +4,11 @@
 大模型服务与 Graphiti 经 unix socket 转发进去（``Arm.isolated_llm``、``Arm.isolated_tcp``），联网命令只会失败，
 仍由会话后的审计记下。沙箱里能看到的只有：系统目录与
 node（只读）、工作目录 ``/work``（可写）、本会话的 ``HOME``（pi 的 agent 目录：模型配置、设置、MCP 登记与会话记录，
-不带宿主机的扩展、skills 与认证）。写者另有论文材料 ``/work/papers`` 与按论文版本固定 commit 的代码 ``/work/code``
-（都只读）；读者两者都没有。各组的 ``/work``：
+不带宿主机的扩展、skills 与认证）。f3 起写者的沙箱不挂载论文与代码：材料经来源服务 ``read_source``
+（:mod:`pweval.harness.source_server`，``Arm.read_source``）按来源 ID 取到本次的 ``/work/sources/``（只读挂载，服务在
+沙箱外写入）。``Arm.papers``、``Arm.code`` 只留给参照组与 f2 之前的运行。各组的 ``/work``：
 
-- A3、A2：每个写者自己的目录；库只经 MCP 进入（见下）。
+- A3、A2：f3 起每个会话一个全新目录（:mod:`pweval.harness.timeline`）；库只经 MCP 进入（见下）。
 - A0：共享仓库本身（各写者共用一份，写者轮流运行）；读者是检查点处的副本，只读。仓库的 ``AGENTS.md`` 由 pi 从
   工作目录加载。
 - A4：每个写者自己的目录；Graphiti 的 MCP 服务在沙箱外，经 HTTP 连接（断网时经转发，沙箱内连同一回环端口）。
@@ -18,7 +19,8 @@ node（只读）、工作目录 ``/work``（可写）、本会话的 ``HOME``（
 
 A3、A2 的 MCP 服务在沙箱外：沙箱内登记的只是一条转发命令（``mcp.sock``，:mod:`pweval.harness.bridge`），每个连接
 在沙箱外启动一次服务，登录身份与连接参数在沙箱外写定，写者拿不到图库的口令。A2 启动的是消融版
-（``eval/baselines/a2_mcp.py``）。大模型服务的地址取实验配置：断网的沙箱经转发连接，其余由 pi 直接连接。
+（``eval/baselines/a2_mcp.py``）。服务的只读来源目录（``PAPERWEAVE_SOURCES``，提交校验与 ``read_evidence`` 用）是
+``Arm.sources``：本组到此为止开放过的全部来源。来源服务同样在沙箱外，经 ``sources.sock`` 接入，四组登记相同。大模型服务的地址取实验配置：断网的沙箱经转发连接，其余由 pi 直接连接。
 
 ``pi`` 从工作目录及其上层加载 ``AGENTS.md``：沙箱中 ``/work`` 的上层为空，仓库的说明文件不会被加载。
 """
@@ -53,6 +55,11 @@ ENV_NOTE = (
     "You are working in a sandbox for a test. There is no network access: any network command (curl, wget, pip\n"
     "install, git clone, web search) will fail. Python 3 is available with the standard library and PyYAML only;\n"
     "nothing else can be installed. Use only what is available locally."
+)
+# f3 工程记录 B2：所有写者会话在环境说明之后接这一句（读者没有 read_source，不接）
+WRITER_NOTE = (
+    "You are working in a sandbox: papers and code are not available locally or from the network; fetch them by id\n"
+    "with read_source."
 )
 
 
@@ -108,6 +115,16 @@ class Writer:
 
 
 @dataclass(frozen=True)
+class ReadSource:
+    """写者的来源服务（f3，:mod:`pweval.harness.source_server`）：语料位置与本会话可取的来源 ID。"""
+
+    papers: Path  # 语料中的论文：<来源 ID>/paper.md
+    code: Path  # 按 commit 固定的代码：<仓库>@<commit>/
+    opened: tuple[str, ...]  # 本会话可取的来源 ID：种子与此前开放的，加上本会话新开放的
+    session: str = ""  # 记录中的会话标识
+
+
+@dataclass(frozen=True)
 class Arm:
     name: str  # A0、A2、A3、A4，或参照组 C、D、P（没有库），以及先导的 none
     papers: Path | None  # 论文材料目录（只读挂载到 /work/papers）；读者与参照线为 None
@@ -124,6 +141,8 @@ class Arm:
     pi_args: tuple[str, ...] = ()  # 附加给 pi 的参数，例如参照组的 --no-tools（docs/designs/v3/evaluation.md §10）
     isolated_llm: str | None = None  # 断网（--unshare-net）时大模型服务的地址：经 unix socket 转发进沙箱（V3 §7 第 5 条）
     isolated_tcp: tuple[str, ...] = ()  # 断网时另外转发进沙箱的服务（host:port），沙箱内在回环地址的同一端口上可连，如 A4 的 Graphiti
+    sources: Path | None = None  # A3、A2（f3）：MCP 服务的只读来源目录（PAPERWEAVE_SOURCES）
+    read_source: ReadSource | None = None  # 写者（f3）：来源服务，取到 /work/sources/
 
 
 @dataclass(frozen=True)
@@ -167,6 +186,8 @@ def prepare(
         d.mkdir(parents=True, exist_ok=True)
     if arm.name != "A0":
         paths.work.mkdir(parents=True, exist_ok=True)
+    if arm.read_source is not None:
+        (paths.work / "sources").mkdir(parents=True, exist_ok=True)  # 来源服务在沙箱外写入，沙箱内只读挂载
     provider, model_id = model.split("/", 1)
     host_agent = Path(os.environ.get("PI_CODING_AGENT_DIR", Path.home() / ".pi/agent")).expanduser()
     models = json.loads((host_agent / "models.json").read_text(encoding="utf-8"))
@@ -209,6 +230,13 @@ def prepare(
                 raise ValueError(f"an isolated A4 sandbox must forward {url.hostname}:{url.port} (isolated_tcp)")
             url = url._replace(netloc=f"127.0.0.1:{url.port}")
         servers["Graphiti"] = {"url": url.geturl(), "exposure": "direct", "timeout": 300}
+    if arm.read_source is not None:  # 四组登记相同
+        servers["Sources"] = {
+            "command": "python3",
+            "args": ["/opt/t1/bridge.py", "stdio-to-unix", "/run/t1/sources.sock"],
+            "exposure": "direct",
+            "timeout": 300,
+        }
     _write_json(agent / "mcp.json", {"mcpServers": servers})
 
 
@@ -233,6 +261,9 @@ def run_session(paths: Paths, arm: Arm, writer: Writer, prompt: str, *, timeout_
         mcp = ["unix-exec", str(paths.sock / "mcp.sock"), "--", *_mcp_command(paths, arm, writer)]
         bridges.append(_spawn(mcp, stderr))
         socks.append(paths.sock / "mcp.sock")
+    if arm.read_source is not None:
+        bridges.append(_spawn(["unix-exec", str(paths.sock / "sources.sock"), "--", *_source_command(paths, arm)], stderr))
+        socks.append(paths.sock / "sources.sock")
     if arm.isolated_llm is not None:
         for name, target in _forwards(arm):
             bridges.append(_spawn(["unix-to-tcp", str(paths.sock / name), target], stderr))
@@ -403,8 +434,10 @@ def _bwrap(paths: Paths, arm: Arm, writer: Writer) -> list[str]:
         "--bind", str(paths.home), "/home/agent",
         "--ro-bind", str(SITE), SITE_DIR,
     ]  # fmt: skip
-    if arm.name in GRAPH or arm.isolated_llm:
+    if arm.name in GRAPH or arm.isolated_llm or arm.read_source:
         args += ["--ro-bind", str(BRIDGE), "/opt/t1/bridge.py", "--bind", str(paths.sock), "/run/t1"]
+    if arm.read_source is not None:  # 挂在 /work 之上：写者只能读，来源服务在沙箱外往宿主机的同一目录写
+        args += ["--ro-bind", str(paths.work / "sources"), "/work/sources"]
     for source, target in ((arm.papers, "/work/papers"), (arm.code, "/work/code")):
         if source is not None:
             (work / target.removeprefix("/work/")).mkdir(exist_ok=True)  # 挂载点；A0 的仓库在 .gitignore 中忽略它们
@@ -447,6 +480,8 @@ def mcp_env(paths: Paths, arm: Arm, writer: Writer) -> dict[str, str]:
         env["PAPERWEAVE_EVIDENCE_SCOPE"] = arm.evidence_scope
     if arm.ablate:
         env["PAPERWEAVE_ABLATE"] = ",".join(arm.ablate)
+    if arm.sources is not None:
+        env["PAPERWEAVE_SOURCES"] = str(arm.sources)
     return env
 
 
@@ -454,6 +489,17 @@ def _mcp_command(paths: Paths, arm: Arm, writer: Writer) -> list[str]:
     env = mcp_env(paths, arm, writer)
     entry = [str(ABLATED_MCP)] if arm.ablate else ["-m", "paperweave.mcp"]
     return ["env", *(f"{k}={v}" for k, v in env.items()), str(REPO / ".venv/bin/python"), *entry]
+
+
+def _source_command(paths: Paths, arm: Arm) -> list[str]:
+    """来源服务的命令：本会话可取的来源写进 ``<root>/opened.json``，请求记在 ``<root>/sources.jsonl``。"""
+    spec = arm.read_source
+    assert spec is not None
+    opened = paths.root / "opened.json"
+    _write_json(opened, list(spec.opened))
+    return [str(REPO / ".venv/bin/python"), "-m", "pweval.harness.source_server", "--papers", str(spec.papers),
+            "--code", str(spec.code), "--opened", str(opened), "--dest", str(paths.work / "sources"),
+            "--log", str(paths.root / "sources.jsonl"), "--session", spec.session]  # fmt: skip
 
 
 def _spawn(args: list[str], stderr) -> subprocess.Popen:
@@ -472,5 +518,5 @@ def _write_json(path: Path, data: object) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-__all__ = ["ENV_NOTE", "GRAPH", "Arm", "Paths", "Writer", "isolated_start", "pi_install", "pi_version", "prepare",
+__all__ = ["ENV_NOTE", "GRAPH", "WRITER_NOTE", "Arm", "Paths", "ReadSource", "Writer", "isolated_start", "pi_install", "pi_version", "prepare",
            "run_session"]

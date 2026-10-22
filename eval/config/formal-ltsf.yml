@@ -1,3 +1,5 @@
+# f1、f2 的正式时间线配置（运行记录见各运行目录的 run.yml）。f3 起运行器改用 f3-ltsf.yml（需要 plan、materials、seed），
+# 本文件不再能直接运行。
 # V3 正式时间线（pweval.harness.timeline）：30 篇长期预测论文、10 个写者身份、70 个会话、四组。
 # 会话序列、身份、任务文字与逐组的提示都在题库仓库（probes_repo）中，由 scripts/tasks.py 生成并经用户确认
 # （tmps/probes/writer-tasks.md，决策 D25–D30）；这里只放运行所需的位置与服务。
