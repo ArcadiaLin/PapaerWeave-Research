@@ -378,8 +378,10 @@ def _seed_a0(run: Path, seed: Path) -> None:
         if d.exists():
             shutil.rmtree(d)  # 没有记录检查点 0：上次建到一半
     build.mkdir(parents=True)
-    shutil.copy(A0_KIT / "AGENTS.md", build / "AGENTS.md")
-    shutil.copytree(A0_KIT / "templates", build / "templates")
+    # 只取内容：约定与模板来自只读的冻结副本，带过来的只读权限会使 seed-build/ 删不掉
+    shutil.copyfile(A0_KIT / "AGENTS.md", build / "AGENTS.md")
+    shutil.copytree(A0_KIT / "templates", build / "templates", copy_function=shutil.copyfile)
+    (build / "templates").chmod(0o755)
     (build / ".gitignore").write_text("sources/\n", encoding="utf-8")  # 来源服务交付的副本，在会话的工作目录中
     _git(build, "init", "-q", "-b", "main")
     _git(build, "add", "-A")

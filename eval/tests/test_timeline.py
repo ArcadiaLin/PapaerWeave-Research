@@ -474,6 +474,21 @@ def _agent_git(work: Path, *args: str) -> str:
     return subprocess.run([*git, *args], check=True, capture_output=True, text=True).stdout
 
 
+def test_a0_seeds_from_a_read_only_kit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """正式运行从只读的冻结副本启动：约定与模板只读，起点仍要建得起来、临时目录删得掉（A0 冒烟发现，10-22）。"""
+    kit = tmp_path / "kit"
+    shutil.copytree(timeline.A0_KIT, kit)
+    for p in [*kit.rglob("*"), kit]:
+        p.chmod(p.stat().st_mode & ~0o222)
+    monkeypatch.setattr(timeline, "A0_KIT", kit)
+    try:
+        run = _a0_run(tmp_path)
+        assert not (run / "A0/seed-build").exists() and timeline.version({}, run, "A0")
+    finally:
+        for p in [*kit.rglob("*"), kit]:
+            p.chmod(p.stat().st_mode | 0o200)
+
+
 def test_an_a0_session_works_on_a_fresh_clone_and_publishes_its_commits(tmp_path: Path) -> None:
     """f3 §2.2：每个会话克隆已发布的状态（含历史、不带远程）；会话结束时只把写者提交了的快进同步回共享仓库，
     未提交的改动与其他分支不同步，记为未发布。"""
