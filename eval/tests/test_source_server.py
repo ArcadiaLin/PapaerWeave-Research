@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 import stat
 import sys
 from pathlib import Path
@@ -23,13 +24,24 @@ def corpus(tmp_path: Path) -> tuple[Path, Path]:
         (papers / source / "paper.md").write_text(f"# {source}\nline 2\nline 3\n", encoding="utf-8")
     (code / "Autoformer@09994619/layers").mkdir(parents=True)
     (code / "Autoformer@09994619/layers/AC.py").write_text("x = 1\ny = 2\n", encoding="utf-8")
-    (code / "Autoformer@09994619/README.md").write_text("# Autoformer\n", encoding="utf-8")
+    (code / "Autoformer@09994619/README.md").write_text("# Autoformer\nno newline at the end", encoding="utf-8")
     return papers, code
+
+
+def library(corpus: tuple[Path, Path], root: Path, opened: list[str]) -> Path:
+    """组的已开放来源目录：运行器从语料复制进来的那一份。"""
+    papers, code = corpus
+    for source in opened:
+        origin = code / source if "@" in source else papers / source
+        if not (root / source).exists():
+            shutil.copytree(origin, root / source)
+    return root
 
 
 def sources(corpus: tuple[Path, Path], tmp_path: Path, opened: list[str]) -> Sources:
     papers, code = corpus
-    return Sources(papers, code, opened, tmp_path / "work/sources", "/work/sources", tmp_path / "sources.jsonl", "s-1")
+    lib = library(corpus, tmp_path / "library", opened)
+    return Sources(lib, opened, tmp_path / "work/sources", "/work/sources", tmp_path / "sources.jsonl", "s-1", papers, code)
 
 
 def log(tmp_path: Path) -> list[dict]:
@@ -70,6 +82,19 @@ def test_an_id_without_version_gives_the_latest_opened(corpus: tuple[Path, Path]
     assert s.fetch("2205.08897")[0]["source_id"] == "2205.08897v4"
 
 
+def test_delivery_reads_the_library_not_the_corpus(corpus: tuple[Path, Path], tmp_path: Path) -> None:
+    """审查第 2 条：语料在开放之后变了，交付的仍是组的已开放副本（MCP 服务读的同一份）；记录中有交付内容的哈希。"""
+    s = sources(corpus, tmp_path, ["2106.13008v5"])
+    (corpus[0] / "2106.13008v5/paper.md").write_text("changed\n", encoding="utf-8")
+    out, _ = s.fetch("2106.13008v5")
+    assert (tmp_path / "work/sources/2106.13008v5/paper.md").read_text(encoding="utf-8").startswith("# 2106.13008v5")
+    assert log(tmp_path)[-1]["sha256"] == out["sha256"]
+    shutil.rmtree(tmp_path / "library/2106.13008v5")
+    assert sources(corpus, tmp_path / "other", ["2106.13008v5"]).fetch("2106.13008v5")[0]["source_id"]
+    gone = Sources(tmp_path / "empty", ["2106.13008v5"], tmp_path / "w2", "/work/sources", tmp_path / "l2.jsonl", "s")
+    assert gone.fetch("2106.13008v5")[0] == {"error": REFUSED}
+
+
 def test_code_comes_with_a_manifest_outside_the_tree(corpus: tuple[Path, Path], tmp_path: Path) -> None:
     s = sources(corpus, tmp_path, ["Autoformer@09994619"])
     out, error = s.fetch("Autoformer@09994619")
@@ -80,6 +105,7 @@ def test_code_comes_with_a_manifest_outside_the_tree(corpus: tuple[Path, Path], 
     root = tmp_path / "work/sources"
     rows = (root / "Autoformer@09994619.files.tsv").read_text(encoding="utf-8").splitlines()
     assert rows[0] == "path\tlines\tsha256" and rows[2].startswith("layers/AC.py\t2\t")
+    assert rows[1].startswith("README.md\t2\t")  # 末行没有换行也算一行，与系统读锚点相同
     assert tree_sha256(root / "Autoformer@09994619") == tree_sha256(corpus[1] / "Autoformer@09994619")
     assert s.fetch("Autoformer@09994619")[0]["intact"]
 
@@ -88,8 +114,10 @@ def test_the_stdio_server_answers_mcp(corpus: tuple[Path, Path], tmp_path: Path)
     papers, code = corpus
     opened = tmp_path / "opened.json"
     opened.write_text(json.dumps(["2403.01673v1"]), encoding="utf-8")
-    cmd = [sys.executable, "-m", "pweval.harness.source_server", "--papers", str(papers), "--code", str(code),
-           "--opened", str(opened), "--dest", str(tmp_path / "dest"), "--log", str(tmp_path / "sources.jsonl")]  # fmt: skip
+    lib = library(corpus, tmp_path / "library", ["2403.01673v1"])
+    cmd = [sys.executable, "-m", "pweval.harness.source_server", "--library", str(lib), "--papers", str(papers),
+           "--code", str(code), "--opened", str(opened), "--dest", str(tmp_path / "dest"),
+           "--log", str(tmp_path / "sources.jsonl")]  # fmt: skip
     with Client(cmd, dict(os.environ)) as client:
         text = client.call("read_source", {"source_id": "2403.01673v1"})
     assert json.loads(text)["sha256"] and (tmp_path / "dest/2403.01673v1/paper.md").is_file()

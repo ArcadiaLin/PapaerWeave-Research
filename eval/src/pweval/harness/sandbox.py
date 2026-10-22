@@ -118,8 +118,9 @@ class Writer:
 class ReadSource:
     """写者的来源服务（f3，:mod:`pweval.harness.source_server`）：语料位置与本会话可取的来源 ID。"""
 
-    papers: Path  # 语料中的论文：<来源 ID>/paper.md
-    code: Path  # 按 commit 固定的代码：<仓库>@<commit>/
+    library: Path  # 交付的来源：组的已开放来源目录（运行器核对过哈希），与 MCP 服务的 PAPERWEAVE_SOURCES 相同
+    papers: Path  # 语料中的论文，只用来记下拒绝的原因
+    code: Path  # 语料中的代码，同上
     opened: tuple[str, ...]  # 本会话可取的来源 ID：种子与此前开放的，加上本会话新开放的
     session: str = ""  # 记录中的会话标识
 
@@ -497,8 +498,8 @@ def _source_command(paths: Paths, arm: Arm) -> list[str]:
     assert spec is not None
     opened = paths.root / "opened.json"
     _write_json(opened, list(spec.opened))
-    return [str(REPO / ".venv/bin/python"), "-m", "pweval.harness.source_server", "--papers", str(spec.papers),
-            "--code", str(spec.code), "--opened", str(opened), "--dest", str(paths.work / "sources"),
+    return [str(REPO / ".venv/bin/python"), "-m", "pweval.harness.source_server", "--library", str(spec.library),
+            "--papers", str(spec.papers), "--code", str(spec.code), "--opened", str(opened), "--dest", str(paths.work / "sources"),
             "--log", str(paths.root / "sources.jsonl"), "--session", spec.session]  # fmt: skip
 
 

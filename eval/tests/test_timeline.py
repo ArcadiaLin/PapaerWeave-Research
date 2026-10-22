@@ -128,8 +128,11 @@ def test_sources_open_when_the_session_that_first_gives_them_starts(tmp_path: Pa
     assert sorted(p.name for p in root.iterdir()) == ["2012.07436v3", "2106.13008v5", "Autoformer@09994619"]
     assert (root / "Autoformer@09994619/layers/a.py").read_text() == "x = 1\n"
     (config["corpus_papers"] / "2106.13008v5/paper.md").write_text("changed\n")
-    with pytest.raises(RuntimeError, match="does not match materials.yml"):
+    with pytest.raises(RuntimeError, match="the corpus copy does not match materials.yml"):
         timeline.open_sources(config, tl, tmp_path / "other", "A3", tl.opened_through(1))
+    (root / "2106.13008v5/paper.md").write_text("edited in place\n")  # 已开放的副本也每次核对（审查第 2 条）
+    with pytest.raises(RuntimeError, match="the opened copy .* does not match materials.yml"):
+        timeline.open_sources(config, tl, run, "A3", tl.opened_through(3))
 
 
 def test_network_calls_are_recorded(tmp_path: Path) -> None:

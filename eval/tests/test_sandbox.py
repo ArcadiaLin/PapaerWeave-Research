@@ -124,7 +124,8 @@ def test_writer_sees_work_papers_and_code_with_the_network_shared(host: Path) ->
 def test_an_f3_writer_gets_sources_only_through_read_source(host: Path) -> None:
     """f3 §2、§4：不挂载论文与代码；来源服务在沙箱外，/work/sources 只读；MCP 服务的来源目录是本组已开放的来源。"""
     paths = Paths(host / "run/A3/sessions/001")
-    read = sandbox.ReadSource(host / "papers", host / "code", ("2106.13008v5", "Autoformer@09994619"), "A3-001")
+    read = sandbox.ReadSource(host / "sources", host / "papers", host / "code", ("2106.13008v5", "Autoformer@09994619"),
+                              "A3-001")  # fmt: skip
     arm = Arm("A3", None, neo4j="bolt://x", data=host / "data", sources=host / "sources", read_source=read,
               isolated_llm=SETTINGS["llm"])  # fmt: skip
     sandbox.prepare(paths, arm, **SETTINGS)
@@ -138,6 +139,7 @@ def test_an_f3_writer_gets_sources_only_through_read_source(host: Path) -> None:
     command = sandbox._source_command(paths, arm)
     assert command[1:3] == ["-m", "pweval.harness.source_server"]
     assert command[command.index("--dest") + 1] == str(paths.work / "sources")
+    assert command[command.index("--library") + 1] == str(host / "sources")  # 与 MCP 服务读同一份（审查第 2 条）
     assert json.loads((paths.root / "opened.json").read_text()) == ["2106.13008v5", "Autoformer@09994619"]
     assert f"PAPERWEAVE_SOURCES={host / 'sources'}" in sandbox._mcp_command(paths, arm, WRITER)
 

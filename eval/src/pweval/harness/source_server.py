@@ -1,11 +1,14 @@
 """来源服务 ``read_source``：模拟从 arXiv、代码托管站取固定版本的材料（docs/experiments/f3/2026-10-22-f3-design.md §4；
 工程记录 B3）。只用标准库的 MCP stdio 服务，四组接法与说明相同。
 
-    python -m pweval.harness.source_server --papers DIR --code DIR --opened FILE --dest DIR --log FILE --session ID
+    python -m pweval.harness.source_server --library DIR --opened FILE --dest DIR --log FILE --session ID
+        [--papers DIR --code DIR]
 
 运行器为每个会话在沙箱外启动一次（经 :mod:`pweval.harness.bridge` 的 ``unix-exec`` 接入沙箱，与 A3 的 MCP 服务相同）：
 
-- ``--papers``、``--code``：语料中的论文（``<来源 ID>/paper.md``）与按 commit 固定的代码（``<仓库>@<commit>/``），只读；
+- ``--library``：交付的唯一来源，即组的已开放来源目录（论文 ``<来源 ID>/paper.md``，代码 ``<仓库>@<commit>/``）。运行器
+  在每个会话开始前按材料表核对其中每个来源的哈希；A3、A2 的 MCP 服务读同一目录，写者取到的与提交校验所用的是同一份；
+- ``--papers``、``--code``：语料中的论文与代码，只用来在拒绝时记下原因（尚未开放还是不在语料中），不从中交付；
 - ``--opened``：本会话可取的来源 ID（JSON 列表），由运行器按材料表算出：种子与此前开放的，加上本会话新开放的；
 - ``--dest``：本会话 ``/work/sources/`` 在宿主机上的路径；写者看到的路径是 ``--alias``（默认 ``/work/sources``）；
 - ``--log``：每次请求追加一行 JSON（请求、解析结果、结果、拷贝字节数），拒绝也记，原因只进记录。
@@ -71,12 +74,21 @@ def tree_sha256(root: Path) -> str:
     return digest.hexdigest()
 
 
+def line_count(data: bytes) -> int | str:
+    """文件的行数，与系统读锚点时相同（UTF-8 解码后 ``splitlines``：末行没有换行也算一行）；不是 UTF-8 文本时为 ``-``。"""
+    try:
+        return len(data.decode("utf-8").splitlines())
+    except UnicodeDecodeError:
+        return "-"
+
+
 class Sources:
     """一个会话的来源：可取的 ID、语料位置与本会话的落盘目录。"""
 
-    def __init__(self, papers: Path, code: Path, opened: list[str], dest: Path, alias: str, log: Path | None,
-                 session: str) -> None:  # fmt: skip
-        self.papers, self.code, self.opened = papers, code, set(opened)
+    def __init__(self, library: Path, opened: list[str], dest: Path, alias: str, log: Path | None, session: str,
+                 papers: Path | None = None, code: Path | None = None) -> None:  # fmt: skip
+        self.library, self.opened = library, set(opened)
+        self.papers, self.code = papers or library, code or library
         self.dest, self.alias, self.log, self.session = dest, alias.rstrip("/"), log, session
 
     def resolve(self, given: str) -> tuple[str | None, str]:
@@ -96,11 +108,14 @@ class Sources:
         if text not in self.opened:
             exists = (self.papers / text / "paper.md").is_file() or (self.code / text).is_dir()
             return None, "not opened yet" if exists else "not in the corpus"
+        if not (self.library / text).exists():  # 开放了却不在来源目录中：运行器的错，不是写者的
+            return None, "opened but missing from the library"
         return text, ""
 
     def fetch(self, given: Any) -> tuple[dict[str, Any], bool]:
-        """一次请求：返回 (结果, 是否出错)，并记一行。"""
+        """一次请求：返回 (结果, 是否出错)，并记一行（交付的记下内容哈希：论文为文件，代码为目录哈希）。"""
         record: dict[str, Any] = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "session": self.session, "requested": given}
+        result: dict[str, Any]
         if not isinstance(given, str):
             result, error = {"error": FORMAT}, True
             record |= {"outcome": "format"}
@@ -111,16 +126,17 @@ class Sources:
                 result, error = {"error": shown}, True
                 record |= {"outcome": "format" if why == FORMAT else "refused", "reason": why}
             else:
-                result, copied = (self._paper if PAPER.fullmatch(source) else self._code)(source)
+                result, copied, digest = (self._paper if PAPER.fullmatch(source) else self._code)(source)
                 error = False
-                record |= {"resolved": source, "outcome": "reused" if result["reused"] else "delivered", "bytes": copied}
+                record |= {"resolved": source, "outcome": "reused" if result["reused"] else "delivered", "bytes": copied,
+                           "sha256": digest}  # fmt: skip
                 if why:
                     record["note"] = why
         self._log(record)
         return result, error
 
-    def _paper(self, source: str) -> tuple[dict[str, Any], int]:
-        origin = self.papers / source / "paper.md"
+    def _paper(self, source: str) -> tuple[dict[str, Any], int, str]:
+        origin = self.library / source / "paper.md"
         target = self.dest / source / "paper.md"
         reused = target.exists()
         copied = 0
@@ -140,10 +156,10 @@ class Sources:
         }
         if reused:
             out["intact"] = hashlib.sha256(target.read_bytes()).hexdigest() == out["sha256"]
-        return out, copied
+        return out, copied, out["sha256"]
 
-    def _code(self, source: str) -> tuple[dict[str, Any], int]:
-        origin = self.code / source
+    def _code(self, source: str) -> tuple[dict[str, Any], int, str]:
+        origin = self.library / source
         target = self.dest / source
         manifest = self.dest / f"{source}.files.tsv"
         reused = target.exists()
@@ -155,11 +171,11 @@ class Sources:
             for f in files:
                 data = f.read_bytes()
                 copied += len(data)
-                rows.append(f"{f.relative_to(origin).as_posix()}\t{data.count(b'\n')}\t{hashlib.sha256(data).hexdigest()}")
+                rows.append(f"{f.relative_to(origin).as_posix()}\t{line_count(data)}\t{hashlib.sha256(data).hexdigest()}")
             manifest.write_text("path\tlines\tsha256\n" + "\n".join(rows) + "\n", encoding="utf-8")
             _read_only(target)
             manifest.chmod(0o444)
-        out = {
+        out: dict[str, Any] = {
             "source_id": source,
             "kind": "code",
             "root": f"{self.alias}/{source}/",
@@ -167,9 +183,10 @@ class Sources:
             "manifest": f"{self.alias}/{source}.files.tsv",
             "reused": reused,
         }
+        tree = tree_sha256(origin)
         if reused:
-            out["intact"] = tree_sha256(target) == tree_sha256(origin)
-        return out, copied
+            out["intact"] = tree_sha256(target) == tree
+        return out, copied, tree  # 目录哈希只进记录，不返回给写者（返回字段照 B3）
 
     def _log(self, record: dict[str, Any]) -> None:
         if self.log is not None:
@@ -230,8 +247,9 @@ def serve(sources: Sources, stdin=sys.stdin, stdout=sys.stdout) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--papers", type=Path, required=True)
-    parser.add_argument("--code", type=Path, required=True)
+    parser.add_argument("--library", type=Path, required=True, help="the arm's opened sources, verified by the runner")
+    parser.add_argument("--papers", type=Path, help="the corpus papers, only to log why a request was refused")
+    parser.add_argument("--code", type=Path, help="the corpus code, only to log why a request was refused")
     parser.add_argument("--opened", type=Path, required=True, help="JSON list of the source ids this session may fetch")
     parser.add_argument("--dest", type=Path, required=True)
     parser.add_argument("--alias", default="/work/sources")
@@ -240,11 +258,11 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     opened = json.loads(args.opened.read_text(encoding="utf-8"))
     args.dest.mkdir(parents=True, exist_ok=True)
-    serve(Sources(args.papers, args.code, opened, args.dest, args.alias, args.log, args.session))
+    serve(Sources(args.library, opened, args.dest, args.alias, args.log, args.session, args.papers, args.code))
 
 
 if __name__ == "__main__":
     main()
 
 
-__all__ = ["DESCRIPTION", "REFUSED", "TOOL", "Sources", "handle", "main", "serve", "tree_sha256"]
+__all__ = ["DESCRIPTION", "REFUSED", "TOOL", "Sources", "handle", "line_count", "main", "serve", "tree_sha256"]

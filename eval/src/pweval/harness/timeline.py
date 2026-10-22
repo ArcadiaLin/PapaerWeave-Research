@@ -258,17 +258,27 @@ def sources_dir(run: Path, arm: str) -> Path:
     return arm_dir(run, arm) / "sources"
 
 
+def source_digest(root: Path, source: str) -> str:
+    """来源目录中一个来源的内容哈希，算法与材料表相同：论文为 ``paper.md`` 的 SHA-256，代码为目录哈希。"""
+    return tree_sha256(root / source) if "@" in source else _sha256(root / source / "paper.md")
+
+
 def open_sources(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, ids: list[str]) -> list[str]:
-    """把来源 ``ids`` 从语料复制进组的来源目录（已有的跳过），按材料表核对内容哈希，返回这次新放进去的。先复制到
-    ``<ID>.partial`` 再改名：目录存在即完整。"""
+    """组的来源目录中应有来源 ``ids``，每个都与材料表的哈希一致：缺的从语料复制进来（复制前核对语料），已有的
+    重新核对，不一致即停。返回这次新放进去的。先复制到 ``<ID>.partial`` 再改名。
+
+    这一份是唯一被读的：来源服务从这里交付，A3、A2 的 MCP 服务从这里读，每个会话开始前全部核对一次。"""
     added = []
     for source in ids:
         target = sources_dir(run, arm) / source
+        expected = timeline.materials["sources"][source]["sha256"]
         if target.exists():
+            if (actual := source_digest(sources_dir(run, arm), source)) != expected:
+                raise RuntimeError(f"{source}: the opened copy in {target.parent} does not match materials.yml "
+                                   f"({actual} != {expected})")  # fmt: skip
             continue
         code = "@" in source
         origin = config["code"] / source if code else config["corpus_papers"] / source / "paper.md"
-        expected = timeline.materials["sources"][source]["sha256"]
         actual = tree_sha256(origin) if code else _sha256(origin)
         if actual != expected:
             raise RuntimeError(f"{source}: the corpus copy does not match materials.yml ({actual} != {expected})")
@@ -413,7 +423,7 @@ def sandbox_arm(config: dict[str, Any], run: Path, arm: str, opened: list[str] |
     不挂载论文与代码；``opened`` 是本会话可取的来源，经来源服务取得（f3 §2、§4）。"""
     spec = config["arms"][arm]
     llm = spec["llm"]
-    read = ReadSource(config["corpus_papers"], config["code"], tuple(opened or ()), session)
+    read = ReadSource(sources_dir(run, arm), config["corpus_papers"], config["code"], tuple(opened or ()), session)
     if arm in GRAPH:
         data = arm_dir(run, arm) / "data"
         return Arm(arm, None, neo4j=spec["neo4j"], data=data, ablate=tuple(spec.get("ablate") or ()), isolated_llm=llm,
