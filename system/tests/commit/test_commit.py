@@ -154,6 +154,59 @@ def test_anchors_are_stored_in_their_normal_form(graph: MemoryGraph) -> None:
     assert graph.state.nodes["exp_0001"].props["anchor"] == ["2205.13504v3::198:240"]
 
 
+def test_anchors_are_checked_against_the_sources_after_the_commit(graph: MemoryGraph, tmp_path: Path) -> None:
+    """锚点按本次提交之后的来源声明检查，与书写顺序无关：记录写在 Paper 之前，或同一提交中给已有的 Paper 加上
+    新版本并在新版本上写记录，都通过。"""
+    from .conftest import write_source
+
+    forward = doc("""
+        create:
+          $claim:
+            kind: Claim
+            paper: $p
+            anchor: [2211.14730v2::10:12]
+            description: |
+              Patching helps.
+          $p:
+            kind: Paper
+            name: A Time Series is Worth 64 Words
+            source: [2211.14730v2]
+        """)
+    prepared = graph.dry_run(forward)
+    assert prepared.ok, prepared.errors
+    assert graph.submit(DLINEAR).ok
+    write_source(tmp_path, "2205.13504v4")
+    update = doc("""
+        create:
+          $claim:
+            kind: Claim
+            paper: paper_0001
+            anchor: [2205.13504v4::30:31]
+            description: |
+              The new version adds a claim.
+        set:
+          paper_0001:
+            source: [2205.13504v3, 2205.13504v4]
+        """)
+    prepared = graph.dry_run(update)
+    assert prepared.ok, prepared.errors
+    late_code = doc("""
+        create:
+          exp_0001:
+            RELATES_TO:
+              $c: {description: run with this code, anchor: [Autoformer@09994619::run.py::1:1]}
+          $c:
+            kind: Code
+            name: Autoformer
+            source: [Autoformer@09994619]
+        """)
+    (tmp_path / "sources/Autoformer@09994619").mkdir(parents=True)
+    (tmp_path / "sources/Autoformer@09994619/run.py").write_text("import x\n", encoding="utf-8")
+    prepared = graph.dry_run(late_code)
+    assert prepared.ok, prepared.errors
+    assert not graph.dry_run(update.replace("2205.13504v3, 2205.13504v4", "2205.13504v3")).ok  # 没有声明仍被拒绝
+
+
 def test_paper_sources_are_versioned_and_available(graph: MemoryGraph) -> None:
     for source, expected in [('"2205.13504"', "write the version too"), ("2205.13504v9", "not an available source"),
                              ("Autoformer@09994619", "not a source id for a Paper"), ("papers/x.md", "not a source id")]:

@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -142,6 +142,7 @@ class _Translator:
     sources: SourceDir | None = None
     declared_by: dict[str, set[str]] = field(default_factory=dict)  # 来源 ID → 库中声明它的节点（缓存）
     added: dict[str, list[tuple[str, str, bool]]] = field(default_factory=dict)
+    deferred: list[Callable[[], None]] = field(default_factory=list)  # 锚点检查：全部节点与边写完之后进行
 
     def run(self) -> Translation:
         if not self.ctx.user:
@@ -164,6 +165,8 @@ class _Translator:
             self.set_node(ref, node)
         for ref, rels in self.doc.delete.items():
             self.delete(ref, rels)
+        for check_later in self.deferred:  # 按本次提交之后的来源声明检查锚点，与书写顺序无关
+            check_later()
         self.namekeys()
         self.exp_keys()
         fragment = Fragment(self.nodes, frozenset(self.deletes))
@@ -241,7 +244,7 @@ class _Translator:
         node = self.frag(node_id)  # paper 已经在上面写进了 FROM
         self.nodes[node_id] = FragmentNode(labels=labels_of(kind), props=props, rels=node.rels, new=True)
         if "anchor" in props and kind in CONTENT:
-            props["anchor"] = self.check_anchor(f"{at}.anchor", self.paper_of(node_id), props["anchor"])
+            self.later_anchor(f"{at}.anchor", node_id, props["anchor"])
         for rel_type, edge in doc_node.edges():
             self.edge(f"{at}.{rel_type}.{edge.to}", node_id, rel_type, edge, "create")
 
@@ -283,13 +286,13 @@ class _Translator:
                 self.node_prop(f"{at}.{key}", node_id, kind, key, value, props, current)
         if current.props.get("stub") is True and "stub" not in doc_node.props and props.get("description"):
             props["stub"] = None  # 补全桩
-        if kind in CONTENT and props.get("anchor"):
-            kept = set() if node_id in self.papers else set(current.props.get("anchor") or [])  # 原样贴回的不再检查
-            props["anchor"] = self.check_anchor(f"{at}.anchor", self.paper_of(node_id), props["anchor"], kept)
-        elif kind in CONTENT and node_id in self.papers:  # 换了论文：现有的锚点也要在新论文的来源中
-            self.check_anchor(f"{at}.anchor", self.paper_of(node_id), list(current.props.get("anchor") or []))
         if props:
             self.frag(node_id).props.update(props)
+        if kind in CONTENT and props.get("anchor"):
+            kept = set(current.props.get("anchor") or [])  # 原样贴回的不再检查（换了论文时都检查，见 later_anchor）
+            self.later_anchor(f"{at}.anchor", node_id, props["anchor"], kept)
+        elif kind in CONTENT and node_id in self.papers:  # 换了论文：现有的锚点也要在新论文的来源中
+            self.later_anchor(f"{at}.anchor", node_id, list(current.props.get("anchor") or []), store=False)
         for rel_type, edge in doc_node.edges():
             self.edge(f"{at}.{rel_type}.{edge.to}", node_id, rel_type, edge, "set")
 
@@ -496,6 +499,18 @@ class _Translator:
         whose = f"a source of {self.ref(paper)} (its source: {listed}); add it to that Paper's source first"
         return self.anchors(at, value, allowed, whose, grounded=True, kept=kept)
 
+    def later_anchor(self, at: str, node_id: str, value: list[str], kept: set[str] = frozenset(), *,
+                     store: bool = True) -> None:  # fmt: skip
+        """Content 的锚点，在全部节点与边写完之后检查：所属论文与它的 ``source`` 都取本次提交之后的（同一提交中
+        先写记录、后写或改 Paper 的 ``source`` 都可以）。``store`` 为真时把规范写法写回节点。"""
+
+        def run() -> None:
+            checked = self.check_anchor(at, self.paper_of(node_id), value, set() if node_id in self.papers else kept)
+            if store:
+                self.frag(node_id).props["anchor"] = checked
+
+        self.deferred.append(run)
+
     def anchors(
         self, at: str, value: list[str], allowed: Any, whose: str, *, grounded: bool, kept: set[str] = frozenset()
     ) -> list[str]:
@@ -612,7 +627,12 @@ class _Translator:
                 self.error("field", at, "anchor is a list of source references like [2205.13504v2::120:135]")
                 return
             whose = "declared by any Paper or Code in the store; add it to the source of the Paper or Code it belongs to"
-            value = self.anchors(at, value, _Declared(self), whose, grounded=False)
+            value = [normalize_ref(v) for v in value]
+
+            def run(raw: list[str] = value) -> None:  # 写完之后检查：声明来源的 Paper 或 Code 可以写在后面
+                props[name] = self.anchors(at, raw, _Declared(self), whose, grounded=False)
+
+            self.deferred.append(run)
         elif name == "printed_as" and not isinstance(value, str):
             self.error("field", at, "printed_as is the name as printed in the paper")
             return
