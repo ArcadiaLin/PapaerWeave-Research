@@ -45,7 +45,7 @@ f3 只接通了 A3、A2（M1）；A0、A4 的写者条件属 M3、M4，在此之
 - ``<组>/``：A3、A2 的材料根目录 ``data/``（产物文档）；A0 的共享仓库 ``repo/``。
 
 写者的沙箱断网（V3 §7 第 5 条），不挂载论文与代码（f3 §2）：材料只经来源服务 ``read_source`` 按来源 ID 取得，任务
-文字末尾接环境说明（``ENV_NOTE``）与写者的来源说明（``WRITER_NOTE``）。
+文字末尾接环境说明（``ENV_NOTE``）、写者的来源说明（``WRITER_NOTE``）与本地和发布的说明（``PUBLISH_NOTE``）。
 
 各组的存储互不相干，组内按序号逐个运行（写者轮流写），各组同时运行。
 
@@ -89,6 +89,7 @@ from . import export
 from .mcp_client import HttpClient
 from .sandbox import (
     ENV_NOTE,
+    PUBLISH_NOTE,
     GRAPH,
     WRITER_NOTE,
     Arm,
@@ -235,14 +236,14 @@ def reader_prompt(timeline: Timeline, arm: str, probe: dict[str, Any]) -> str:
 
 def prompt(timeline: Timeline, arm: str, step: dict[str, Any]) -> str:
     """身份背景 + 任务文字（``{WRITE}`` 按会话的产物类型、``{TOOLS}`` 按组替换）+ 环境说明（V3 §7 第 5 条）+ 写者的
-    来源说明（f3 B2），后两者各组相同。"""
+    来源说明（f3 B2）+ 本地与发布的说明（f3 工程记录 4.7），后三者各组相同。"""
     hint = timeline.hints[arm.lower()]
     task = step["task"].replace("{WRITE}", hint["WRITE"].format(type=step.get("writes", "")))
     task = task.replace("{TOOLS}", hint["TOOLS"])
     if "{" in task:
         raise ValueError(f"unfilled placeholder in session {step['seq']}: {task}")
     background = timeline.identities[step["identity"]]["background"].strip()
-    return f"{background}\n\n{task.strip()}\n\n{ENV_NOTE}\n{WRITER_NOTE}\n"
+    return f"{background}\n\n{task.strip()}\n\n{ENV_NOTE}\n{WRITER_NOTE}\n{PUBLISH_NOTE}\n"
 
 
 def writer_of(config: dict[str, Any], identity: dict[str, Any]) -> Writer:

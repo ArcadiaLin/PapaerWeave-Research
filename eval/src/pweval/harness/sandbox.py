@@ -61,6 +61,11 @@ WRITER_NOTE = (
     "You are working in a sandbox: papers and code are not available locally or from the network; fetch them by id\n"
     "with read_source."
 )
+# f3 工程记录 4.7：所有写者会话在来源说明之后接这一句，四组逐字相同（只说环境事实；各组怎样发布由各自的接口说明）
+PUBLISH_NOTE = (
+    "Each session starts with a fresh local workspace. Only contributions published to the shared store are available\n"
+    "to later sessions; local files are not carried over."
+)
 
 
 def site_record() -> dict[str, str]:
@@ -519,5 +524,5 @@ def _write_json(path: Path, data: object) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-__all__ = ["ENV_NOTE", "GRAPH", "WRITER_NOTE", "Arm", "Paths", "ReadSource", "Writer", "isolated_start", "pi_install", "pi_version", "prepare",
+__all__ = ["ENV_NOTE", "GRAPH", "PUBLISH_NOTE", "WRITER_NOTE", "Arm", "Paths", "ReadSource", "Writer", "isolated_start", "pi_install", "pi_version", "prepare",
            "run_session"]

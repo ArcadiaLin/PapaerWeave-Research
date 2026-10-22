@@ -17,7 +17,7 @@ import pytest
 import yaml
 
 from pweval.harness import timeline
-from pweval.harness.sandbox import ENV_NOTE, WRITER_NOTE, Paths
+from pweval.harness.sandbox import ENV_NOTE, PUBLISH_NOTE, WRITER_NOTE, Paths
 from pweval.harness.timeline import Timeline
 
 HINTS = {
@@ -33,7 +33,8 @@ def test_prompt_fills_the_arm_hints_after_the_background() -> None:
     step = {"seq": 5, "identity": "i3-a", "type": "compare", "writes": "CompareSettings",
             "task": "Are they comparable? {WRITE} {TOOLS}"}  # fmt: skip
     tl = Timeline([step], IDENTITIES, HINTS, READER, [])
-    note = f"\n\n{ENV_NOTE}\n{WRITER_NOTE}\n"  # 环境说明（V3 §7 第 5 条）与写者的来源说明（f3 B2），各组相同
+    note = f"\n\n{ENV_NOTE}\n{WRITER_NOTE}\n{PUBLISH_NOTE}\n"  # 环境、来源（f3 B2）、本地与发布（4.7），各组相同
+    assert "published to the shared store" in PUBLISH_NOTE and "commit" not in PUBLISH_NOTE
     assert timeline.prompt(tl, "A3", step) == (
         "You maintain a benchmark.\n\nAre they comparable? Record it as a CompareSettings artifact. "
         "Use the PaperWeave tools." + note
