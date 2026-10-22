@@ -3,7 +3,11 @@
 （写读分离，V3 §7 第 9 条；f3 的 M2）。
 
     python -m pweval.harness.timeline <运行名> [--config eval/config/f3-ltsf.yml] [--arms A3,A2]
-        [--until <序号>] [--neo4j A3=bolt://…,A2=…] [--reset] [--allow-config-change] [--allow-code-change]
+        [--until <序号>] [--neo4j A3=bolt://…,A2=…] [--reset] [--allow-config-change] [--allow-code-change] [--unfrozen]
+
+正式运行用冻结副本的解释器启动（``<副本>/.venv/bin/python -m pweval.harness.timeline …``，副本由
+:mod:`pweval.harness.freeze` 建立）：会话代码不可写、与检出的提交一致，否则拒绝；``--unfrozen`` 只用于冒烟与开发，
+记入 ``run.yml``。
 
 f3 只接通了 A3、A2（M1）；A0、A4 的写者条件属 M3、M4，在此之前拒绝运行。
 
@@ -1075,24 +1079,43 @@ def _comparable(config: dict[str, Any]) -> dict[str, Any]:
     return {**config, "runner": runner}
 
 
-SESSION_CODE = (  # 写者会话实际执行的代码（相对仓库根目录）：被测系统、A2 的消融服务、沙箱内外的转发与来源服务、运行器
+SESSION_CODE = (  # 写者时间线执行的代码（相对仓库根目录）：被测系统及其两个包、A2 的消融服务、整个评测包（运行器、
+    # 沙箱、转发、来源服务与它们加载的模块），加上锁文件与各 pyproject
     "system/src", "system/pyproject.toml", "packages/graph-doc/src", "packages/graph-doc/pyproject.toml",
-    "packages/graph-vc/src", "packages/graph-vc/pyproject.toml", "eval/baselines",
-    "eval/src/pweval/harness/bridge.py", "eval/src/pweval/harness/source_server.py",
-    "eval/src/pweval/harness/sandbox.py", "eval/src/pweval/harness/timeline.py", "eval/src/pweval/harness/export.py",
+    "packages/graph-vc/src", "packages/graph-vc/pyproject.toml", "eval/baselines", "eval/src", "eval/pyproject.toml",
     "pyproject.toml", "uv.lock",
 )  # fmt: skip
+
+
+def _session_files(repo: Path) -> list[str]:
+    listed = _git(repo, "ls-files", "-co", "--exclude-standard", "-z", "--", *SESSION_CODE).split("\0")
+    return sorted({f for f in listed if f and (repo / f).is_file()})
 
 
 def code_fingerprint(repo: Path = REPO) -> dict[str, Any]:
     """写者会话所执行代码的指纹（审查第 3 条）：``SESSION_CODE`` 下已跟踪与未跟踪（不含忽略的）文件，按路径排序，
     逐个文件的 路径、NUL、磁盘上内容的 SHA-256。按磁盘内容算，未提交的改动也计入；只看提交号或 dirty 标志不够。"""
-    listed = _git(repo, "ls-files", "-co", "--exclude-standard", "-z", "--", *SESSION_CODE).split("\0")
-    files = sorted({f for f in listed if f and (repo / f).is_file()})
+    files = _session_files(repo)
     digest = hashlib.sha256()
     for f in files:
         digest.update(f"{f}\0".encode() + hashlib.sha256((repo / f).read_bytes()).digest())
     return {"sha256": digest.hexdigest(), "files": len(files)}
+
+
+def frozen_problems(repo: Path = REPO) -> list[str]:
+    """正式运行须从冻结副本启动（``python -m pweval.harness.freeze``）：会话代码与检出的提交一致，会话代码及其
+    目录、副本自己的 ``.venv`` 的 site-packages 目录与可编辑安装的 ``.pth`` 都不可写。指纹只能在会话边界发现改动；
+    不可写的副本使会话进行中也没有人能改正在被加载的文件（审查第 3 条的补充）。返回不满足的条件，空即满足。"""
+    problems = []
+    if changed := _git(repo, "status", "--porcelain", "--untracked-files=all", "--", *SESSION_CODE).strip():
+        problems.append(f"the session code in {repo} differs from its checked-out commit:\n{changed}")
+    files = [repo / f for f in _session_files(repo)]
+    paths = set(files) | {d for f in files for d in f.parents if d.is_relative_to(repo)}
+    for site in (repo / ".venv/lib").glob("python*/site-packages"):
+        paths |= {site, *site.glob("_editable_impl_*.pth")}
+    if writable := sorted(str(p) for p in paths if os.access(p, os.W_OK)):
+        problems.append(f"{len(writable)} paths of the session code are writable, such as {writable[0]}")
+    return problems
 
 
 def check_code(run: Path, expected: dict[str, Any]) -> None:
@@ -1105,7 +1128,7 @@ def check_code(run: Path, expected: dict[str, Any]) -> None:
 
 def _record_run(run: Path, config_path: Path, config: dict[str, Any], argv: list[str], *,
                 allow_change: bool = False, code: dict[str, Any] | None = None,
-                allow_code_change: bool = False) -> None:  # fmt: skip
+                allow_code_change: bool = False, frozen: bool | None = None) -> None:  # fmt: skip
     """``run.yml``：每次调用追加一条——时间、参数、实际生效的配置（含 ``--neo4j`` 的覆盖）、仓库与题库的提交、
     pi 的版本。种子与会话可以分几次调用完成。续跑时生效的配置（只影响用时的项除外）或题库的提交与第一次不同，
     就拒绝运行，除非给出 ``--allow-config-change``（改动随这次调用记下）。给出 ``code``（写者会话所执行代码的指纹，
@@ -1113,11 +1136,12 @@ def _record_run(run: Path, config_path: Path, config: dict[str, Any], argv: list
     分开处理，修正须显式放行并记下。仓库其余部分的提交可以变（如读者侧的开发），各次的提交都留在记录中。"""
     path = run / "run.yml"
     with _locked(path):
-        _record_invocation(path, config_path, config, argv, allow_change, code, allow_code_change)
+        _record_invocation(path, config_path, config, argv, allow_change, code, allow_code_change, frozen)
 
 
 def _record_invocation(path: Path, config_path: Path, config: dict[str, Any], argv: list[str], allow_change: bool,
-                       code: dict[str, Any] | None = None, allow_code_change: bool = False) -> None:  # fmt: skip
+                       code: dict[str, Any] | None = None, allow_code_change: bool = False,
+                       frozen: bool | None = None) -> None:  # fmt: skip
     run = path.parent
     record = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {"invocations": []}
 
@@ -1143,6 +1167,7 @@ def _record_invocation(path: Path, config_path: Path, config: dict[str, Any], ar
         "config": effective,
         "repo": commit(REPO),
         **({"code": code, "allow_code_change": allow_code_change} if code is not None else {}),
+        **({"code_dir": str(REPO), "frozen": frozen} if frozen is not None else {}),
         "probes": probes,
         "pi": pi_version(),
         "sandbox_python": site_record(),
@@ -1255,11 +1280,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--neo4j", help="覆盖图库地址，如 A3=bolt://localhost:7695（A4 为 Graphiti 的库）")
     parser.add_argument("--reset", action="store_true",
                         help="起点建立前库不空时清空（A3、A2 清整个图库，A4 清配置中的 group）；已有会话记录的组拒绝重建")
+    parser.add_argument("--unfrozen", action="store_true",
+                        help="不从冻结副本运行（冒烟、开发）；正式运行不用它，见 python -m pweval.harness.freeze")
     parser.add_argument("--allow-code-change", action="store_true",
                         help="续跑时允许写者会话所执行的代码与第一次调用不同（工程修正；指纹记入 run.yml）")
     parser.add_argument("--allow-config-change", action="store_true",
                         help="续跑时允许生效的配置或题库提交与第一次调用不同（改动记入 run.yml）")
     args = parser.parse_args(argv)
+    if not args.unfrozen and (problems := frozen_problems()):
+        raise SystemExit("start the timeline from a frozen copy (python -m pweval.harness.freeze <commit>), "
+                         "or pass --unfrozen for a smoke run:\n" + "\n".join(problems))  # fmt: skip
     config_path = Path(args.config).resolve()
     config = load_config(config_path)
     for item in filter(None, (args.neo4j or "").split(",")):
@@ -1276,7 +1306,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     run.mkdir(parents=True, exist_ok=True)
     code = code_fingerprint()
     _record_run(run, config_path, config, list(argv) if argv is not None else sys.argv[1:],
-                allow_change=args.allow_config_change, code=code, allow_code_change=args.allow_code_change)
+                allow_change=args.allow_config_change, code=code, allow_code_change=args.allow_code_change,
+                frozen=not args.unfrozen)
     timeline = timeline_of(config)
     emit("RUN", "-", name=args.name, arms=",".join(arms), pid=os.getpid())
 

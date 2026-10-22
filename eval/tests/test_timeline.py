@@ -378,21 +378,23 @@ def test_the_session_code_is_frozen_for_a_run(tmp_path: Path, monkeypatch: pytes
     repo = tmp_path / "repo"
     (repo / "system/src").mkdir(parents=True)
     (repo / "eval/src/pweval/harness").mkdir(parents=True)
+    (repo / "eval/src/pweval/harness/sandbox.py").write_text("s = 1\n")
     (repo / "system/src/a.py").write_text("x = 1\n")
-    (repo / "eval/src/pweval/harness/readers.py").write_text("r = 1\n")
+    (repo / "docs").mkdir()
+    (repo / "docs/notes.md").write_text("r = 1\n")
     git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t"]
     subprocess.run([*git, "init", "-q"], check=True)
     subprocess.run([*git, "add", "-A"], check=True)
     subprocess.run([*git, "commit", "-q", "-m", "x"], check=True)
     first = timeline.code_fingerprint(repo)
-    (repo / "eval/src/pweval/harness/readers.py").write_text("r = 2\n")  # 读者侧的开发：不在会话代码中
+    (repo / "docs/notes.md").write_text("r = 2\n")  # 文档等：不在会话代码中
     assert timeline.code_fingerprint(repo) == first
     (repo / "system/src/a.py").write_text("x = 2\n")  # 未提交的改动
     second = timeline.code_fingerprint(repo)
     (repo / "system/src/a.py").write_text("x = 3\n")  # 另一处未提交的改动：dirty 标志相同，指纹不同
     assert len({first["sha256"], second["sha256"], timeline.code_fingerprint(repo)["sha256"]}) == 3
     (repo / "system/src/new.py").write_text("y = 1\n")  # 未跟踪的新文件也算
-    assert timeline.code_fingerprint(repo)["files"] == 2
+    assert timeline.code_fingerprint(repo)["files"] == 3
 
     probes = tmp_path / "probes"
     probes.mkdir()
@@ -412,6 +414,40 @@ def test_the_session_code_is_frozen_for_a_run(tmp_path: Path, monkeypatch: pytes
     timeline.check_code(run, second)
     with pytest.raises(RuntimeError, match="session code changed during the run"):
         timeline.check_code(run, first)
+
+
+def test_a_formal_run_needs_a_frozen_copy(tmp_path: Path) -> None:
+    """会话代码可写、或与检出的提交不一致，都不算冻结；去掉写权限且与提交一致才算（审查第 3 条的补充）。"""
+    repo = tmp_path / "repo"
+    (repo / "system/src/paperweave").mkdir(parents=True)
+    (repo / "system/src/paperweave/a.py").write_text("x = 1\n")
+    site = repo / ".venv/lib/python3.12/site-packages"
+    site.mkdir(parents=True)
+    (site / "_editable_impl_paperweave.pth").write_text(f"{repo}/system/src\n")
+    (repo / ".gitignore").write_text(".venv/\n")
+    git = ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    subprocess.run([*git, "add", "-A"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "x"], check=True)
+    assert "writable" in timeline.frozen_problems(repo)[0]
+
+    def protect(write: bool) -> None:
+        for p in [*repo.rglob("*"), repo]:
+            if ".git" not in p.relative_to(repo).parts:
+                p.chmod(p.stat().st_mode | 0o200 if write else p.stat().st_mode & ~0o222)
+
+    protect(False)
+    try:
+        assert timeline.frozen_problems(repo) == []
+        (site / "_editable_impl_paperweave.pth").chmod(0o644)  # 可编辑安装可被改指向
+        assert "writable" in timeline.frozen_problems(repo)[0]
+        (site / "_editable_impl_paperweave.pth").chmod(0o444)
+        (repo / "system/src/paperweave/a.py").chmod(0o644)
+        (repo / "system/src/paperweave/a.py").write_text("x = 2\n")
+        (repo / "system/src/paperweave/a.py").chmod(0o444)
+        assert "differs from its checked-out commit" in timeline.frozen_problems(repo)[0]
+    finally:
+        protect(True)
 
 
 # ---------------------------------------------------------------- 复审 2026-10-19 的三条与 A4 的内容指纹
