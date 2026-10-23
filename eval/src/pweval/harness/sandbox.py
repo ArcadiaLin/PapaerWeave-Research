@@ -171,7 +171,21 @@ class Paths:
     def __post_init__(self) -> None:
         object.__setattr__(self, "work", self.root / "work")
         object.__setattr__(self, "home", self.root / "home")
-        object.__setattr__(self, "sock", self.root / "sock")
+        object.__setattr__(self, "sock", sock_dir(self.root))
+
+
+SOCK_PATH_MAX = 100  # 字节；Unix socket 的路径上限是 108 字节（sun_path），留出余量
+SOCK_NAME_MAX = 16  # 最长的 socket 文件名（evidence.sock、tcp-<端口>.sock）
+SHORT_SOCKS = Path("/tmp/pw-sock")
+
+
+def sock_dir(root: Path) -> Path:
+    """会话的 socket 目录（沙箱中挂到 /run/t1）：通常是 ``<root>/sock``；会话目录太深、socket 的完整路径可能超过上限
+    时（f3 读者：``…/readers/k<篇数>/sessions/<长题号>``），改放 ``/tmp/pw-sock/<root 的哈希>``，与会话一一对应。"""
+    usual = root / "sock"
+    if len(str(usual).encode()) + 1 + SOCK_NAME_MAX <= SOCK_PATH_MAX:
+        return usual
+    return SHORT_SOCKS / hashlib.sha256(str(root).encode()).hexdigest()[:16]
 
 
 def prepare(
@@ -280,6 +294,8 @@ def run_session(paths: Paths, arm: Arm, writer: Writer, prompt: str, *, timeout_
     stderr = open(paths.root / "bridge.err", "ab")  # noqa: SIM115
     bridges = []
     socks = []
+    for stale in paths.sock.glob("*.sock"):  # 上次中断留下的：不清掉，_wait_for 会在新服务起来之前就当它就绪
+        stale.unlink()
     if arm.name in GRAPH:
         mcp = ["unix-exec", str(paths.sock / "mcp.sock"), "--", *_mcp_command(paths, arm, writer)]
         bridges.append(_spawn(mcp, stderr))

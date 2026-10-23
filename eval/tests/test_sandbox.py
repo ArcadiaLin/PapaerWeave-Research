@@ -321,3 +321,11 @@ def test_an_f3_reader_gets_the_evidence_server_and_a_read_only_store(host: Path)
     args = sandbox._bwrap(paths, arm, WRITER)
     assert "--share-net" not in args and "/run/t1" in _mounts(args)
     assert "/work/papers" not in _mounts(args) and "/work/sources" not in _mounts(args)
+
+
+def test_deep_session_directories_get_a_short_socket_directory(tmp_path: Path) -> None:
+    deep = Paths(Path("/home/lzx/pw-lab/runs/f3-readers-smoke/A3/readers/k10/sessions/M-T10-tide-patchtst-elsewhere"))
+    assert deep.sock.parent == sandbox.SHORT_SOCKS and deep.sock == Paths(deep.root).sock  # 与会话一一对应
+    assert len(str(deep.sock / "tcp-65535.sock").encode()) < 108 and len(str(deep.sock / "evidence.sock")) < 108
+    writer = Paths(Path("/home/lzx/pw-lab/runs/f3/A4/sessions/007-20261023T201405564176Z"))
+    assert writer.sock == writer.root / "sock"  # 写者的会话目录照旧
