@@ -153,6 +153,50 @@ def test_originals_prompt_says_where_the_papers_are_and_that_the_network_is_cut(
     assert CITE_OUTSIDE_FORMAT not in reader_prompt("C", auto("T1", {}))
 
 
+# f3 写者组读者的说明句（10-23 用户定稿），逐字写在这里，不从实现中取
+STORE_NOTE_FINAL = (
+    "Answer only from what the shared store records. The papers and code themselves are not available; "
+    "read_evidence reads the source lines at the anchors the store records. Cite the ids, files or anchors "
+    "your answer rests on. Do not change the store."
+)
+# 各组的 TOOLS（tasks/hints.yml，与写者同一句）
+STORE_TOOLS = {
+    "A3": "Use the PaperWeave tools.",
+    "A2": "Use the PaperWeave tools.",
+    "A0": "Use the shared repository in this directory.",
+    "A4": "Use the Graphiti memory tools.",
+}
+
+
+def test_store_group_prompt_is_question_note_tools_format_env() -> None:
+    from pweval.harness.refs import CITE_OUTSIDE_FORMAT
+    from pweval.harness.sandbox import ENV_NOTE, PUBLISH_NOTE, WRITER_NOTE
+
+    fmt = format_for(auto("T1", {}))
+    manual = {"id": "M-T2-x", "template": "T2", "gold": {"points": []}, "question": "Q?"}
+    for group, tools in STORE_TOOLS.items():
+        text = reader_prompt(group, auto("T1", {}), tools=tools)
+        assert text == "\n\n".join(["Q?", f"{STORE_NOTE_FINAL} {tools}", CITE_OUTSIDE_FORMAT, fmt, ENV_NOTE]) + "\n"
+        assert WRITER_NOTE not in text and PUBLISH_NOTE not in text  # 读者没有 read_source，也不发布
+        # 要点题：同时省去引用位置说明与 Final answer 段，末尾仍是环境说明
+        assert reader_prompt(group, manual, tools=tools) == "\n\n".join(
+            ["Q?", f"{STORE_NOTE_FINAL} {tools}", ENV_NOTE]) + "\n"
+    # 四组去掉各自的 TOOLS 后逐字相同
+    bare = {reader_prompt(g, auto("T1", {}), tools=t).replace(t, "<TOOLS>") for g, t in STORE_TOOLS.items()}
+    assert len(bare) == 1
+    for bad in (None, "", "   "):
+        with pytest.raises(ValueError):
+            reader_prompt("A3", auto("T1", {}), tools=bad)
+
+
+@pytest.mark.skipif(not (PROBES_REPO / "tasks/hints.yml").exists(), reason="题库仓库不在本机")
+def test_store_tools_match_hints() -> None:
+    import yaml
+
+    hints = yaml.safe_load((PROBES_REPO / "tasks/hints.yml").read_text(encoding="utf-8"))
+    assert {g: hints[g.lower()]["TOOLS"] for g in STORE_TOOLS} == STORE_TOOLS
+
+
 @pytest.mark.skipif(not (PROBES_REPO / "probes/sample.yml").exists(), reason="题库仓库不在本机")
 def test_paragraph_group_prompt_puts_material_between_question_and_format() -> None:
     from pweval.harness.refs import D_NOTE, D_SCOPE

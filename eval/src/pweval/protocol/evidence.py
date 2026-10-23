@@ -210,7 +210,7 @@ class Evidence:
             lines = self.lines(source)
             a, b = int(lo), int(hi or lo)
             _check(a, b, lines)
-            return source, max(1, a - CODE_CONTEXT), min(len(lines), b + CODE_CONTEXT)
+            return (source, *code_block(lines, a, b))
         if not (m := PAPER.fullmatch(anchor)):
             raise ValueError(f"unrecognized anchor: {anchor}")
         source, table, lo, hi = m.groups()
@@ -222,14 +222,8 @@ class Evidence:
             if len(found) != 1:
                 raise ValueError(f"table anchor does not resolve uniquely: {anchor}")
             a, b = int(found[0]["first"]), int(found[0]["last"])
-        for t in self.tables:  # 落在表内的行扩展为整表
-            if t["arxiv"] == source and int(t["first"]) <= b and int(t["last"]) >= a:
-                a, b = min(a, int(t["first"])), max(b, int(t["last"]))
-        while a > 1 and lines[a - 2].strip():
-            a -= 1
-        while b < len(lines) and lines[b].strip():
-            b += 1
-        return source, a, b
+        tables = [(int(t["first"]), int(t["last"])) for t in self.tables if t["arxiv"] == source]
+        return (source, *paper_block(lines, a, b, tables))
 
     def rows(self) -> dict[str, dict[int, tuple[set[str], set[str]]]]:
         """表 → 数据行的行号 → （数据集，方法列），来自 ``facts/cells.csv``。"""
@@ -344,6 +338,25 @@ class Evidence:
 def dataset_key(name: str) -> str:
     key = name.strip().lower()
     return DATASET_ALIASES.get(key, key)
+
+
+def paper_block(lines: list[str], a: int, b: int, tables: list[tuple[int, int]]) -> tuple[int, int]:
+    """论文中第 ``a``–``b`` 行所在的块：落在表内的行扩展为整表（``tables`` 为该论文各表的起止行，按
+    ``facts/tables.csv`` 的顺序），再上下取到空行。D 的材料、判分包与读者的放行名单（:mod:`pweval.protocol.allowlist`）
+    用同一规则。"""
+    for first, last in tables:
+        if first <= b and last >= a:
+            a, b = min(a, first), max(b, last)
+    while a > 1 and lines[a - 2].strip():
+        a -= 1
+    while b < len(lines) and lines[b].strip():
+        b += 1
+    return a, b
+
+
+def code_block(lines: list[str], a: int, b: int) -> tuple[int, int]:
+    """代码中第 ``a``–``b`` 行所在的块：前后各补 ``CODE_CONTEXT`` 行。"""
+    return max(1, a - CODE_CONTEXT), min(len(lines), b + CODE_CONTEXT)
 
 
 def _check(lo: int, hi: int, lines: list[str]) -> None:
@@ -482,4 +495,5 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["Evidence", "Material", "Passage", "anchors", "judge_material", "latest", "papers_at", "reader_material"]
+__all__ = ["Evidence", "Material", "Passage", "anchors", "code_block", "judge_material", "latest", "paper_block", "papers_at",
+           "reader_material"]

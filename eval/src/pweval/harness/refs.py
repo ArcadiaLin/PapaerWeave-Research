@@ -98,6 +98,15 @@ P_NOTE = (
     "version, read-only). Cite the papers and lines your answer rests on. No store is available.\n"
     'Where the question refers to "the store" or "the papers in the store", it means these papers.'
 )
+# §7 第 3 条的写者组说明句，f3 定稿（10-23 用户定）：读者没有 read_source，原文只经评测侧的 read_evidence 读库中锚点
+# 所在的块（f3 设计 §6）；末尾接该组的 TOOLS（tasks/hints.yml，与写者同一句）。“Do not change the store.”表达任务
+# 要求，实际约束是撤掉写入工具与只读挂载。
+STORE_NOTE = (  # 一行，与定稿逐字相同
+    "Answer only from what the shared store records. The papers and code themselves are not available; read_evidence "
+    "reads the source lines at the anchors the store records. Cite the ids, files or anchors your answer rests on. "
+    "Do not change the store."
+)
+STORE_GROUPS = ("A0", "A2", "A3", "A4")
 # 要求引用的组带 Final answer 段时：引用写在正文，Final answer 段只放格式规定的字段（引用混进字段会使名称无法归一）。
 CITE_OUTSIDE_FORMAT = "Give the citations in the body of your reply; the Final answer section holds only the fields below."
 NO_TOOLS = ("--no-tools", "--no-mcp", "--no-skills", "--no-extensions", "--no-context-files", "--no-prompt-templates")
@@ -114,8 +123,10 @@ def evidence_of(config: dict[str, Any]) -> Evidence:
     return Evidence(config["probes_repo"], config["corpus_papers"], config["code"])
 
 
-def reader_prompt(group: str, probe: dict[str, Any], evidence: Evidence | None = None) -> str:
-    """题面原文、（D 的）依据材料、组的说明句，以及题型的 Final answer 段（要点题没有）。"""
+def reader_prompt(group: str, probe: dict[str, Any], evidence: Evidence | None = None, tools: str | None = None) -> str:
+    """题面原文、（D 的）依据材料、组的说明句，以及题型的 Final answer 段（要点题没有）。写者组（``STORE_GROUPS``）的
+    说明句后接 ``tools``（该组的 TOOLS），与 P 一样在格式要求前说明引用放在正文、末尾接环境说明。"""
+    cites = group == "P" or group in STORE_GROUPS
     if group == "C":
         parts = [probe["question"].strip(), C_NOTE]
     elif group == "D":
@@ -126,13 +137,17 @@ def reader_prompt(group: str, probe: dict[str, Any], evidence: Evidence | None =
         parts = [probe["question"].strip(), reader_material(evidence, probe), note]
     elif group == "P":
         parts = [probe["question"].strip(), P_NOTE]
+    elif group in STORE_GROUPS:
+        if not tools or not tools.strip():
+            raise ValueError(f"group {group} needs its TOOLS sentence")
+        parts = [probe["question"].strip(), f"{STORE_NOTE} {tools.strip()}"]
     else:
         raise NotImplementedError(f"group {group} is not implemented yet")
     if fmt := format_for(probe):
-        if group == "P":
+        if cites:
             parts.append(CITE_OUTSIDE_FORMAT)
         parts.append(fmt)
-    if group == "P":  # 带工具的组：提示语末尾接共用的环境说明（§7 第 5 条）；C、D 不带工具，不加
+    if cites:  # 带工具的组：提示语末尾接共用的环境说明（§7 第 5 条）；C、D 不带工具，不加
         parts.append(ENV_NOTE)
     return "\n\n".join(parts) + "\n"
 
