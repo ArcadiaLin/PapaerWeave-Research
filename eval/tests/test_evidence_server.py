@@ -178,9 +178,14 @@ def test_a_block_that_does_not_fit_this_reply_gives_the_request_not_the_block(ev
     monkeypatch.setattr(server, "LIMIT", whole - 1)
     item = ev.read([f"{P}::12:14"])[0][0]
     assert (item["status"], item["passage"], item["lines"]) == ("available", "10:24", "12:14") and "next" not in item
-    monkeypatch.setattr(server, "LIMIT", 120)
-    pages = read_all(ev, f"{P}::12:14", {12, 13, 14})
+    narrow = ev.plan(f"{P}::12:20").narrow()
+    monkeypatch.setattr(server, "LIMIT", size([narrow.render(2)]))  # 放得下两行一页，放不下整段 12:20
+    assert size([narrow.render(narrow.total)]) > server.LIMIT
+    pages = read_all(ev, f"{P}::12:20", set(range(12, 21)))
     assert pages[0]["status"] == "partial" and pages[0]["passage"] == "10:24"
+    assert all(size([p]) <= server.LIMIT for p in pages)
+    monkeypatch.setattr(server, "LIMIT", size([narrow.render(1)]) - 1)  # 一行也放不下：整条未读，不硬塞一行
+    assert ev.read([f"{P}::12:20"])[0][0]["status"] == "not read"
 
 
 def test_the_line_cap_holds_even_when_bytes_would_allow(ev: Evidence, monkeypatch) -> None:
@@ -207,6 +212,44 @@ def test_later_references_that_do_not_fit_are_not_read(ev: Evidence) -> None:
     assert items[0]["status"] == "available" and items[1]["status"] == "not read"
     items, _ = ev.read([f"{P}::5:24", f"{Q}::1:2", f"{U}::1:1"])  # 都放得下
     assert [i["status"] for i in items] == ["available", "available", "refused"]
+
+
+def test_a_later_reference_over_the_line_cap_is_not_read(ev: Evidence, monkeypatch) -> None:
+    """之后的引用要么整条交付，要么整条未读：超过 400 行时即使字节放得下也不分页、不给 next。"""
+    import pweval.harness.evidence_server as server
+
+    monkeypatch.setattr(server, "LIMIT", 10**7)
+    items, _ = ev.read([f"{Q}::1:2", f"{P}::28:627"])
+    assert items[0]["status"] == "available" and items[1]["status"] == "not read" and "next" not in items[1]
+    items, _ = ev.read([f"{U}::1:1", f"{P}::28:627"])  # 前面只有拒绝：它仍是第一条交付正文的引用，可以分页
+    assert items[1]["status"] == "partial" and items[1]["next"] == f"{P}::{28 + MAX_LINES}:627"
+
+
+def test_references_too_long_to_list_fail_the_call(ev: Evidence, tmp_path: Path) -> None:
+    """全部记为未读也超过上限时整次调用报错（50 条约 300 字的引用），不返回超限的回复。"""
+    refs = [f"{P}::{'4.2 Results ' * 24}::{i}:{i}" for i in range(5, 55)]
+    text, error = ev.call({"refs": refs})
+    assert error and text.startswith("error: these 50 references do not fit in one reply") and len(text) < 300
+    last = json.loads((tmp_path / "evidence.jsonl").read_text().splitlines()[-1])
+    assert last["error"] and "items" not in last
+
+
+def test_no_reply_exceeds_the_limit_and_only_the_first_text_reference_pages(ev: Evidence) -> None:
+    import random
+
+    pool = [f"{P}::28:627", f"{P}::5:24", f"{P}::20:640", f"{P}::12:14", f"{Q}::1:10", f"{U}::1:1", f"{P}",
+            f"{P}::700:710", f"{C}::src/model.py::2:3", f"{C}::src/big.py::2:2", f"{P}::{'x ' * 140}::30:31"]  # fmt: skip
+    rng = random.Random(0)
+    for _ in range(60):
+        refs = [rng.choice(pool) for _ in range(rng.randint(1, 50))]
+        text, error = ev.call({"refs": refs})
+        assert len(text.encode()) <= LIMIT
+        if error:
+            continue
+        items = yaml.safe_load(text)
+        assert len(items) == len(refs)
+        texts = [i for i, it in enumerate(items) if "text" in it or "passages" in it]
+        assert all("next" not in items[i] for i in texts[1:])  # 只有第一条交付正文的引用可以分页
 
 
 def test_metadata_is_counted_in_the_limit(ev: Evidence) -> None:

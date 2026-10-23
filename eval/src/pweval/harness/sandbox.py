@@ -131,6 +131,15 @@ class ReadSource:
 
 
 @dataclass(frozen=True)
+class ReadEvidence:
+    """读者的证据服务（f3 §6.2，:mod:`pweval.harness.evidence_server`）：该组该检查点归档的放行名单与开放来源。"""
+
+    allowlist: Path  # <运行目录>/allowlists/<组>/k<篇数>.json（旁边有 .sha256）
+    library: Path  # 检查点上已开放的来源（备份中恢复的 sources/）
+    session: str = ""  # 记录中的会话标识
+
+
+@dataclass(frozen=True)
 class Arm:
     name: str  # A0、A2、A3、A4，或参照组 C、D、P（没有库），以及先导的 none
     papers: Path | None  # 论文材料目录（只读挂载到 /work/papers）；读者与参照线为 None
@@ -149,6 +158,7 @@ class Arm:
     isolated_tcp: tuple[str, ...] = ()  # 断网时另外转发进沙箱的服务（host:port），沙箱内在回环地址的同一端口上可连，如 A4 的 Graphiti
     sources: Path | None = None  # A3、A2（f3）：MCP 服务的只读来源目录（PAPERWEAVE_SOURCES）
     read_source: ReadSource | None = None  # 写者（f3）：来源服务，取到 /work/sources/
+    evidence: ReadEvidence | None = None  # 读者（f3）：评测侧的 read_evidence，四组相同
 
 
 @dataclass(frozen=True)
@@ -243,6 +253,13 @@ def prepare(
             "exposure": "direct",
             "timeout": 300,
         }
+    if arm.evidence is not None:  # 四组登记相同
+        servers["Evidence"] = {
+            "command": "python3",
+            "args": ["/opt/t1/bridge.py", "stdio-to-unix", "/run/t1/evidence.sock"],
+            "exposure": "direct",
+            "timeout": 300,
+        }
     _write_json(agent / "mcp.json", {"mcpServers": servers})
 
 
@@ -270,6 +287,9 @@ def run_session(paths: Paths, arm: Arm, writer: Writer, prompt: str, *, timeout_
     if arm.read_source is not None:
         bridges.append(_spawn(["unix-exec", str(paths.sock / "sources.sock"), "--", *_source_command(paths, arm)], stderr))
         socks.append(paths.sock / "sources.sock")
+    if arm.evidence is not None:
+        bridges.append(_spawn(["unix-exec", str(paths.sock / "evidence.sock"), "--", *_evidence_command(paths, arm)], stderr))
+        socks.append(paths.sock / "evidence.sock")
     if arm.isolated_llm is not None:
         for name, target in _forwards(arm):
             bridges.append(_spawn(["unix-to-tcp", str(paths.sock / name), target], stderr))
@@ -440,7 +460,7 @@ def _bwrap(paths: Paths, arm: Arm, writer: Writer) -> list[str]:
         "--bind", str(paths.home), "/home/agent",
         "--ro-bind", str(SITE), SITE_DIR,
     ]  # fmt: skip
-    if arm.name in GRAPH or arm.isolated_llm or arm.read_source:
+    if arm.name in GRAPH or arm.isolated_llm or arm.read_source or arm.evidence:
         args += ["--ro-bind", str(BRIDGE), "/opt/t1/bridge.py", "--bind", str(paths.sock), "/run/t1"]
     if arm.read_source is not None:  # 挂在 /work 之上：写者只能读，来源服务在沙箱外往宿主机的同一目录写
         args += ["--ro-bind", str(paths.work / "sources"), "/work/sources"]
@@ -508,6 +528,14 @@ def _source_command(paths: Paths, arm: Arm) -> list[str]:
             "--log", str(paths.root / "sources.jsonl"), "--session", spec.session]  # fmt: skip
 
 
+def _evidence_command(paths: Paths, arm: Arm) -> list[str]:
+    """证据服务的命令：请求记在 ``<root>/evidence.jsonl``。"""
+    spec = arm.evidence
+    assert spec is not None
+    return [str(REPO / ".venv/bin/python"), "-m", "pweval.harness.evidence_server", "--allowlist", str(spec.allowlist),
+            "--library", str(spec.library), "--log", str(paths.root / "evidence.jsonl"), "--session", spec.session]  # fmt: skip
+
+
 def _spawn(args: list[str], stderr) -> subprocess.Popen:
     return subprocess.Popen(["python3", str(BRIDGE), *args], cwd=REPO / "system", stderr=stderr)
 
@@ -524,5 +552,5 @@ def _write_json(path: Path, data: object) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-__all__ = ["ENV_NOTE", "GRAPH", "PUBLISH_NOTE", "WRITER_NOTE", "Arm", "Paths", "ReadSource", "Writer", "isolated_start", "pi_install", "pi_version", "prepare",
+__all__ = ["ENV_NOTE", "GRAPH", "PUBLISH_NOTE", "WRITER_NOTE", "Arm", "Paths", "ReadEvidence", "ReadSource", "Writer", "isolated_start", "pi_install", "pi_version", "prepare",
            "run_session"]

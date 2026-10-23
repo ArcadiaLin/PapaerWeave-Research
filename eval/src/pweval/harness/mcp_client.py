@@ -47,6 +47,10 @@ class Client:
         result = self._request("tools/call", {"name": tool, "arguments": arguments})
         return "\n".join(c.get("text", "") for c in result.get("content", []))
 
+    def tools(self) -> list[str]:
+        """服务列出的工具名。"""
+        return [t["name"] for t in self._request("tools/list", {}).get("tools", [])]
+
     def _request(self, method: str, params: dict) -> dict:
         assert self.proc is not None and self.proc.stdout is not None
         self.next_id += 1

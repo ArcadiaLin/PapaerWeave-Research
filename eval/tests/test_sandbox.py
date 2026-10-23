@@ -302,3 +302,22 @@ def test_a_forward_that_does_not_start_fails_fast(host: Path, monkeypatch: pytes
     done = subprocess.run(["bash", "-c", script, "bash", "echo", "pi"], capture_output=True, text=True)
     assert done.returncode == sandbox.FORWARD_EXIT and sandbox.FORWARD_FAILED in done.stderr
     assert time.monotonic() - started < 5  # 不等到会话时限
+
+
+def test_an_f3_reader_gets_the_evidence_server_and_a_read_only_store(host: Path) -> None:
+    paths = Paths(host / "run/A3/readers/k10/sessions/p1")
+    evidence = sandbox.ReadEvidence(host / "allowlists/A3/k10.json", host / "sources", "p1")
+    arm = Arm("A3", None, neo4j="bolt://x", data=host / "data", read_only=True, hide_tools=("read_evidence",),
+              isolated_llm=SETTINGS["llm"], sources=host / "sources", evidence=evidence)  # fmt: skip
+    sandbox.prepare(paths, arm, **SETTINGS)
+    mcp = json.loads((paths.home / ".pi/agent/mcp.json").read_text())["mcpServers"]
+    assert sorted(mcp) == ["Evidence", "PaperWeave"]  # 没有 Sources：读者不用 read_source
+    assert mcp["Evidence"]["args"] == ["/opt/t1/bridge.py", "stdio-to-unix", "/run/t1/evidence.sock"]
+    env = sandbox.mcp_env(paths, arm, WRITER)
+    assert env["PAPERWEAVE_READ_ONLY"] == "1" and env["PAPERWEAVE_HIDE_TOOLS"] == "read_evidence"
+    assert sandbox._evidence_command(paths, arm)[2:] == [
+        "pweval.harness.evidence_server", "--allowlist", str(host / "allowlists/A3/k10.json"),
+        "--library", str(host / "sources"), "--log", str(paths.root / "evidence.jsonl"), "--session", "p1"]  # fmt: skip
+    args = sandbox._bwrap(paths, arm, WRITER)
+    assert "--share-net" not in args and "/run/t1" in _mounts(args)
+    assert "/work/papers" not in _mounts(args) and "/work/sources" not in _mounts(args)

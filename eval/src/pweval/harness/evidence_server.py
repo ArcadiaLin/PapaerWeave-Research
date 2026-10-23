@@ -89,6 +89,8 @@ GIVE_LINES = "give lines: <source id>::<start>:<end>"
 FORMAT = "write it as <source id>::<start>:<end> (code: <repo>@<commit>::<file>::<start>:<end>)"
 OUTSIDE = "these lines are outside the readable ranges"
 NOT_READ = "this reply is full; request it again"
+TOO_LONG = ("error: these {n} references do not fit in one reply even without any text ({size} bytes); "
+            "send fewer or shorter references\n")  # fmt: skip
 _HEADING = re.compile(r"#{1,6}\s+(?P<title>.+?)\s*#*\s*$")  # 同系统 query/sections.py
 
 
@@ -310,41 +312,48 @@ class Evidence:
         return self._sections[source]
 
     def read(self, refs: list[Any]) -> tuple[list[dict[str, Any]], str]:
-        """一次调用：（各条结果，回复的 YAML）。"""
+        """一次调用：（各条结果，回复的 YAML）。
+
+        每一步都按“已定的结果 + 这一条 + 其后全部记为未读”的字节数判断，所以回复总在 ``LIMIT`` 之内；全部记为未读
+        也放不下时（引用很多且很长）整次调用报错，见 :class:`TooLong`。只有本次第一条交付正文的引用可以分页（给
+        ``next``）；之后的引用要么整条交付，要么整条未读。"""
         plans = [self.plan(r) for r in refs]
-        echo = [p if isinstance(p, dict) else p.ref for p in plans]
+        echo = [p["ref"] if isinstance(p, dict) else p.ref for p in plans]
+        if (floor := size([_not_read(r) for r in echo])) > LIMIT:
+            raise TooLong(TOO_LONG.format(n=len(refs), size=floor))
         items: list[dict[str, Any]] = []
         started = False  # 本次已有引用交付正文：之后的放不下就整条未读
         for i, plan in enumerate(plans):
-            rest = [{"ref": r if isinstance(r, str) else r["ref"], "status": "not read", "reason": NOT_READ}
-                    for r in echo[i + 1:]]  # fmt: skip
+            rest = [_not_read(r) for r in echo[i + 1:]]
+
+            def fits(item: dict[str, Any], rest: list[dict[str, Any]] = rest) -> bool:
+                return size([*items, item, *rest]) <= LIMIT
+
             if isinstance(plan, dict):
-                items.append(plan if size([*items, plan, *rest]) <= LIMIT else _not_read(plan["ref"]))
+                items.append(plan if fits(plan) else _not_read(plan["ref"]))
                 continue
-            whole = plan.render(min(plan.total, MAX_LINES))
-            if size([*items, whole, *rest]) <= LIMIT:
-                items.append(whole)
-                started = True
-                continue
-            if started:
+            # 先试整块；整块放不下时只交付请求的子区间（不分页整块，续读位置才总在请求之内）
+            tries = [plan, *([plan.narrow()] if plan.block and plan.pieces == [plan.block] else [])]
+            chosen = None
+            for p in tries:
+                item = p.render(min(p.total, MAX_LINES))
+                if fits(item) and not (started and "next" in item):
+                    chosen = item
+                    break
+            if chosen is None and not started:  # 第一条交付正文的引用：放得下多少行就交付多少行，给 next
+                last = tries[-1]
+                lo, hi = 0, min(last.total, MAX_LINES)
+                while lo < hi:
+                    mid = (lo + hi + 1) // 2
+                    if fits(last.render(mid)):
+                        lo = mid
+                    else:
+                        hi = mid - 1
+                chosen = last.render(lo) if lo else None  # 一行也放不下（前面的拒绝占了位置）：整条未读
+            if chosen is None:
                 items.append(_not_read(plan.ref))
                 continue
-            if plan.block and plan.pieces == [plan.block]:  # 整块放不下：不分页整块，只交付请求的子区间
-                plan = plan.narrow()
-                whole = plan.render(min(plan.total, MAX_LINES))
-                if size([*items, whole, *rest]) <= LIMIT:
-                    items.append(whole)
-                    started = True
-                    continue
-            k = min(plan.total, MAX_LINES)
-            lo, hi = 1, k - 1  # 最多能放下几行（单行已截断到 LINE_MAX，一行总放得下）
-            while lo < hi:
-                mid = (lo + hi + 1) // 2
-                if size([*items, plan.render(mid), *rest]) <= LIMIT:
-                    lo = mid
-                else:
-                    hi = mid - 1
-            items.append(plan.render(lo))
+            items.append(chosen)
             started = True
         return items, dump(items)
 
@@ -363,14 +372,21 @@ class Evidence:
         elif len(refs) > MAX_REFS:
             text, error = f"error: at most {MAX_REFS} references per call\n", True
         else:
-            items, text = self.read(refs)
-            error = False
-            record["items"] = [_summary(it) for it in items]
+            try:
+                items, text = self.read(refs)
+                error = False
+                record["items"] = [_summary(it) for it in items]
+            except TooLong as exc:
+                text, error = str(exc), True
         record |= {"error": error, "bytes": len(text.encode("utf-8"))}
         if self.log is not None:
             with open(self.log, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
         return text, error
+
+
+class TooLong(Exception):
+    """全部引用都记为未读，回复也超过 ``LIMIT``：整次调用报错，不返回超限的回复。"""
 
 
 def _not_read(ref: str) -> dict[str, Any]:
