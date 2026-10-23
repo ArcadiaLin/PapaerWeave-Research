@@ -29,6 +29,7 @@ LAYERS = {  # 层 → 除标准库外可以导入的模块（前缀）
     "pweval.measure": ("yaml", "pweval.paths", "pweval.protocol", "pweval.measure"),
     "pweval.harness.bridge": (),
     "pweval.harness.source_server": (),  # 来源服务：只用标准库，与被测系统无关，四组相同
+    "pweval.harness.evidence_server": ("yaml", "pweval.protocol"),  # 读者的 read_evidence：四组相同，与被测系统无关
 }
 
 
