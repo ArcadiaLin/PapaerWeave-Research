@@ -92,6 +92,13 @@ class HttpClient:
             raise RuntimeError(f"{tool}: {msg}")
         return "\n".join(c.get("text", "") for c in msg["result"].get("content", []))
 
+    def tools(self) -> list[str]:
+        """服务列出的工具名。"""
+        msg = self._post({"jsonrpc": "2.0", "id": self._id(), "method": "tools/list", "params": {}})
+        if msg is None or "error" in msg:
+            raise RuntimeError(f"tools/list: {msg}")
+        return [t["name"] for t in msg["result"].get("tools", [])]
+
     def _id(self) -> int:
         self.next_id += 1
         return self.next_id

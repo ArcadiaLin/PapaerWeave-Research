@@ -26,6 +26,7 @@ arms:
   A4:
     graphiti: http://127.0.0.1:8765/mcp/
     neo4j: bolt://localhost:7698               # Graphiti 的库（eval/baselines/a4/config.yaml）：只用 Cypher 读版本指纹与快照、清空 group
+    neo4j_container: neo4j-a4                  # 检查点上停下它做离线 dump（timeline.backup），同 A3、A2
     graphiti_log: ~/pw-lab/runs/graphiti.log   # Graphiti 服务的日志：安静 settle_quiet_s 秒即视为处理完排队的记忆
     group_id: formal
     llm: http://192.168.163.112:30001/v1

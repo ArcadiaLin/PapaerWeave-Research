@@ -9,7 +9,7 @@
 :mod:`pweval.harness.freeze` 建立）：会话代码不可写、与检出的提交一致，否则拒绝；``--unfrozen`` 只用于冒烟与开发，
 记入 ``run.yml``。
 
-f3 接通了 A3、A2（M1）与 A0（M3）；A4 的写者条件属 M4，在此之前拒绝运行。``--arms`` 缺省为 A3、A2，A0 须点名。
+f3 接通了 A3、A2（M1）、A0（M3）与 A4（M4）。``--arms`` 缺省为 A3、A2，A0、A4 须点名。
 
 会话序列、身份与任务文字由题库仓库（``probes_repo``）给出，各组相同（tmps/probes/writer-tasks.md）：
 
@@ -28,14 +28,16 @@ f3 接通了 A3、A2（M1）与 A0（M3）；A4 的写者条件属 M4，在此�
 - ``run.yml``：每次调用的时间、参数、实际生效的配置、仓库与题库的提交、pi 的版本（续跑时配置或题库变了即拒绝）；
 - ``sessions.jsonl``：每个会话一行（组、序号、类型、身份、会话目录、退出码、用时、事件流与会话记录、会话前后的
   库版本、材料清单 ``materials``（点出、新开放的来源与此时可取的来源数）、来源服务的请求统计 ``read_source``、
-  会话归档、联网的命令；A0 另有发布记录 ``a0``：发布的提交数、未发布的改动与分支）；
+  会话归档、联网的命令；A0 另有发布记录 ``a0``：发布的提交数、未发布的改动与分支；A4 另有 ``graphiti``：这个会话
+  在 Graphiti 服务日志中的区间、其中内部 LLM 的 token 用量与会话结束后等它处理完的秒数，见 :func:`graphiti_usage`）；
 - ``checkpoints.yml``：各组每个检查点（0、10、20、30 篇）的库版本（A4 为 group 的指纹，见 :func:`version`）；
 - ``snapshots/<组>/k<篇数>/``：检查点的快照（:func:`snapshot`），供事后的库健康度审计与判分核对；
-- ``backups/<组>/k<篇数>/``：A3、A2 在检查点上的库备份（:func:`backup`：Neo4j 的离线 dump 与材料根目录），读者事后
+- ``backups/<组>/k<篇数>/``：A3、A2、A4 在检查点上的库备份（:func:`backup`：Neo4j 的离线 dump，A3、A2 另有材料根目录），读者事后
   在检查点的库上作答用；
 - ``<组>/inflight.json``：正在运行的写者会话、它的会话目录与开始前的库版本，记账后删除（:func:`recover`）；
 - ``<组>/sessions/<序号>-<时刻>/``：每个写者会话（每次尝试）全新的目录：``work/``（沙箱的 ``/work``，含本次取到的
-  ``sources/``）、``home/``、事件流 ``runs/``、来源服务的请求记录 ``sources.jsonl``。后续会话不挂载它；
+  ``sources/``；A4 另放说明 ``AGENTS.md``，见 :func:`a4_conventions`）、``home/``、事件流 ``runs/``、来源服务的请求
+  记录 ``sources.jsonl``。后续会话不挂载它；
 - ``<组>/session-snapshots/<序号>-{after,interrupted}-<时刻>.tar.gz``：会话结束（或被中断）时的 ``work/`` 与
   ``home/``，只供审计（:func:`archive`）；
 - ``<组>/sources/``：本组到此为止开放过的来源（论文 ``<ID>/paper.md``，代码 ``<仓库>@<commit>/``），按材料表在会话
@@ -106,15 +108,17 @@ from .source_server import tree_sha256
 
 CONFIG = EVAL / "config/f3-ltsf.yml"
 A0_KIT = EVAL / "baselines/a0"  # A0 的约定（AGENTS.md）与模板，内容与 A3 的工具说明、空白模板对等
+A4_KIT = EVAL / "baselines/a4"  # A4 的说明（AGENTS.md：来源与内容要求，f3 设计第 5 节）与 Graphiti 服务
 ARMS = ("A3", "A2", "A0", "A4")
-F3_ARMS = ("A3", "A2", "A0")  # f3 已接通的组；A4 属 M4
-DEFAULT_ARMS = ("A3", "A2")  # 不给 --arms 时运行的组；A0 须点名（与 A3 共用推理服务，D16）
+DEFAULT_ARMS = ("A3", "A2")  # 不给 --arms 时运行的组；A0、A4 须点名（各自的推理服务，D16）
 PROTECTED = {7687, 7688}  # 不清空的图库端口
 SEED_USER = "seed"
 SEED_MESSAGES = (  # 与 seed/README.md 相同，各组一致
     "seed: identity anchors (tasks, datasets) and the seed papers Informer and SCINet",
     "seed: leaderboards for ETTh1, Electricity and ETTh2 with the seed papers rows",
 )
+A4_SERVICE = {"get_episodes_by_uuid": True, "clear_graph": False}  # Graphiti 服务须有、须无的工具（serve.py，设计第 5 节）
+A4_USAGE = re.compile(r"llm usage prompt=(\d+) completion=(\d+)")  # serve.py 为内部 LLM 的每次调用写一行
 A4_WRITE_TOOLS = tuple(f"mcp__Graphiti__{t}" for t in  # A4 读者看不到的 Graphiti 工具（写入与删除）；summarize_saga
                        ("add_memory", "add_triplet", "delete_episode", "delete_entity_edge", "build_communities",
                         "summarize_saga"))  # 会把摘要与水位写回 saga 节点（graphiti_core Graphiti.summarize_saga）
@@ -574,10 +578,14 @@ def session(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, ste
         reserve_tokens=runner["reserve_tokens"],
         max_tokens=runner.get("max_output_tokens"),
     )
+    if arm == "A4":
+        a4_conventions(paths)
     before = version(config, run, arm)  # A4：前一个会话写入的记忆处理完，这个写者才开始
     inflight = {"seq": step["seq"], "root": str(paths.root.relative_to(run)),
                 "started": datetime.now(UTC).isoformat(timespec="seconds"), "started_epoch": time.time(),
                 "version_before": before}  # fmt: skip
+    if arm == "A4":
+        inflight["graphiti_log_from"] = config["arms"]["A4"]["graphiti_log"].stat().st_size  # 已处理完，之后的都属于本会话
     _write_atomic(_inflight(run, arm), json.dumps(inflight, ensure_ascii=False))
     result = run_session(paths, box, writer, prompt(timeline, arm, step), timeout_s=runner["session_timeout_min"] * 60)
     a0 = a0_publish(run, paths, before) if arm == "A0" else None
@@ -588,6 +596,9 @@ def _session_record(config: dict[str, Any], timeline: Timeline, run: Path, arm: 
                     writer: Writer, paths: Paths, inflight: dict[str, Any], result: dict[str, Any], *,
                     archived_as: str = "after", a0: dict[str, Any] | None = None) -> dict[str, Any]:  # fmt: skip
     events = paths.root / result["events"] if result["events"] else None
+    waited = time.time()
+    after = version(config, run, arm)  # A4：先等 Graphiti 处理完本会话写入的记忆
+    waited = time.time() - waited
     record = {
         "arm": arm,
         "seq": step["seq"],
@@ -600,7 +611,7 @@ def _session_record(config: dict[str, Any], timeline: Timeline, run: Path, arm: 
         "session": [str((paths.root / s).relative_to(run)) for s in result["session"]],
         "llm": config["arms"][arm]["llm"],
         "version_before": inflight["version_before"],
-        "version_after": version(config, run, arm),
+        "version_after": after,
         "materials": materials_record(timeline, step["seq"]),
         "read_source": read_source_record(paths),
         "archive": archive(run, arm, step["seq"], paths, archived_as),
@@ -608,7 +619,32 @@ def _session_record(config: dict[str, Any], timeline: Timeline, run: Path, arm: 
     }
     if a0 is not None:
         record["a0"] = a0
+    if arm == "A4" and "graphiti_log_from" in inflight:  # version_after 已等 Graphiti 处理完本会话的记忆
+        record["graphiti"] = {**graphiti_usage(config["arms"]["A4"]["graphiti_log"], inflight["graphiti_log_from"]),
+                              "settle_s": round(waited, 1)}  # fmt: skip
     return record
+
+
+def a4_conventions(paths: Paths) -> None:
+    """A4 会话开始：把说明放进本次全新的 ``/work``，pi 从 cwd 载入（与 A0 克隆中的约定同一机制，f3 设计第 5 节）。
+    只取内容：说明来自只读的冻结副本。"""
+    shutil.copyfile(A4_KIT / "AGENTS.md", paths.work / "AGENTS.md")
+
+
+def graphiti_usage(log: Path, start: int, end: int | None = None) -> dict[str, Any]:
+    """Graphiti 内部 LLM 在服务日志 ``[start, end)`` 字节区间中的调用次数与 token（f3 设计第 5 节：按时间记到 A4 的
+    写者头上，计入成本账本）。区间从会话开始前 Graphiti 处理完时的日志末尾，到会话记账时它再次处理完的日志末尾。
+
+    会话记录的 ``graphiti`` 另有 ``settle_s``：会话结束后等 Graphiti 处理完排队记忆的秒数（设计第 5 节，计入成本；
+    不在会话的 ``seconds`` 中）。从 ``version_after`` 开始到结束计时，含 :func:`settle` 开头固定的 5 秒、判定安静所需的
+    ``settle_quiet_s`` 与读内容指纹的 Cypher 查询。"""
+    end = log.stat().st_size if end is None else end
+    with log.open("rb") as f:
+        f.seek(start)
+        text = f.read(end - start).decode("utf-8", errors="replace")
+    usage = [(int(p), int(c)) for p, c in A4_USAGE.findall(text)]
+    return {"log": str(log), "from": start, "to": end, "calls": len(usage),
+            "prompt": sum(p for p, _ in usage), "completion": sum(c for _, c in usage)}  # fmt: skip
 
 
 def materials_record(timeline: Timeline, seq: int) -> dict[str, Any]:
@@ -712,7 +748,7 @@ def network_calls(events: Path) -> list[str]:
 def reader_arm(config: dict[str, Any], run: Path, arm: str, papers: int) -> Arm:
     """读者看到的库，只读，没有论文目录与代码。A3、A2：MCP 服务只列不写入的工具，read_evidence 读产物文档与库中记录过
     的锚点所在的块（``anchored``，V3 §2.2：只能经库读原文，不能浏览）；
-    A0：检查点标签处的仓库副本（只读挂载）；A4：pi 不列出 Graphiti 的写入工具。"""
+    A0：检查点标签处的仓库副本（只读挂载）；A4：pi 不列出 Graphiti 的写入工具，/work 中放写者的说明（:func:`answer`）。"""
     spec = config["arms"][arm]
     if arm in GRAPH:
         data = arm_dir(run, arm) / "data"
@@ -784,6 +820,8 @@ def answer(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, pape
         reserve_tokens=runner["reserve_tokens"],
         max_tokens=runner.get("max_output_tokens"),
     )
+    if arm == "A4":
+        a4_conventions(paths)  # 读者也看到写者的说明，原文照给（10-23 用户定），与 A0 读者在克隆中看到约定对等
     text = reader_prompt(timeline, arm, probe)
     started = datetime.now(UTC).isoformat(timespec="seconds")
     result = run_session(paths, box, reader, text, timeout_s=runner["probe_timeout_min"] * 60)
@@ -982,26 +1020,36 @@ SNAPSHOT_FILES = {"A0": ("log.jsonl", "tree"), "A4": ("graph.jsonl",)}  # 其余
 SNAPSHOT_COUNTS = {"A0": ("files", "commits"), "A4": ("nodes", "edges")}  # 其余组：nodes、edges、commits、documents
 
 
-BACKUP_DB = "neo4j"  # 被测系统用 Neo4j 的默认库
-BACKUP_FILES = ("neo4j.dump", "data.tar.gz", "sources.tar.gz")
+BACKUP_DB = "neo4j"  # 被测系统与 Graphiti 都用 Neo4j 的默认库
+BACKUP_FILES = {"A4": ("neo4j.dump", "sources.tar.gz")}  # 其余组（A3、A2）另有材料根目录 data.tar.gz
+GRAPH_BACKUP_FILES = ("neo4j.dump", "data.tar.gz", "sources.tar.gz")
+
+
+def backup_files(arm: str) -> tuple[str, ...]:
+    return BACKUP_FILES.get(arm, GRAPH_BACKUP_FILES)
 
 
 def backup(config: dict[str, Any], run: Path, arm: str, papers: int, timeline: Timeline | None = None) -> None:
-    """A3、A2 检查点上的库备份 ``backups/<组>/k<篇数>/``，供读者事后在检查点的库上作答（写读分离，V3 §7 第 9 条）。
-    快照（:func:`snapshot`）去掉了向量，恢复它要重算向量，读者看到的就不是写者留下的那个库；备份是原样。
+    """A3、A2、A4 检查点上的库备份 ``backups/<组>/k<篇数>/``，供读者事后在检查点的库上作答（写读分离，V3 §7 第 9 条；
+    A4 见 f3 设计第 6.1 节）。快照（:func:`snapshot`）去掉了向量，恢复它要重算向量，读者看到的就不是写者留下的那个库；
+    备份是原样。
 
-    - ``data.tar.gz``：材料根目录（产物文档的各个版本）；
+    - ``data.tar.gz``：材料根目录（产物文档的各个版本）；A4 没有；
     - ``sources.tar.gz``：组的已开放来源目录（``sources/``，即 ``PAPERWEAVE_SOURCES``），打包前按材料表逐个核对哈希。
       恢复后提交校验、``read_evidence`` 与过时检测都要读它，缺了会把来源缺失误判成产物过时（审查第 5 条）；
     - ``neo4j.dump``：停下图库的容器（检查点上没有写者会话，MCP 服务也没有起），用该容器实际运行的镜像（镜像 ID，
       不是标签）的 ``neo4j-admin database dump`` 离线导出，再启动容器，等库可连后核对分支头仍是检查点的版本；
-    - ``meta.yml``：组、检查点（篇数）、记录的库版本、容器、镜像标签与 ID、三个文件的 SHA-256，以及开放的来源及其
+    - ``meta.yml``：组、检查点（篇数）、记录的库版本、容器、镜像标签与 ID、各文件的 SHA-256，以及开放的来源及其
       哈希（``sources``）。
+
+    A4：Graphiti 的整个库（服务只用 ``group_id`` 这一组）。停库之前 :func:`at_checkpoint` 已等 Graphiti 处理完排队的
+    记忆；库重启后除了核对内容指纹，还要 Graphiti 服务自己报告连得上库（``get_status``），之后的写者会话照常用它。
 
     先写到 ``k<篇数>.partial/``，完整后改名。已有备份只在完整且属于这个检查点（篇数与 ``checkpoints.yml`` 记录的版本
     都对得上，:func:`backup_complete`）时跳过；不合格的另存为 ``k<篇数>.invalid-<时刻>`` 后重做，不静默接受。
-    恢复：``neo4j-admin database load`` 到新容器的数据目录，材料根目录与来源目录解包，读者的 MCP 服务指向三者。"""
-    if arm not in GRAPH or papers == 0:
+    恢复：``neo4j-admin database load`` 到新容器的数据目录，材料根目录与来源目录解包，读者的 MCP 服务指向三者；
+    A4 另起一个 Graphiti 服务（``eval/baselines/a4/serve.py``，配置中的库指向新容器）。"""
+    if arm == "A0" or papers == 0:
         return
     out = run / "backups" / arm / f"k{papers}"
     expected = checkpoints(run)[arm][papers]
@@ -1018,8 +1066,9 @@ def backup(config: dict[str, Any], run: Path, arm: str, papers: int, timeline: T
     partial = out.with_name(out.name + ".partial")
     shutil.rmtree(partial, ignore_errors=True)
     partial.mkdir(parents=True)
-    with tarfile.open(partial / "data.tar.gz", "w:gz") as tar:
-        tar.add(arm_dir(run, arm) / "data", arcname="data")
+    if arm in GRAPH:
+        with tarfile.open(partial / "data.tar.gz", "w:gz") as tar:
+            tar.add(arm_dir(run, arm) / "data", arcname="data")
     with tarfile.open(partial / "sources.tar.gz", "w:gz") as tar:
         tar.add(sources_dir(run, arm), arcname="sources")
     _docker("stop", container)
@@ -1033,9 +1082,11 @@ def backup(config: dict[str, Any], run: Path, arm: str, papers: int, timeline: T
         _wait_store(config, run, arm)
     if (now := version(config, run, arm)) != expected:
         raise RuntimeError(f"{arm}: after the backup the store is at {now}, not at checkpoint {papers} ({expected})")
+    if arm == "A4":
+        _wait_graphiti(config["arms"]["A4"]["graphiti"])
     meta = {"arm": arm, "papers": papers, "version": expected, "container": container, "image": image,
             "image_id": image_id, "created": datetime.now(UTC).isoformat(timespec="seconds"),
-            "sha256": {n: _sha256(partial / n) for n in BACKUP_FILES}, "sources": opened}  # fmt: skip
+            "sha256": {n: _sha256(partial / n) for n in backup_files(arm)}, "sources": opened}  # fmt: skip
     (partial / "meta.yml").write_text(yaml.safe_dump(meta, sort_keys=False), encoding="utf-8")
     partial.rename(out)
 
@@ -1063,7 +1114,7 @@ def backup_complete(out: Path, arm: str, papers: int | None = None, version: str
         return False
     if (papers is not None and meta.get("papers") != papers) or (version is not None and meta.get("version") != version):
         return False
-    return all((out / n).exists() and meta["sha256"].get(n) == _sha256(out / n) for n in BACKUP_FILES)
+    return all((out / n).exists() and meta["sha256"].get(n) == _sha256(out / n) for n in backup_files(arm))
 
 
 def container_of(name: str) -> tuple[str, str, str]:
@@ -1095,6 +1146,23 @@ def _wait_store(config: dict[str, Any], run: Path, arm: str, limit_s: int = 180)
             if time.monotonic() > deadline:
                 raise
             time.sleep(2)
+
+
+def _wait_graphiti(url: str, limit_s: int = 180) -> None:
+    """图库重启后，Graphiti 服务经它自己的连接查得到库（``get_status``）；不行就停，不让下一个写者连着坏掉的服务。"""
+    deadline = time.monotonic() + limit_s
+    while True:
+        try:
+            with HttpClient(url, timeout_s=30) as client:
+                reply = client.call("get_status", {})
+            if json.loads(reply).get("status") == "ok":
+                return
+            problem = reply
+        except (OSError, RuntimeError, ValueError) as exc:
+            problem = str(exc)
+        if time.monotonic() > deadline:
+            raise RuntimeError(f"A4: Graphiti cannot reach its store after the backup: {problem[-500:]}")
+        time.sleep(2)
 
 
 def _sha256(path: Path) -> str:
@@ -1233,11 +1301,21 @@ def _record_invocation(path: Path, config_path: Path, config: dict[str, Any], ar
 
 
 def preflight(config: dict[str, Any], arms: list[str]) -> list[str]:
-    """各组要用的服务是否连得上（TCP）：大模型、图库、Graphiti；A3、A2 的图库容器能否停下备份（:func:`backup`）。"""
+    """各组要用的服务是否连得上（TCP）：大模型、图库、Graphiti；A3、A2 的图库容器能否停下备份（:func:`backup`）；
+    Graphiti 服务是不是 serve.py 当前的版本（工具列表，:data:`A4_SERVICE`：改了 serve.py 而服务没重启时拒绝）。"""
     problems = []
     for arm in arms:
         spec = config["arms"][arm]
-        if arm in GRAPH:
+        if arm == "A4":
+            try:
+                with HttpClient(spec["graphiti"], timeout_s=30) as client:
+                    tools = set(client.tools())
+                if wrong := [t for t, want in A4_SERVICE.items() if (t in tools) != want]:
+                    problems.append(f"A4 graphiti {spec['graphiti']}: restart it from eval/baselines/a4/serve.py "
+                                    f"(tools {'/'.join(wrong)} not as expected)")  # fmt: skip
+            except (OSError, RuntimeError, ValueError) as exc:
+                problems.append(f"A4 graphiti {spec['graphiti']}: {exc}")
+        if arm in GRAPH or arm == "A4":
             try:
                 container_of(spec.get("neo4j_container") or "")
             except (RuntimeError, IndexError, json.JSONDecodeError) as exc:
@@ -1296,7 +1374,7 @@ def run_arm(config: dict[str, Any], timeline: Timeline, run: Path, arm: str, unt
                     else:
                         answers[group] = "skipped"
                 emit("CHECKPOINT", arm, k=step["papers"], version=checkpoints(run)[arm][step["papers"]],
-                     snapshot="ok", backup="ok" if arm in GRAPH and step["papers"] else "-",
+                     snapshot="ok", backup="ok" if arm != "A0" and step["papers"] else "-",
                      answers=answers["main"], aux=answers["aux"])  # fmt: skip
             continue
         last_seq = step["seq"]
@@ -1355,8 +1433,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     arms = args.arms.split(",")
     if unknown := set(arms) - set(ARMS):
         raise SystemExit(f"unknown arms: {sorted(unknown)}")
-    if pending := [a for a in arms if a not in F3_ARMS]:
-        raise SystemExit(f"{','.join(pending)}: the f3 writer conditions are not implemented for these arms yet (M4)")
     if problems := preflight(config, arms):
         raise SystemExit("services are not reachable:\n" + "\n".join(problems))
     run = config["workdir_root"] / args.name

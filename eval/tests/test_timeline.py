@@ -668,6 +668,100 @@ def test_a4_version_changes_with_any_content(monkeypatch: pytest.MonkeyPatch) ->
     assert timeline.version(config, Path("."), "A4") != first
 
 
+def test_pi_loads_the_a4_conventions_from_the_fresh_workspace(tmp_path: Path) -> None:
+    """A4 的说明（f3 设计第 5 节）放进每个会话全新的 /work，与 A0 一样由 pi 从 cwd 载入系统提示。"""
+    from pweval.harness.sandbox import pi_install
+
+    paths = Paths(tmp_path / "A4/sessions/001-a")
+    paths.work.mkdir(parents=True)
+    timeline.a4_conventions(paths)
+    text = (paths.work / "AGENTS.md").read_text(encoding="utf-8")
+    assert "Write them in the memory text" in text and "One row per (method, variant, paper, lookback, pred_len)" in text
+    assert "store/" not in text and "git" not in text  # 没有 A0 的仓库与发布约定
+    try:
+        release, _ = pi_install()
+    except FileNotFoundError:
+        pytest.skip("pi is not installed")
+    if release is None or not shutil.which("node"):
+        pytest.skip("not a managed pi install")
+    (paths.home / ".pi/agent").mkdir(parents=True)
+    loader = release / "node_modules/@earendil-works/pi-coding-agent/dist/core/resource-loader.js"
+    script = (f"const m = await import('file://{loader}'); const files = m.loadProjectContextFiles("
+              "{cwd: process.argv[1], agentDir: process.argv[2]}); console.log(JSON.stringify(files));")  # fmt: skip
+    out = subprocess.run(["node", "--input-type=module", "-e", script, str(paths.work), str(paths.home / ".pi/agent")],
+                         check=True, capture_output=True, text=True).stdout  # fmt: skip
+    (loaded,) = json.loads(out)
+    assert loaded["path"] == str(paths.work / "AGENTS.md") and loaded["content"] == text
+
+
+def test_graphiti_usage_is_counted_from_the_session_part_of_the_log(tmp_path: Path) -> None:
+    """Graphiti 内部 LLM 的 token 按服务日志的字节区间记到 A4 的会话头上（f3 设计第 5 节）。"""
+    log = tmp_path / "graphiti.log"
+    log.write_text("2026-10-23 10:00:00 - pilot.usage - INFO - llm usage prompt=900 completion=90\n")
+    start = log.stat().st_size
+    with log.open("a") as f:
+        f.write("INFO:     127.0.0.1:1 - \"POST /mcp HTTP/1.1\" 200 OK\n"
+                "2026-10-23 10:01:00 - pilot.usage - INFO - llm usage prompt=1000 completion=100\n"
+                "2026-10-23 10:01:05 - pilot.usage - INFO - llm usage prompt=2000 completion=20\n")  # fmt: skip
+    usage = timeline.graphiti_usage(log, start)
+    assert usage == {"log": str(log), "from": start, "to": log.stat().st_size, "calls": 2, "prompt": 3000,
+                     "completion": 120}  # fmt: skip
+
+
+def test_an_a4_record_counts_the_wait_for_graphiti_after_the_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """设计第 5 节：会话结束后等 Graphiti 处理完排队记忆的时间计入成本，它不在会话的 seconds 中。"""
+    log = tmp_path / "graphiti.log"
+    log.write_text("old\n")
+    clock = [1000.0]
+
+    def version(config: object, run: Path, arm: str) -> str:
+        clock[0] += 42.0  # settle 等了 42 秒
+        with log.open("a") as f:
+            f.write("llm usage prompt=10 completion=1\n")  # 等待期间处理完的记忆
+        return "nodes=2 edges=1 sha256=x"
+
+    monkeypatch.setattr(timeline.time, "time", lambda: clock[0])
+    monkeypatch.setattr(timeline, "version", version)
+    for name in ("materials_record", "read_source_record", "archive", "network_calls"):
+        monkeypatch.setattr(timeline, name, lambda *a, **k: {})
+    run = tmp_path / "run"
+    paths = Paths(run / "A4/sessions/001-a")
+    inflight = {"started": "t", "version_before": "nodes=1 edges=0 sha256=y", "graphiti_log_from": log.stat().st_size}
+    result = {"exit": 0, "seconds": 300.0, "events": None, "session": []}
+    config = {"arms": {"A4": {"llm": "http://x", "graphiti_log": log}}}
+    record = timeline._session_record(config, SimpleNamespace(), run, "A4", {"seq": 1, "type": "build"},
+                                      SimpleNamespace(id="i3-a"), paths, inflight, result)  # fmt: skip
+    assert record["seconds"] == 300.0 and record["version_after"] == "nodes=2 edges=1 sha256=x"
+    assert record["graphiti"]["settle_s"] == 42.0
+    assert (record["graphiti"]["calls"], record["graphiti"]["prompt"], record["graphiti"]["completion"]) == (1, 10, 1)
+
+
+@pytest.mark.parametrize(
+    ("tools", "ok"),
+    [
+        (["add_memory", "get_episodes", "get_episodes_by_uuid"], True),
+        (["add_memory", "get_episodes"], False),  # 改了 serve.py 而服务没有重启
+        (["add_memory", "get_episodes_by_uuid", "clear_graph"], False),  # 官方服务原样
+    ],
+)
+def test_preflight_wants_the_current_graphiti_service(monkeypatch: pytest.MonkeyPatch, tools: list[str], ok: bool) -> None:
+    class Client:
+        def __init__(self, url: str, **kwargs: object) -> None: ...
+
+        def __enter__(self) -> Client:
+            return self
+
+        def __exit__(self, *exc: object) -> None: ...
+
+        def tools(self) -> list[str]:
+            return tools
+
+    monkeypatch.setattr(timeline, "HttpClient", Client)
+    problems = timeline.preflight({"arms": {"A4": {"graphiti": "http://127.0.0.1:1/mcp/"}}}, ["A4"])
+    stale = [p for p in problems if "restart it from eval/baselines/a4/serve.py" in p]  # 其余是端口 1 连不上
+    assert bool(stale) is not ok
+
+
 @pytest.mark.parametrize(
     ("meta", "complete"),
     [
@@ -791,6 +885,54 @@ def test_the_checkpoint_store_is_dumped_offline_and_restarted(tmp_path: Path, mo
     shutil.rmtree(out)
     with pytest.raises(RuntimeError, match="do not match materials.yml"):
         timeline.backup(_backup_config(tmp_path), tmp_path, "A3", 10, tl)
+
+
+def test_the_a4_checkpoint_store_is_dumped_and_graphiti_reconnects(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A4 的检查点备份（f3 设计第 6.1 节）：Graphiti 的库离线 dump，加来源目录，没有材料根目录；库重启后要 Graphiti
+    服务自己连得上库，才算完成。"""
+    (tmp_path / "A4/sources/2106.13008v5").mkdir(parents=True)
+    (tmp_path / "A4/sources/2106.13008v5/paper.md").write_text("# p\n")
+    calls, statuses = [], ['{"status": "error", "message": "connection refused"}', '{"status": "ok", "message": "up"}']
+
+    def docker(*args: str) -> str:
+        calls.append(args[0])
+        if args[0] == "inspect":
+            return json.dumps([{"HostConfig": {"AutoRemove": False}, "Config": {"Image": "neo4j:ubi10"},
+                                "Image": "sha256:feed", "Mounts": [{"Source": "/srv/a4/data", "Destination": "/data"}]}])  # fmt: skip
+        if args[0] == "run":
+            Path(args[args.index("-v", args.index("-v") + 1) + 1].split(":")[0], "neo4j.dump").write_bytes(b"dump")
+        return ""
+
+    class Client:
+        def __init__(self, url: str, **kwargs: object) -> None:
+            assert url == "http://127.0.0.1:8765/mcp/"
+
+        def __enter__(self) -> Client:
+            return self
+
+        def __exit__(self, *exc: object) -> None: ...
+
+        def call(self, tool: str, arguments: dict) -> str:
+            calls.append(tool)
+            return statuses.pop(0)
+
+    monkeypatch.setattr(timeline, "_docker", docker)
+    monkeypatch.setattr(timeline, "HttpClient", Client)
+    monkeypatch.setattr(timeline.time, "sleep", lambda s: None)
+    monkeypatch.setattr(timeline, "checkpoints", lambda run: {"A4": {10: "nodes=3 edges=2 sha256=ab"}})
+    monkeypatch.setattr(timeline, "version", lambda config, run, arm: "nodes=3 edges=2 sha256=ab")
+    config = {"arms": {"A4": {"neo4j": "bolt://x", "neo4j_container": "neo4j-a4", "graphiti": "http://127.0.0.1:8765/mcp/"}}}
+    timeline.backup(config, tmp_path, "A4", 10)
+    assert calls == ["inspect", "stop", "run", "start", "get_status", "get_status"]  # 第一次库还没连上，等到 ok
+    out = tmp_path / "backups/A4/k10"
+    meta = yaml.safe_load((out / "meta.yml").read_text())
+    assert set(meta["sha256"]) == {"neo4j.dump", "sources.tar.gz"} and not (out / "data.tar.gz").exists()
+    assert timeline.backup_complete(out, "A4", 10, "nodes=3 edges=2 sha256=ab")
+    calls.clear()
+    timeline.backup(config, tmp_path, "A4", 10)  # 已有完整备份：不再停库
+    assert calls == []
+    timeline.backup({"arms": {"A0": {}}}, tmp_path, "A0", 10)  # A0 的检查点是 git 标签，没有库备份
+    assert not (tmp_path / "backups/A0").exists()
 
 
 def test_the_store_is_restarted_even_if_the_dump_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
