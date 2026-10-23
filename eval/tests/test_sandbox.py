@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -231,6 +232,31 @@ def test_a2_starts_the_ablated_server(host: Path) -> None:
     assert command[-1] == str(sandbox.ABLATED_MCP) and sandbox.ABLATED_MCP.exists()
     a3 = sandbox._mcp_command(paths, Arm("A3", host / "papers", neo4j="bolt://x", data=host / "data"), WRITER)
     assert a3[-2:] == ["-m", "paperweave.mcp"] and not any(c.startswith("PAPERWEAVE_ABLATE") for c in a3)
+
+
+ABLATION_PROBE = """
+import runpy, sys
+runpy.run_path(sys.argv[1])  # 不以 __main__ 运行：只装上消融，不启动服务
+from paperweave.artifact import stale
+from paperweave.query import read
+def hidden(check):
+    try:
+        return check()
+    except Exception:  # 没换掉的真实函数要连库，传 None 即报错
+        return False
+print(hidden(lambda: stale.stale(None, ["art_0001"]) == {"art_0001": []}),
+      hidden(lambda: read.anchor_versions(None, ["exp_0001"]) == {}))
+"""
+
+
+@pytest.mark.parametrize(("ablate", "expected"), [("stale", "True True"), ("dedup", "False False")])
+def test_a2_stale_ablation_also_hides_anchor_version(ablate: str, expected: str) -> None:
+    """stale 关掉产物的 _stale，也关掉记录的 _anchor_version（f3 新增的过时提示，读视图按名字导入它）；
+    其他消融不碰这两处。"""
+    env = {"PAPERWEAVE_ABLATE": ablate, "PATH": "/usr/bin:/bin"}
+    out = subprocess.run([sys.executable, "-c", ABLATION_PROBE, str(sandbox.ABLATED_MCP)], env=env,
+                         capture_output=True, text=True, check=True).stdout  # fmt: skip
+    assert out.strip() == expected
 
 
 def _tool_tree() -> tuple[subprocess.Popen, float]:
