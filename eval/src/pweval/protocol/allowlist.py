@@ -3,8 +3,13 @@
     python -m pweval.protocol.allowlist <运行目录> --arm A3 --checkpoint 10 [--bank DIR] [--out DIR] [--force]
 
 只读检查点快照（``snapshots/<组>/k<篇数>/``）、检查点备份的 ``meta.yml``（开放的来源与哈希）、组的来源目录与题库的
-``facts/tables.csv``，不连库、不调用模型。同样的输入得到逐字节相同的输出。先实现 A3、A2（图库组）；A0、A4 另接入口，
-后面的解析、筛选与扩块共用。
+``facts/tables.csv``，不连库、不调用模型。同样的输入得到逐字节相同的输出。A3、A2（图库组）与 A0 已实现；A4 另接
+入口，后面的解析、筛选与扩块共用（:class:`Gather`）。
+
+**A0**（:func:`collect_a0`，10-24 用户定）：共享仓库 ``A0/shared.git`` 在检查点标签及之前的每个提交写下的每个文件
+版本，正文统一按 :func:`scan` 扫描（``text`` 通道，不按 YAML 解析，没有 ``structured`` 通道），完整的提交说明（``%B``）
+为 ``commit`` 通道。开放的来源以写者运行时的计划与材料表为准（运行记录中的题库提交，从 Git 取那个版本），与 A0 的
+会话记录交叉核对；标签、``checkpoints.yml`` 与快照一致，快照的文件树与提交列表（逐字段）与 Git 相同。另报告开放来源的原文逐行进入仓库的程度（``source_text``）。
 
 **收集范围：读者可见的已发布内容**（10-23 用户定，补充设计 §6.3）。检查点之前每次提交的变更集（``commits.jsonl``）：
 
@@ -57,7 +62,9 @@ import argparse
 import csv
 import hashlib
 import json
+import os
 import re
+import subprocess
 import sys
 from collections import Counter, defaultdict
 from collections.abc import Iterator, Sequence
@@ -408,9 +415,57 @@ def merge(spans: list[tuple[int, int]]) -> list[list[int]]:
     return out
 
 
+class Gather:
+    """各组共用的接受、校验与扩块：每条引用要么扩成块记入 ``origins``，要么连同原因记入 ``dropped``；只写来源的记为提及。"""
+
+    def __init__(self, sources: Sources, tables: dict[str, list[tuple[int, int]]]):
+        self.sources, self.tables = sources, tables
+        self.origins: list[dict[str, Any]] = []
+        self.dropped: list[dict[str, Any]] = []
+        self.mentions: Counter[str] = Counter()
+        self.blocks: set[tuple[str, int, int]] = set()
+
+    def scan(self, where: dict[str, Any], channel: str, text: str) -> None:
+        for raw, parsed in scan(text):
+            self.take(where, channel, raw, parsed)
+
+    def take(self, where: dict[str, Any], channel: str, raw: str, parsed: Ref | str) -> None:
+        if parsed == "mention":
+            self.mentions[channel] += 1
+            return
+        if isinstance(parsed, str):
+            self.dropped.append({"channel": channel, "ref": raw, "reason": parsed, "where": where})
+            return
+        lines = self.sources.lines(parsed)
+        if isinstance(lines, str):
+            self.dropped.append({"channel": channel, "ref": raw, "reason": lines, "where": where})
+            return
+        if not 1 <= parsed.start <= parsed.end <= len(lines):
+            self.dropped.append({"channel": channel, "ref": raw, "reason": "bad-range", "where": where,
+                                 "lines": len(lines)})  # fmt: skip
+            return
+        if parsed.file:
+            a, b = code_block(lines, parsed.start, parsed.end)
+        else:
+            a, b = paper_block(lines, parsed.start, parsed.end, self.tables.get(parsed.source, []))
+        self.blocks.add((parsed.key, a, b))
+        self.origins.append({"channel": channel, "ref": raw, "source": parsed.key, "lines": [parsed.start, parsed.end],
+                             "passage": [a, b], "where": where})  # fmt: skip
+
+    def result(self) -> tuple[dict[str, list[list[int]]], dict[str, list[list[int]]]]:
+        """``passages``（每个来源去重后的块）与 ``readable``（合并后的可读区间）。"""
+        passages: dict[str, list[list[int]]] = defaultdict(list)
+        for key, a, b in sorted(self.blocks):
+            passages[key].append([a, b])
+        readable = {key: merge([tuple(s) for s in spans]) for key, spans in passages.items()}
+        return dict(passages), readable
+
+
 def collect(run: Path, arm: str, papers: int, bank: Path = BANK) -> dict[str, Any]:
+    if arm == "A0":
+        return collect_a0(run, papers, bank)
     if arm not in GRAPH_ARMS:
-        raise NotImplementedError(f"{arm}: only the graph arms {GRAPH_ARMS} are implemented")
+        raise NotImplementedError(f"{arm}: only {GRAPH_ARMS} and A0 are implemented")
     snapshot = run / "snapshots" / arm / f"k{papers}"
     backup_meta = run / "backups" / arm / f"k{papers}" / "meta.yml"
     recorded = yaml.safe_load((run / "checkpoints.yml").read_text(encoding="utf-8"))[arm][papers]
@@ -425,61 +480,26 @@ def collect(run: Path, arm: str, papers: int, bank: Path = BANK) -> dict[str, An
     replay = replay_check(snapshot, commits)
     docs, doc_check = documents_of(snapshot, commits)
     opened = dict(backup["sources"])
-    sources = Sources(run / arm / "sources", opened)
-    tables = load_tables(bank)
-
-    origins: list[dict[str, Any]] = []
-    dropped: list[dict[str, Any]] = []
-    mentions: Counter[str] = Counter()
-    blocks: set[tuple[str, int, int]] = set()
-
-    def take(where: dict[str, Any], channel: str, raw: str, parsed: Ref | str) -> None:
-        if parsed == "mention":
-            mentions[channel] += 1
-            return
-        if isinstance(parsed, str):
-            dropped.append({"channel": channel, "ref": raw, "reason": parsed, "where": where})
-            return
-        lines = sources.lines(parsed)
-        if isinstance(lines, str):
-            dropped.append({"channel": channel, "ref": raw, "reason": lines, "where": where})
-            return
-        if not 1 <= parsed.start <= parsed.end <= len(lines):
-            dropped.append({"channel": channel, "ref": raw, "reason": "bad-range", "where": where, "lines": len(lines)})
-            return
-        if parsed.file:
-            a, b = code_block(lines, parsed.start, parsed.end)
-        else:
-            a, b = paper_block(lines, parsed.start, parsed.end, tables.get(parsed.source, []))
-        blocks.add((parsed.key, a, b))
-        origins.append({"channel": channel, "ref": raw, "source": parsed.key, "lines": [parsed.start, parsed.end],
-                        "passage": [a, b], "where": where})  # fmt: skip
+    gather = Gather(Sources(run / arm / "sources", opened), load_tables(bank))
 
     for where, field, value in visible_values(commits):
         structured = field in (STRUCTURED_EDGE if "edge" in where else STRUCTURED_NODE)
         for leaf in _leaves(value, field):
             if structured:
-                take(where, "structured", leaf, parse(leaf))
+                gather.take(where, "structured", leaf, parse(leaf))
             else:
-                for raw, parsed in scan(leaf):
-                    take(where, "text", raw, parsed)
+                gather.scan(where, "text", leaf)
         if structured and not isinstance(value, list | str):
-            dropped.append({"channel": "structured", "ref": json.dumps(value), "reason": "format", "where": where})
+            gather.dropped.append({"channel": "structured", "ref": json.dumps(value), "reason": "format", "where": where})
     for doc in docs:
-        where = {"commit": doc["commit"], "seq": doc["seq"], "document": doc["path"]}
-        for raw, parsed in scan(doc["text"]):
-            take(where, "text", raw, parsed)
+        gather.scan({"commit": doc["commit"], "seq": doc["seq"], "document": doc["path"]}, "text", doc["text"])
     for c in commits:
         for field in COMMIT_FIELDS:
-            where = {"commit": c["id"], "seq": int(c["seq"]), "field": field}
-            for raw, parsed in scan(c.get(field) or ""):
-                take(where, "commit", raw, parsed)
+            gather.scan({"commit": c["id"], "seq": int(c["seq"]), "field": field}, "commit", c.get(field) or "")
 
-    passages: dict[str, list[list[int]]] = defaultdict(list)
-    for key, a, b in sorted(blocks):
-        passages[key].append([a, b])
-    readable = {key: merge([tuple(s) for s in spans]) for key, spans in passages.items()}
-    stats = _stats(origins, dropped, mentions, readable)
+    passages, readable = gather.result()
+    stats = _stats(gather.origins, gather.dropped, gather.mentions, readable)
+    origins, dropped = gather.origins, gather.dropped
     inputs = {
         "snapshot": {n: sha256_file(snapshot / n) for n in ("meta.yml", "commits.jsonl", "graph.jsonl")},
         "backup_meta": sha256_file(backup_meta),
@@ -505,19 +525,23 @@ def _lines_of(readable: dict[str, list[list[int]]]) -> int:
 
 
 def _stats(origins: list[dict[str, Any]], dropped: list[dict[str, Any]], mentions: Counter[str],
-           readable: dict[str, list[list[int]]]) -> dict[str, Any]:  # fmt: skip
+           readable: dict[str, list[list[int]]], channels: tuple[str, ...] = CHANNELS) -> dict[str, Any]:  # fmt: skip
     """分通道：接受的引用、块、可读行、丢弃（按原因）与提及；``beyond_structured``：自由文本与提交两个通道各自、
     以及合起来，在结构化字段之外新增的块与可读行；``before_side``：取自修改前或删除前的值的引用出现次数（不等于只在
-    历史中有的引用：同一引用可能也在当前状态中）。"""
-    blocks = {ch: {(o["source"], *o["passage"]) for o in origins if o["channel"] == ch} for ch in CHANNELS}
+    历史中有的引用：同一引用可能也在当前状态中）。A0 没有结构化通道，只有前一部分与 ``total``。"""
+    blocks = {ch: {(o["source"], *o["passage"]) for o in origins if o["channel"] == ch} for ch in channels}
     out: dict[str, Any] = {"channels": {}}
-    for ch in CHANNELS:
+    for ch in channels:
         out["channels"][ch] = {
             "accepted": sum(o["channel"] == ch for o in origins), "blocks": len(blocks[ch]),
             "readable_lines": _lines_of(_spans(blocks[ch])),
             "dropped": dict(sorted(Counter(d["reason"] for d in dropped if d["channel"] == ch).items())),
             "mentions": mentions[ch],
         }  # fmt: skip
+    out["total"] = {"blocks": len(set().union(*blocks.values())), "readable_lines": _lines_of(readable),
+                    "sources": len(readable)}  # fmt: skip
+    if "structured" not in channels:
+        return out
     base = _lines_of(_spans(blocks["structured"]))
     out["beyond_structured"] = {}
     for name, chs in (("text", ("text",)), ("commit", ("commit",)), ("text+commit", ("text", "commit"))):
@@ -527,8 +551,6 @@ def _stats(origins: list[dict[str, Any]], dropped: list[dict[str, Any]], mention
             "sources": sorted({k for k, _, _ in extra}),
         }
     out["before_side"] = sum(o["where"].get("side") == "before" for o in origins)
-    out["total"] = {"blocks": len(set().union(*blocks.values())), "readable_lines": _lines_of(readable),
-                    "sources": len(readable)}  # fmt: skip
     return out
 
 
@@ -537,6 +559,289 @@ def _spans(blocks: set[tuple[str, int, int]]) -> dict[str, list[list[int]]]:
     for key, a, b in blocks:
         spans[key].append((a, b))
     return {k: merge(v) for k, v in spans.items()}
+
+
+# ---------------------------------------------------------------- A0：Git 历史
+
+A0_REPO = "A0/shared.git"  # 共享仓库：裸仓库，只存已发布的提交（pweval.harness.timeline.shared_repo）
+A0_CHANNELS = ("text", "commit")
+LOG_FORMAT = "%H%x1f%an%x1f%aI%x1f%s"  # 快照 log.jsonl 的导出格式（pweval.harness.export.export_a0）
+LOG_FIELDS = ("id", "author", "at", "message")
+NULL_SHA = "0" * 40
+SHINGLE = 12  # 原文核对：连续 12 个词的滑窗；论文一段常是一整行，按行比只能发现整段照抄
+WORD = re.compile(r"\w+")
+
+
+def _git(repo: Path, *args: str, data: bytes | None = None) -> bytes:
+    return subprocess.run(["git", "-C", str(repo), *args], input=data, capture_output=True, check=True).stdout
+
+
+def _objects(repo: Path, shas: Sequence[str]) -> dict[str, bytes]:
+    """一次 ``git cat-file --batch`` 读出全部对象；缺一个即停。"""
+    wanted = sorted(set(shas))
+    if not wanted:
+        return {}
+    out = _git(repo, "cat-file", "--batch", data="".join(f"{s}\n" for s in wanted).encode())
+    objects, pos = {}, 0
+    for sha in wanted:
+        end = out.index(b"\n", pos)
+        head = out[pos:end].decode().split()
+        if len(head) != 3 or head[0] != sha:
+            raise InputError(f"git object {sha} is missing from {repo}")
+        size = int(head[2])
+        objects[sha] = out[end + 1 : end + 1 + size]
+        pos = end + 2 + size
+    return objects
+
+
+def a0_history(repo: Path, snapshot: Path, recorded: str,
+               ref: str | None = None) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:  # fmt: skip
+    """检查点之前的全部提交，按提交顺序，带完整的提交说明（``%B``，收集引用用它）。核对：``checkpoints.yml``、快照
+    标签所指的提交与快照的 ``head`` 相同；只有一个根；快照的 ``log.jsonl`` 与 Git 按原导出格式重新导出的逐条逐字段
+    相同（id、作者、时间与首行标题 ``%s``；标题只用于这项核对）。``ref`` 缺省为快照的标签；读者仓库没有标签，给
+    ``refs/heads/main``（:mod:`pweval.harness.store_readers`）。"""
+    meta = yaml.safe_load((snapshot / "meta.yml").read_text(encoding="utf-8"))
+    head = _git(repo, "rev-parse", "--verify", f"{ref or meta['tag']}^{{commit}}").decode().strip()
+    versions = {"checkpoints.yml": recorded, "tag": head, "snapshot": meta["head"]}
+    if len(set(versions.values())) != 1:
+        raise InputError(f"checkpoint versions disagree: {versions}")
+    chain = [line.split() for line in _git(repo, "rev-list", "--reverse", "--parents", head).decode().splitlines()]
+    ids = [c[0] for c in chain]
+    if [c for c in chain if len(c) == 1] != [chain[0]]:
+        raise InputError("the history must have exactly one root, its first commit")
+    log = _git(repo, "log", "--reverse", f"--format={LOG_FORMAT}", head).decode("utf-8")
+    exported = [dict(zip(LOG_FIELDS, line.split("\x1f"), strict=True)) for line in log.splitlines() if line]
+    if read_jsonl(snapshot / "log.jsonl") != exported or [r["id"] for r in exported] != ids:
+        raise InputError(f"the snapshot log differs from the history of {head}")
+    if meta["counts"]["commits"] != len(ids):
+        raise InputError(f"the snapshot says {meta['counts']['commits']} commits, the history of {head} has {len(ids)}")
+    raw = _objects(repo, ids)
+    commits = []
+    for seq, (cid, *parents) in enumerate(chain, 1):
+        _, _, message = raw[cid].decode("utf-8").partition("\n\n")  # 提交对象：头部、空行、完整说明
+        commits.append({"id": cid, "seq": seq, "parents": parents, "message": message})
+    merges = sum(len(c) > 2 for c in chain)
+    return commits, versions, {"commits": len(ids), "first": ids[0], "head": head, "merges": merges, "log": "ok"}
+
+
+def a0_tree(repo: Path, head: str, snapshot: Path) -> dict[str, Any]:
+    """检查点提交的文件树与快照的 ``tree/`` 逐个相同（按 Git 的 blob 哈希比）。"""
+    want = {}
+    for item in filter(None, _git(repo, "ls-tree", "-r", "-z", "--full-tree", head).decode("utf-8").split("\0")):
+        info, path = item.split("\t", 1)
+        _, kind, sha = info.split()
+        if kind != "blob":
+            raise InputError(f"{head}: {path} is a {kind}, not a file")
+        want[path] = sha
+    root, got = snapshot / "tree", {}
+    for p in sorted(root.rglob("*")):
+        if p.is_symlink():
+            data = os.readlink(p).encode()
+        elif p.is_file():
+            data = p.read_bytes()
+        else:
+            continue
+        got[p.relative_to(root).as_posix()] = hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+    if differ := sorted(k for k in got.keys() | want.keys() if got.get(k) != want.get(k)):
+        raise InputError(f"the snapshot tree differs from {head}: {differ[:5]}")
+    return {"files": len(want), "tree": "ok"}
+
+
+def a0_files(repo: Path, commits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """每个提交写下的文件版本（新增、修改与类型改变；与第一个父提交比），即读者经 ``git show`` 能看到的全部正文。"""
+    out = []
+    for c in commits:
+        args = ["--root", c["id"]] if not c["parents"] else [c["parents"][0], c["id"]]
+        fields = _git(repo, "diff-tree", "-r", "-z", "--no-renames", "--no-commit-id", *args).decode("utf-8").split("\0")
+        for info, path in zip(fields[0::2], fields[1::2], strict=False):
+            if not info:
+                continue
+            _, mode, _, sha, status = info.lstrip(":").split()
+            if status != "D" and mode != "160000" and sha != NULL_SHA:
+                out.append({"commit": c["id"], "seq": c["seq"], "file": path, "blob": sha})
+    return out
+
+
+def _arms_of(argv: list[str]) -> set[str]:
+    """写者运行的 ``--arms``（缺省为 A3、A2，同 :data:`pweval.harness.timeline.DEFAULT_ARMS`）。"""
+    for i, a in enumerate(argv):
+        if a == "--arms" and i + 1 < len(argv):
+            return set(argv[i + 1].split(","))
+        if a.startswith("--arms="):
+            return set(a.removeprefix("--arms=").split(","))
+    return {"A3", "A2"}
+
+
+def a0_frozen(run: Path, bank: Path) -> dict[str, Any]:
+    """A0 写者运行时的计划与材料表：运行记录（``run.yml``）中跑过 A0 的每次调用都必须是同一个干净的题库提交、同一份
+    计划与材料表的路径；内容从题库在那个提交的版本中取（``git show``），不读题库当前的工作树。"""
+    calls = [c for c in yaml.safe_load((run / "run.yml").read_text(encoding="utf-8"))["invocations"]
+             if "A0" in _arms_of(c["argv"])]  # fmt: skip
+    if not calls:
+        raise InputError(f"{run / 'run.yml'}: no invocation ran A0")
+    used = {(c["probes"]["commit"], c["probes"]["dirty"], c["config"]["plan"], c["config"]["materials"]) for c in calls}
+    if len(used) != 1:
+        raise InputError(f"A0 ran with different probe banks or tables: {sorted(used)}")
+    commit, dirty, plan, materials = used.pop()
+    if dirty:
+        raise InputError(f"A0 ran with uncommitted changes in the probe bank (at {commit})")
+    out: dict[str, Any] = {"commit": commit, "invocations": [c["started"] for c in calls]}
+    for name, path in (("plan", plan), ("materials", materials)):
+        try:
+            data = _git(bank, "show", f"{commit}:{path}")
+        except subprocess.CalledProcessError as e:
+            raise InputError(f"{bank}: cannot read {path} at {commit}") from e
+        out[name] = {"path": path, "sha256": hashlib.sha256(data).hexdigest(), "text": data.decode("utf-8")}
+    return out
+
+
+def a0_opened(run: Path, papers: int, frozen: dict[str, Any], start: str, recorded: str) -> tuple[dict[str, str], dict[str, Any]]:
+    """检查点上开放的来源（ID → 哈希）：以写者运行时冻结的计划与材料表为准（:func:`a0_frozen`），即种子加上检查点之前
+    各会话新开放的来源；不看组的来源目录（那是最后一个检查点的状态）。再与 A0 的会话记录交叉核对：检查点之前每个会话
+    恰好一条，点出与新开放的来源同材料表，可取的来源数（``available``）与推导相同，取到的来源都已开放，版本从第 0 个
+    检查点首尾相接到这个检查点。"""
+    steps = yaml.safe_load(frozen["plan"]["text"])
+    table = yaml.safe_load(frozen["materials"]["text"])
+    plan = frozen["plan"]["path"]
+    last = None
+    for step in steps:
+        if step["type"] == "checkpoint" and step["papers"] == papers:
+            break
+        if "seq" in step:
+            last = step["seq"]
+    else:
+        raise InputError(f"{plan}: no checkpoint at {papers} papers")
+    plan_rows = {r["seq"]: r for r in table["sessions"]}
+    through, ids = {}, list(table["seed"])
+    for seq in range(1, last + 1):
+        ids += [s for s in plan_rows.get(seq, {}).get("opens", []) if s not in ids]
+        through[seq] = set(ids)
+    opened = {s: table["sources"][s]["sha256"] for s in sorted(ids)}
+    lines = [line for line in (run / "sessions.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+    rows = sorted((r for r in map(json.loads, lines) if r["arm"] == "A0" and r["seq"] <= last), key=lambda r: r["seq"])
+    if [r["seq"] for r in rows] != list(range(1, last + 1)):
+        raise InputError(f"A0 session records up to seq {last} are not one per session")
+    version = start
+    for r in rows:
+        row = plan_rows.get(r["seq"], {})
+        if (r["materials"]["named"], r["materials"]["opens"]) != (row.get("named", []), row.get("opens", [])):
+            raise InputError(f"A0 session {r['seq']}: its materials differ from the frozen materials table")
+        if r["materials"].get("available") != len(through[r["seq"]]):
+            raise InputError(f"A0 session {r['seq']}: {r['materials'].get('available')} sources available, "
+                             f"the frozen tables give {len(through[r['seq']])}")  # fmt: skip
+        if unopened := set((r.get("read_source") or {}).get("fetched", [])) - through[r["seq"]]:
+            raise InputError(f"A0 session {r['seq']} fetched unopened sources {sorted(unopened)}")
+        if r["version_before"] != version:
+            raise InputError(f"A0 session {r['seq']} starts at {r['version_before']}, the previous ended at {version}")
+        version = r["version_after"]
+    if version != recorded:
+        raise InputError(f"A0 sessions end at {version}, the checkpoint is {recorded}")
+    digest = hashlib.sha256("".join(json.dumps(r, sort_keys=True) + "\n" for r in rows).encode()).hexdigest()
+    return opened, {"last_session": last, "sessions": len(rows), "sessions_sha256": digest, "chain": "ok"}
+
+
+def _shingles(text: str) -> set[str]:
+    words = WORD.findall(text.lower())
+    return {" ".join(words[i : i + SHINGLE]) for i in range(len(words) - SHINGLE + 1)}
+
+
+def _source_shingles(sources: Sources) -> dict[str, set[str]]:
+    """开放来源 → 其中的滑窗；代码取仓库中全部 UTF-8 文本文件。"""
+    out = {}
+    for source in sources.opened:
+        path = sources.root / source
+        files = sorted(p for p in path.rglob("*") if p.is_file()) if CODE_SOURCE.fullmatch(source) else [path / "paper.md"]
+        found: set[str] = set()
+        for f in files:
+            try:
+                found |= _shingles(f.read_bytes().decode("utf-8"))
+            except UnicodeDecodeError:
+                continue
+        out[source] = found
+    return out
+
+
+def source_text(texts: list[tuple[dict[str, Any], str]], sources: Sources) -> dict[str, Any]:
+    """原文进入仓库的程度（设计 §2、§6.3：A0 写者提交的原文单独报告）：每个开放来源的连续 ``SHINGLE`` 词滑窗（小写、
+    只取字母数字词，不受换行、标点与 Markdown 记号影响），有多少逐字出现在检查点之前的某个文件版本中
+    （``in_history``）、单个文件版本中最多有多少（``max_in_one_file``）。只列至少出现一个滑窗的来源。另列路径像来源
+    副本的文件（``sources/`` 之下或名为 ``paper.md``）。改写过的转述不算。"""
+    shingles = _source_shingles(sources)
+    index: dict[str, list[str]] = defaultdict(list)
+    for source, found in shingles.items():
+        for g in found:
+            index[g].append(source)
+    union: dict[str, set[str]] = defaultdict(set)
+    best: dict[str, tuple[int, dict[str, Any]]] = {}
+    for where, text in texts:
+        hits: dict[str, set[str]] = defaultdict(set)
+        for g in _shingles(text):
+            for source in index.get(g, ()):
+                hits[source].add(g)
+        for source, found in hits.items():
+            union[source] |= found
+            if len(found) > best.get(source, (0, {}))[0]:
+                best[source] = (len(found), where)
+    per_source = {
+        s: {"shingles": len(shingles[s]), "in_history": len(union[s]),
+            "share": round(len(union[s]) / len(shingles[s]), 4), "max_in_one_file": best[s][0], "file": best[s][1]}
+        for s in sorted(union)
+    }  # fmt: skip
+    paths = sorted({w["file"] for w, _ in texts if "file" in w and (w["file"].startswith("sources/")
+                                                                    or PurePosixPath(w["file"]).name == "paper.md")})  # fmt: skip
+    return {"shingle_words": SHINGLE, "sources": per_source, "source_like_paths": paths}
+
+
+def collect_a0(run: Path, papers: int, bank: Path = BANK) -> dict[str, Any]:
+    """A0 的放行名单：检查点及之前每个提交写下的每个文件版本（text 通道）与完整的提交说明（commit 通道），同一套扫描、
+    校验与扩块。不按 YAML 解析文件，没有 structured 通道（10-24 用户定）。"""
+    repo, snapshot = run / A0_REPO, run / "snapshots" / "A0" / f"k{papers}"
+    checkpoints = yaml.safe_load((run / "checkpoints.yml").read_text(encoding="utf-8"))["A0"]
+    recorded = checkpoints[papers]
+    commits, versions, history = a0_history(repo, snapshot, recorded)
+    tree = a0_tree(repo, history["head"], snapshot)
+    frozen = a0_frozen(run, bank)
+    opened, sessions = a0_opened(run, papers, frozen, checkpoints[0], recorded)
+    gather = Gather(Sources(run / "A0" / "sources", opened), load_tables(bank))
+
+    files = a0_files(repo, commits)
+    blobs = _objects(repo, [f["blob"] for f in files])
+    texts, not_text = [], []
+    for f in files:
+        where = {"commit": f["commit"], "seq": f["seq"], "file": f["file"]}
+        try:
+            texts.append((where, blobs[f["blob"]].decode("utf-8")))
+        except UnicodeDecodeError:
+            not_text.append(where)
+    for where, text in texts:
+        gather.scan(where, "text", text)
+    for c in commits:
+        gather.scan({"commit": c["id"], "seq": c["seq"], "field": "message"}, "commit", c["message"])
+
+    passages, readable = gather.result()
+    inputs = {
+        "repository": {"tag": yaml.safe_load((snapshot / "meta.yml").read_text(encoding="utf-8"))["tag"],
+                       "head": history["head"]},
+        "snapshot": {"meta.yml": sha256_file(snapshot / "meta.yml"), "log.jsonl": sha256_file(snapshot / "log.jsonl"),
+                     "tree": tree_sha256(snapshot / "tree")},
+        "probes": {"commit": frozen["commit"], "invocations": frozen["invocations"],
+                   **{n: {k: frozen[n][k] for k in ("path", "sha256")} for n in ("plan", "materials")}},
+        "sessions_sha256": sessions["sessions_sha256"],
+        "tables_csv": sha256_file(bank / "facts/tables.csv"),
+        "sources": opened,
+    }  # fmt: skip
+    return {
+        "arm": "A0", "checkpoint": papers, "version": recorded, "rule": RULE,
+        "inputs": inputs,
+        "checks": {"versions": versions, "history": history, "tree": tree, "sessions": sessions,
+                   "files": {"versions": len(files), "text": len(texts), "not_text": not_text}, "sources": "sha256 ok"},
+        "stats": _stats(gather.origins, gather.dropped, gather.mentions, readable, A0_CHANNELS),
+        "source_text": source_text(texts, gather.sources),
+        "passages": dict(sorted(passages.items())),
+        "readable": dict(sorted(readable.items())),
+        "origins": gather.origins,
+        "dropped": gather.dropped,
+    }  # fmt: skip
 
 
 # ---------------------------------------------------------------- 命令行
@@ -559,7 +864,7 @@ def write(result: dict[str, Any], out: Path, force: bool = False) -> Path:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("run", type=Path, help="运行目录，如 ~/pw-lab/runs/f3")
-    parser.add_argument("--arm", required=True, choices=GRAPH_ARMS)
+    parser.add_argument("--arm", required=True, choices=(*GRAPH_ARMS, "A0"))
     parser.add_argument("--checkpoint", type=int, required=True, help="检查点（篇数）：10、20 或 30")
     parser.add_argument("--bank", type=Path, default=BANK, help="题库仓库（facts/tables.csv）")
     parser.add_argument("--out", type=Path, help="输出目录，默认 <运行目录>/allowlists")
@@ -580,4 +885,4 @@ def main(argv: Sequence[str] | None = None) -> int:
 if __name__ == "__main__":
     raise SystemExit(main())
 
-__all__ = ["InputError", "Ref", "collect", "merge", "normalize", "parse", "scan", "write"]
+__all__ = ["Gather", "InputError", "Ref", "collect", "collect_a0", "merge", "normalize", "parse", "scan", "source_text", "write"]

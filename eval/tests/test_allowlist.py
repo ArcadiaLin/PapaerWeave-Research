@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
 
+from pweval.harness.export import export_a0
 from pweval.harness.source_server import tree_sha256
 from pweval.protocol import allowlist
 from pweval.protocol.allowlist import InputError, Ref, collect, merge, parse, scan, write
@@ -292,3 +294,152 @@ def test_write_puts_the_digest_beside_and_refuses_to_replace_different_content(r
     assert write(r, tmp_path / "out") == path  # 内容相同：可以重写
     with pytest.raises(FileExistsError):
         write({**r, "rule": "other"}, tmp_path / "out")
+
+
+# ---------------------------------------------------------------- A0：Git 历史
+
+
+def _git(cwd: Path, *args: str) -> str:
+    env = {"GIT_AUTHOR_NAME": "w", "GIT_AUTHOR_EMAIL": "w", "GIT_COMMITTER_NAME": "w", "GIT_COMMITTER_EMAIL": "w",
+           "GIT_AUTHOR_DATE": "2026-10-22T00:00:00Z", "GIT_COMMITTER_DATE": "2026-10-22T00:00:00Z", "HOME": str(cwd)}  # fmt: skip
+    return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, check=True, env=env).stdout.strip()
+
+
+def _a0_run(tmp_path: Path, extra: dict[str, str] | None = None) -> Path:
+    """A0 的一个检查点（k1，第 2 个会话之后）：提交 1 为约定（引用未开放的示例来源），提交 2 建 exp_0001（锚点
+    11:11，说明正文中引用 Q），提交 3 把锚点改为 4:4，另一个文件引用检查点之后才开放的 S。``extra`` 另在提交 3 中加文件。"""
+    run = tmp_path / "run"
+    texts = {P: PAPER_TEXT, Q: "Q\n\nq text\n", S: "S\n\ns text\n"}
+    for source, text in texts.items():
+        (run / "A0/sources" / source).mkdir(parents=True)
+        (run / "A0/sources" / source / "paper.md").write_text(text)
+    work = tmp_path / "work"
+    work.mkdir()
+    _git(work, "init", "-q", "-b", "main")
+    (work / "AGENTS.md").write_text(f"Cite like [{U}::120:135].\n")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "-m", "Set up the shared repository")
+    node = work / "store/nodes/exp_0001.yaml"
+    node.parent.mkdir(parents=True)
+    node.write_text(f'id: exp_0001\nanchor: ["{P}::11:11"]\ndescription: see {P}\n')
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "-m", f"add exp_0001\n\nthe table is at {Q}::3:3")
+    node.write_text(f'id: exp_0001\nanchor: ["{P}::4:4"]\n')
+    (work / "store/nodes/note.md").write_text(f"later: [{S}::1:1]\n")
+    for path, text in (extra or {}).items():
+        (work / path).parent.mkdir(parents=True, exist_ok=True)
+        (work / path).write_text(text)
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "-m", "fix the anchor")
+    c1, c2, c3 = _git(work, "rev-list", "--reverse", "main").split()
+    shared = run / "A0/shared.git"
+    _git(tmp_path, "clone", "-q", "--bare", str(work), str(shared))
+    _git(shared, "tag", "checkpoint-0", c1)
+    _git(shared, "tag", "checkpoint-1", c3)
+    export_a0(shared, "checkpoint-1", run / "snapshots/A0/k1")
+    (run / "checkpoints.yml").write_text(yaml.safe_dump({"A0": {0: c1, 1: c3}}))
+    rows = [
+        {"arm": "A3", "seq": 1, "materials": {"named": [], "opens": []}, "version_before": "x", "version_after": "y"},
+        {"arm": "A0", "seq": 1, "materials": {"named": [Q], "opens": [Q], "available": 2}, "read_source": {"fetched": [Q]},
+         "version_before": c1, "version_after": c2},
+        {"arm": "A0", "seq": 2, "materials": {"named": [], "opens": [], "available": 2}, "read_source": {},
+         "version_before": c2, "version_after": c3},
+    ]  # fmt: skip
+    (run / "sessions.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    bank = tmp_path / "bank"
+    (bank / "facts").mkdir(parents=True)
+    (bank / "facts/tables.csv").write_text(f"table,arxiv,first,last,number\n{P}:T6,{P},6,9,1\n")
+    (bank / "tasks").mkdir()
+    plan = [{"seq": 1, "type": "build"}, {"seq": 2, "type": "build"}, {"type": "checkpoint", "papers": 1},
+            {"seq": 3, "type": "build"}]  # fmt: skip
+    (bank / "tasks/plan-f3.yml").write_text(yaml.safe_dump(plan))
+    materials = {"seed": [P], "sessions": [{"seq": 1, "named": [Q], "opens": [Q]}, {"seq": 2, "named": [], "opens": []},
+                                           {"seq": 3, "named": [S], "opens": [S]}],
+                 "sources": {s: {"kind": "paper", "sha256": hashlib.sha256(t.encode()).hexdigest()} for s, t in texts.items()}}  # fmt: skip
+    (bank / "tasks/materials.yml").write_text(yaml.safe_dump(materials))
+    _git(bank, "init", "-q", "-b", "main")
+    _git(bank, "add", "-A")
+    _git(bank, "commit", "-q", "-m", "bank")
+    probes = {"commit": _git(bank, "rev-parse", "HEAD"), "dirty": False}
+    config = {"plan": "tasks/plan-f3.yml", "materials": "tasks/materials.yml"}
+    calls = [{"started": "t0", "argv": ["f3", "--arms", "A3"], "probes": {"commit": "other", "dirty": True}, "config": config},
+             {"started": "t1", "argv": ["f3", "--arms", "A0", "--reset"], "probes": probes, "config": config}]  # fmt: skip
+    (run / "run.yml").write_text(yaml.safe_dump({"invocations": calls}))
+    return run
+
+
+def _collect_a0(run: Path) -> dict:
+    return collect(run, "A0", 1, run.parent / "bank")
+
+
+def test_a0_collects_every_file_version_and_full_commit_messages(tmp_path: Path) -> None:
+    r = _collect_a0(_a0_run(tmp_path))
+    by_ref = {(o["channel"], o["ref"]): o for o in r["origins"]}
+    # 文件的每个版本都收：提交 2 中被改掉的旧锚点 11:11 照样放行；正文不按 YAML 解析，统一是 text
+    old = by_ref[("text", f"{P}::11:11")]["where"]
+    assert (old["seq"], old["file"]) == (2, "store/nodes/exp_0001.yaml")
+    assert by_ref[("text", f"{P}::4:4")]["passage"] == [3, 4]
+    # 提交说明取完整正文：只在第二段出现的引用也收到（快照的 log.jsonl 只有首行）
+    assert by_ref[("commit", f"{Q}::3:3")]["where"]["field"] == "message"
+    assert Q not in (run_log := (tmp_path / "run/snapshots/A0/k1/log.jsonl").read_text()) and "add exp_0001" in run_log
+    # 开放的来源取自计划与材料表：S 的副本已在来源目录中，但检查点之后才开放
+    assert sorted(r["inputs"]["sources"]) == sorted([P, Q])
+    reasons = sorted((d["reason"], d["ref"]) for d in r["dropped"])
+    assert reasons == sorted([("unopened", f"{U}::120:135"), ("unopened", f"{S}::1:1")])
+    assert set(r["stats"]["channels"]) == {"text", "commit"} and "beyond_structured" not in r["stats"]
+    assert r["readable"] == {P: [[3, 4], [11, 11]], Q: [[3, 3]]}
+    assert r["checks"]["sessions"]["last_session"] == 2 and r["checks"]["tree"]["tree"] == "ok"
+    assert r["source_text"]["sources"] == {} and r["source_text"]["source_like_paths"] == []
+
+
+def test_a0_reads_the_tables_the_writers_ran_with_not_the_bank_worktree(tmp_path: Path) -> None:
+    run = _a0_run(tmp_path)
+    before = _collect_a0(run)
+    _edit(run.parent / "bank/tasks/materials.yml", f"seed:\n- {P}\n", f"seed:\n- {P}\n- {S}\n")  # 未来的来源改进种子
+    after = _collect_a0(run)
+    assert after == before and S not in after["inputs"]["sources"]
+    assert after["inputs"]["probes"]["invocations"] == ["t1"]  # 只认跑过 A0 的调用
+
+
+def test_a0_reports_source_text_committed_into_the_repository(tmp_path: Path) -> None:
+    r = _collect_a0(_a0_run(tmp_path, {"copy/paper.md": PAPER_TEXT.replace("\n", " ")}))
+    st = r["source_text"]
+    assert st["sources"][P]["share"] == 1.0 and st["sources"][P]["file"]["file"] == "copy/paper.md"
+    assert st["source_like_paths"] == ["copy/paper.md"]
+
+
+def _a0_sessions(run: Path, change) -> None:
+    rows = [json.loads(line) for line in (run / "sessions.jsonl").read_text().splitlines()]
+    change(rows)
+    (run / "sessions.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+
+@pytest.mark.parametrize(
+    ("damage", "message"),
+    [
+        (lambda run: _edit(run / "snapshots/A0/k1/tree/AGENTS.md", "Cite", "Quote"), "tree differs"),
+        (lambda run: (run / "snapshots/A0/k1/tree/store/nodes/note.md").unlink(), "tree differs"),
+        (lambda run: _edit(run / "A0/sources" / P / "paper.md", "Para two.", "Para 2."), "sha256"),
+        (lambda run: _a0_sessions(run, lambda rows: rows.pop()), "one per session"),
+        (lambda run: _a0_sessions(run, lambda rows: rows[2]["materials"].update(opens=[S])), "materials differ"),
+        (lambda run: _a0_sessions(run, lambda rows: rows[1]["read_source"].update(fetched=[S])), "unopened"),
+        (lambda run: _a0_sessions(run, lambda rows: rows[2].update(version_after=rows[2]["version_before"])), "end at"),
+        (lambda run: _a0_sessions(run, lambda rows: rows[1]["materials"].update(available=3)), "available"),
+        (lambda run: _edit(run / "snapshots/A0/k1/log.jsonl", '"author": "w"', '"author": "v"'), "snapshot log"),
+        (lambda run: _edit(run / "snapshots/A0/k1/log.jsonl", "fix the anchor", "fix anchors"), "snapshot log"),
+        (lambda run: _edit(run / "run.yml", "dirty: false", "dirty: true"), "uncommitted"),
+        (lambda run: _edit(run / "run.yml", "- A0", "- A2"), "no invocation ran A0"),
+    ],
+)
+def test_a0_damaged_inputs_stop_the_collection(tmp_path: Path, damage, message: str) -> None:
+    run = _a0_run(tmp_path)
+    damage(run)
+    with pytest.raises(InputError, match=message):
+        _collect_a0(run)
+
+
+def test_a0_checkpoint_versions_must_agree(tmp_path: Path) -> None:
+    run = _a0_run(tmp_path)
+    _git(run / "A0/shared.git", "tag", "-f", "checkpoint-1", "checkpoint-0")
+    with pytest.raises(InputError, match="disagree"):
+        _collect_a0(run)

@@ -25,7 +25,12 @@
 容器的端口；之后整个检查点在读者库的进程锁中完成（:func:`store_lock`），另一个进程不能中途重载这个库。续跑时已存的
 回答必须是同一个版本与同一份放行名单下答的（:func:`check_answers`）。
 
-只有 A3、A2 已实现；A0、A4 的放行名单与读者库待做（f3 设计 §6.3），没有在读者配置中声明读者库的组一律拒绝。
+**A0**（10-24 用户定）：没有备份与容器。每个检查点在输出目录中新建一份读者仓库（:func:`build_a0`）：空仓库中只取
+检查点标签及其祖先，不带标签与远端；全部会话共用，只读挂载为 ``/work``。核对（:func:`verify_a0`，作答前后各一次）：
+只有 ``main`` 一个引用，对象库恰好是检查点可达的对象，之后的提交取不到，提交列表、Git 树与工作树同快照；原文目录
+只有检查点上开放的来源（与放行名单同一推导）。读者配置中 A0 不能写任何库的设置。证据服务之外没有 MCP 服务。
+
+A3、A2、A0 已实现；A4 的放行名单与读者库待做（f3 设计 §6.3），没有在读者配置中声明的组一律拒绝。
 """
 
 from __future__ import annotations
@@ -50,6 +55,7 @@ from urllib.parse import urlsplit
 
 import yaml
 
+from ..protocol import allowlist
 from . import export
 from .mcp_client import Client
 from .refs import reader_prompt
@@ -100,6 +106,12 @@ TOOLS = {
     "Evidence": {"read_evidence"},
 }
 HIDDEN = ("read_evidence",)  # A3、A2：PAPERWEAVE_HIDE_TOOLS；commit 由 PAPERWEAVE_READ_ONLY 去掉
+A0_TOOLS = {"Evidence": {"read_evidence"}}  # A0：没有库的服务，仓库就是 /work（pi 自带的工具），原文只经证据服务
+ARMS = (*GRAPH, "A0")
+# A0 读者仓库建好后删掉的 git 记录：FETCH_HEAD 与引用日志写着共享仓库的宿主机路径与标签名
+A0_LEFTOVERS = ("FETCH_HEAD", "ORIG_HEAD", "logs")
+# 读者仓库中不能有的：引用日志、取库记录、浅克隆与借用对象库（alternates 会让共享仓库的对象可达）
+A0_FORBIDDEN = (*A0_LEFTOVERS, "shallow", "objects/info/alternates", "objects/info/http-alternates")
 SNAPSHOT_FILES = ("graph.jsonl", "commits.jsonl")
 
 
@@ -117,6 +129,12 @@ def load(path: Path) -> dict[str, Any]:
     taken = {v for s in config["writer_stores"].values() for v in s.values()}
     arms = {}
     for arm, spec in (readers.get("arms") or {}).items():
+        if arm == "A0":  # 读者仓库由运行器从检查点新建（:func:`build_a0`），配置中不能指向任何库
+            if spec:
+                raise SystemExit(f"{path}: the readers of A0 read a repository built from the checkpoint; "
+                                 f"give no store settings ({', '.join(spec)})")  # fmt: skip
+            arms[arm] = config["arms"][arm] | {"llm": readers["llm"]}
+            continue
         if missing := [k for k in ("neo4j", "neo4j_container") if not spec.get(k)]:
             raise SystemExit(f"{path}: the readers of {arm} need their own store ({', '.join(missing)} missing)")
         if used := sorted({spec["neo4j"], spec["neo4j_container"]} & taken):
@@ -128,13 +146,15 @@ def load(path: Path) -> dict[str, Any]:
     return config
 
 
-def guard(config: dict[str, Any], arm: str) -> Path:
+def guard(config: dict[str, Any], arm: str) -> Path | None:
     """在停下或载入任何库之前：这一组在读者配置中声明了读者库；容器不是写者的，``/data`` 挂载目录与任何写者容器
     的任何挂载目录都不重叠；库的地址是本机上这个容器映射出的 bolt 端口（恢复的库就是读者连的库）。返回容器的数据
     目录。写者容器只有 Docker 明确答复不存在时才跳过；其他查询失败一律停下。以 ``--rm`` 起的写者容器照样核对挂载，
-    它同样可能挂着这个目录。"""
+    它同样可能挂着这个目录。A0 没有容器，读者仓库在输出目录中新建，返回 ``None``。"""
     if arm not in config["arms"]:
         raise RuntimeError(f"{arm} has no readers' store in the reader config; it cannot run")
+    if arm == "A0":
+        return None
     spec = config["arms"][arm]
     container = spec["neo4j_container"]
     info = _inspect(container)
@@ -301,51 +321,152 @@ def check_allowlist(run: Path, arm: str, papers: int, meta: dict[str, Any]) -> s
     if (data["arm"], data["checkpoint"], data["version"]) != (arm, papers, meta["version"]):
         raise RuntimeError(f"{path}: allowlist of {data['arm']} k{data['checkpoint']} at {data['version']}, "
                            f"the backup is at {meta['version']}")  # fmt: skip
+    if data["inputs"]["sources"] != meta["sources"]:
+        raise RuntimeError(f"{path}: the allowlist was collected over other opened sources than the readers get")
     return digest
 
 
 def check_tools(config: dict[str, Any], run: Path, out: Path, arm: str, papers: int,
                 reader: Writer) -> dict[str, list[str]]:  # fmt: skip
-    """以读者会话的同一命令与环境启动两个服务，取它们实际列出的工具，与 :data:`TOOLS` 不同即停。"""
+    """读者会话登记的 MCP 服务（``prepare`` 写下的 ``mcp.json``）正是预期的那几个，再以会话的同一命令与环境启动
+    它们，取实际列出的工具；与 :data:`TOOLS`（A3、A2）或 :data:`A0_TOOLS`（A0：只有证据服务，没有来源服务与库的
+    服务）不同即停。"""
+    expected = A0_TOOLS if arm == "A0" else TOOLS
     paths = Paths(reader_dir(out, arm, papers) / "tools-check")
     shutil.rmtree(paths.root, ignore_errors=True)
     paths.work.mkdir(parents=True)
     box = reader_arm(config, run, out, arm, papers, "tools-check")
     found = {}
     try:
-        for name, command in (("PaperWeave", _mcp_command(paths, box, reader)), ("Evidence", _evidence_command(paths, box))):
-            with Client(command, dict(os.environ)) as client:  # 会话中两个服务同样继承运行器的环境（命令中另给）
+        _prepare(config, paths, box)
+        registered = json.loads((paths.home / ".pi/agent/mcp.json").read_text(encoding="utf-8"))["mcpServers"]
+        if set(registered) != set(expected):
+            raise RuntimeError(f"{arm} readers' sessions register {sorted(registered)}, expected {sorted(expected)}")
+        commands = {"Evidence": _evidence_command(paths, box)}
+        if "PaperWeave" in expected:
+            commands["PaperWeave"] = _mcp_command(paths, box, reader)
+        for name, command in sorted(commands.items(), reverse=True):
+            with Client(command, dict(os.environ)) as client:  # 会话中的服务同样继承运行器的环境（命令中另给）
                 found[name] = sorted(client.tools())
     finally:
         shutil.rmtree(paths.root, ignore_errors=True)
-    if {k: set(v) for k, v in found.items()} != TOOLS:
-        raise RuntimeError(f"{arm} readers' tools are {found}, expected {TOOLS}")
+    if {k: set(v) for k, v in found.items()} != expected:
+        raise RuntimeError(f"{arm} readers' tools are {found}, expected {expected}")
     return found
+
+
+# ---------------------------------------------------------------- A0：检查点仓库
+
+
+def a0_store(out: Path, papers: int) -> Path:
+    return reader_dir(out, "A0", papers) / "store"
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True).stdout
+
+
+def a0_checkpoint(config: dict[str, Any], run: Path, papers: int) -> dict[str, Any]:
+    """A0 的检查点：版本（``checkpoints.yml``）、快照的标签，以及开放的来源。来源与放行名单同一推导
+    （:func:`pweval.protocol.allowlist.a0_frozen`、``a0_opened``：写者运行时的计划与材料表，与会话记录交叉核对）。"""
+    checkpoints = yaml.safe_load((run / "checkpoints.yml").read_text(encoding="utf-8"))["A0"]
+    snapshot = yaml.safe_load((run / "snapshots/A0" / f"k{papers}" / "meta.yml").read_text(encoding="utf-8"))
+    frozen = allowlist.a0_frozen(run, config["probes_repo"])
+    opened, _ = allowlist.a0_opened(run, papers, frozen, checkpoints[0], checkpoints[papers])
+    return {"arm": "A0", "papers": papers, "version": checkpoints[papers], "tag": snapshot["tag"], "sources": opened}
+
+
+def build_a0(run: Path, out: Path, papers: int, meta: dict[str, Any]) -> None:
+    """读者仓库 ``<输出>/A0/readers/k<篇数>/store``：空仓库中只取检查点标签（及其祖先）为 ``main``，不带标签、不留
+    远端，检出工作树，再删掉记着共享仓库路径的取库记录；原文目录 ``sources/`` 只复制检查点上开放的来源。已建好的
+    不重建，由 :func:`verify_a0` 核对。先在 ``.partial`` 中建好再改名。"""
+    store, where = a0_store(out, papers), reader_dir(out, "A0", papers)
+    if not store.exists():
+        emit("BUILD", "A0", k=papers, tag=meta["tag"], version=meta["version"])
+        partial = store.with_name("store.partial")
+        shutil.rmtree(partial, ignore_errors=True)
+        partial.mkdir(parents=True)
+        _git(partial, "init", "-q", "-b", "main")
+        _git(partial, "fetch", "-q", "--no-tags", "--update-head-ok", str(run / allowlist.A0_REPO),
+             f"+refs/tags/{meta['tag']}:refs/heads/main")  # fmt: skip
+        _git(partial, "reset", "-q", "--hard", "refs/heads/main")
+        for name in A0_LEFTOVERS:
+            leftover = partial / ".git" / name
+            shutil.rmtree(leftover) if leftover.is_dir() else leftover.unlink(missing_ok=True)
+        partial.rename(store)
+    sources = where / "sources"
+    if not sources.exists():
+        partial = where / "sources.partial"
+        shutil.rmtree(partial, ignore_errors=True)
+        partial.mkdir(parents=True)
+        for source in meta["sources"]:
+            shutil.copytree(run / "A0/sources" / source, partial / source)
+        partial.rename(sources)
+
+
+def verify_a0(run: Path, out: Path, papers: int, meta: dict[str, Any]) -> dict[str, Any]:
+    """读者仓库与原文目录仍是检查点的，作答前后各一次：
+
+    - 引用只有 ``refs/heads/main``，指向检查点；HEAD 是它；没有远端，没有 :data:`A0_FORBIDDEN` 中的记录；
+    - 对象库中的对象恰好是检查点提交可达的那些；共享仓库中检查点之后的每个提交都不在其中（``git show`` 取不到）；
+    - 提交列表（逐字段）与 Git 树同检查点快照（:func:`pweval.protocol.allowlist.a0_history`、``a0_tree``），检出的
+      工作树与快照的文件树逐个相同；
+    - 原文目录恰好是开放的来源，哈希相同。"""
+    store, where = a0_store(out, papers), reader_dir(out, "A0", papers)
+    snapshot = run / "snapshots/A0" / f"k{papers}"
+    head = meta["version"]
+    refs = _git(store, "for-each-ref", "--format=%(refname) %(objectname)").splitlines()
+    if refs != [f"refs/heads/main {head}"] or _git(store, "symbolic-ref", "HEAD").strip() != "refs/heads/main":
+        raise RuntimeError(f"A0 k{papers}: the readers' repository has refs {refs}, expected only main at {head}")
+    if remotes := _git(store, "remote").split():
+        raise RuntimeError(f"A0 k{papers}: the readers' repository has remotes {remotes}")
+    if found := [n for n in A0_FORBIDDEN if (store / ".git" / n).exists()]:
+        raise RuntimeError(f"A0 k{papers}: the readers' repository keeps {found}")
+    objects = set(_git(store, "cat-file", "--batch-all-objects", "--batch-check=%(objectname)").split())
+    reachable = {line.split()[0] for line in _git(store, "rev-list", "--objects", head).splitlines()}
+    if objects != reachable:
+        raise RuntimeError(f"A0 k{papers}: {len(objects - reachable)} objects beyond checkpoint {head}, "
+                           f"{len(reachable - objects)} missing")  # fmt: skip
+    later = _git(run / allowlist.A0_REPO, "rev-list", "--all", "--not", head).split()
+    if present := [c for c in later if c in objects]:
+        raise RuntimeError(f"A0 k{papers}: later commits are in the readers' repository: {present[:3]}")
+    try:
+        commits, _, history = allowlist.a0_history(store, snapshot, head, ref="refs/heads/main")
+        tree = allowlist.a0_tree(store, history["head"], snapshot)
+    except allowlist.InputError as e:
+        raise RuntimeError(f"A0 k{papers}: the readers' repository differs from the snapshot: {e}") from e
+    worktree = {str(p.relative_to(store)): _sha256(p) for p in sorted(store.rglob("*"))
+                if p.is_file() and p.relative_to(store).parts[0] != ".git"}  # fmt: skip
+    if worktree != _tree(snapshot / "tree"):
+        raise RuntimeError(f"A0 k{papers}: the files of the readers' repository differ from the snapshot")
+    found = sorted(p.name for p in (where / "sources").iterdir())
+    digests = {s: source_digest(where / "sources", s) for s in found}
+    if digests != meta["sources"]:
+        raise RuntimeError(f"A0 k{papers}: the readers' sources differ from those opened at the checkpoint")
+    return {"version": head, "commits": len(commits), "files": tree["files"], "objects": len(objects),
+            "later_absent": len(later), "sources": len(digests)}  # fmt: skip
 
 
 # ---------------------------------------------------------------- 作答
 
 
 def reader_arm(config: dict[str, Any], run: Path, out: Path, arm: str, papers: int, session: str) -> Arm:
-    """读者的沙箱：断网，没有论文与代码目录，库只读；原文只经证据服务。"""
-    if arm not in GRAPH:
+    """读者的沙箱：断网，没有论文与代码目录，库只读；原文只经证据服务。A0 的 ``/work`` 是检查点的读者仓库（只读
+    挂载），没有来源服务。"""
+    if arm not in ARMS:
         raise NotImplementedError(f"the offline readers of {arm} are not implemented yet (f3 design §6.3)")
     if arm not in config["arms"]:
         raise RuntimeError(f"{arm} has no readers' store in the reader config; it cannot run")
     spec, where = config["arms"][arm], reader_dir(out, arm, papers)
     evidence = ReadEvidence(allowlist_of(run, arm, papers), where / "sources", session)
+    if arm == "A0":
+        return Arm("A0", None, store=a0_store(out, papers), read_only=True, isolated_llm=config["llm"], evidence=evidence)
     return Arm(arm, None, neo4j=spec["neo4j"], data=where / "data", read_only=True, hide_tools=HIDDEN,
                ablate=tuple(spec.get("ablate") or ()), isolated_llm=config["llm"], sources=where / "sources",
                evidence=evidence)  # fmt: skip
 
 
-def answer(config: dict[str, Any], tools: str, run: Path, out: Path, arm: str, papers: int, group: str,
-           probe: dict[str, Any], reader: Writer) -> dict[str, Any]:  # fmt: skip
-    """一题一次读者会话：回答原文、事件流与会话记录、用时、token、工具调用、联网命令与证据请求的统计。"""
-    paths = Paths(reader_dir(out, arm, papers) / "sessions" / probe["id"])
-    if paths.root.exists():  # 中断后重跑：上次没存下回答的会话目录不留
-        shutil.rmtree(paths.root)
-    box = reader_arm(config, run, out, arm, papers, probe["id"])
+def _prepare(config: dict[str, Any], paths: Paths, box: Arm) -> None:
     runner = config["runner"]
     prepare(
         paths,
@@ -358,6 +479,17 @@ def answer(config: dict[str, Any], tools: str, run: Path, out: Path, arm: str, p
         reserve_tokens=runner["reserve_tokens"],
         max_tokens=runner.get("max_output_tokens"),
     )
+
+
+def answer(config: dict[str, Any], tools: str, run: Path, out: Path, arm: str, papers: int, group: str,
+           probe: dict[str, Any], reader: Writer) -> dict[str, Any]:  # fmt: skip
+    """一题一次读者会话：回答原文、事件流与会话记录、用时、token、工具调用、联网命令与证据请求的统计。"""
+    paths = Paths(reader_dir(out, arm, papers) / "sessions" / probe["id"])
+    if paths.root.exists():  # 中断后重跑：上次没存下回答的会话目录不留
+        shutil.rmtree(paths.root)
+    box = reader_arm(config, run, out, arm, papers, probe["id"])
+    runner = config["runner"]
+    _prepare(config, paths, box)
     text = reader_prompt(arm, probe, tools=tools)
     started = datetime.now(UTC).isoformat(timespec="seconds")
     result = run_session(paths, box, reader, text, timeout_s=runner["probe_timeout_min"] * 60,
@@ -412,8 +544,12 @@ def check_answers(out: Path, arm: str, papers: int, version: str, digest: str) -
 
 def run_readers(config: dict[str, Any], run: Path, out: Path, arm: str, papers: int, groups: Sequence[str],
                 only: set[str] | None = None, check_only: bool = False) -> None:  # fmt: skip
-    """一个检查点：在读者库的锁中完成恢复、核对、作答与结束核对。"""
-    with store_lock(guard(config, arm)):
+    """一个检查点：在读者库的锁中完成恢复、核对、作答与结束核对。A0 的锁在本输出目录的读者仓库旁。"""
+    lock = guard(config, arm)
+    if lock is None:
+        lock = a0_store(out, papers)
+        lock.parent.mkdir(parents=True, exist_ok=True)
+    with store_lock(lock):
         _run_readers(config, run, out, arm, papers, groups, only, check_only)
 
 
@@ -421,13 +557,19 @@ def _run_readers(config: dict[str, Any], run: Path, out: Path, arm: str, papers:
                  only: set[str] | None, check_only: bool) -> None:  # fmt: skip
     timeline = timeline_of(config)
     reader = Writer("reader", timeline.reader["user"], f"{config['runner']['agent']}/{config['runner']['model']}")
-    meta = restore(config, run, out, arm, papers)
-    checked = verify(config, run, out, arm, papers, meta)
+    if arm == "A0":
+        meta = a0_checkpoint(config, run, papers)
+        build_a0(run, out, papers, meta)
+        checked = verify_a0(run, out, papers, meta)
+        counts = {k: checked[k] for k in ("commits", "files", "objects", "later_absent")}
+    else:
+        meta = restore(config, run, out, arm, papers)
+        checked = verify(config, run, out, arm, papers, meta)
+        counts = {k: checked["counts"][k] for k in ("nodes", "edges", "documents")}
     digest = check_allowlist(run, arm, papers, meta)
     check_answers(out, arm, papers, meta["version"], digest)
     tools = check_tools(config, run, out, arm, papers, reader)
-    emit("READY", arm, k=papers, version=checked["version"], nodes=checked["counts"]["nodes"],
-         edges=checked["counts"]["edges"], documents=checked["counts"]["documents"], sources=checked["sources"],
+    emit("READY", arm, k=papers, version=checked["version"], **counts, sources=checked["sources"],
          allowlist=digest[:12], tools=",".join(t for v in tools.values() for t in v))  # fmt: skip
     if check_only:
         return
@@ -449,7 +591,10 @@ def _run_readers(config: dict[str, Any], run: Path, out: Path, arm: str, papers:
         with ThreadPoolExecutor(max_workers=config["runner"]["reader_workers"]) as pool:
             list(pool.map(ask, todo))
         emit("GROUP", arm, k=papers, group=group, answered=f"{len(answered(out, arm, papers, group))}/{len(probes)}")
-    verify(config, run, out, arm, papers, meta)
+    if arm == "A0":
+        verify_a0(run, out, papers, meta)
+    else:
+        verify(config, run, out, arm, papers, meta)
     emit("DONE", arm, k=papers)
 
 
@@ -457,7 +602,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("name", help="运行名")
     parser.add_argument("--config", required=True, help="读者配置（指向写者配置）")
-    parser.add_argument("--arm", required=True, choices=sorted(GRAPH))
+    parser.add_argument("--arm", required=True, choices=sorted(ARMS))
     parser.add_argument("--checkpoint", type=int, required=True, help="检查点的篇数")
     parser.add_argument("--group", default="all", choices=[*GROUPS, "all"])
     parser.add_argument("--probes", help="只答这些题（逗号分隔，试跑；不按有效性筛选）")
@@ -494,5 +639,5 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["TOOLS", "answer", "check_answers", "check_tools", "guard", "store_lock", "evidence_summary", "load", "main", "reader_arm", "restore", "run_readers",
-           "verify"]
+__all__ = ["A0_TOOLS", "TOOLS", "a0_checkpoint", "a0_store", "answer", "build_a0", "check_answers", "check_tools", "guard", "store_lock", "evidence_summary", "load", "main", "reader_arm", "restore", "run_readers",
+           "verify", "verify_a0"]
