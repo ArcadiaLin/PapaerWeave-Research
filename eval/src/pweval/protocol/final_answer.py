@@ -146,9 +146,10 @@ def _t7(lines: list[str]) -> dict[str, Any] | None:
         paper, said = cells
         if m := re.match(r"cited\s*:\s*(.+)$", said, re.I):
             entries.append({"paper": paper, "provenance": "cited", "from": m[1].strip()})
-        elif re.fullmatch(r"own\.?", said, re.I):
+        # own 与 not stated 后可以跟说明，与 cited: 一样只认开头（f3-A3 k20 T7-21a3763b 写了 own (App. A.3: …)）
+        elif re.match(r"own\b", said, re.I):
             entries.append({"paper": paper, "provenance": "own"})
-        elif re.fullmatch(r"not stated\.?", said, re.I):
+        elif re.match(r"not stated\b", said, re.I):
             entries.append({"paper": paper, "provenance": "not stated"})
         else:
             return None

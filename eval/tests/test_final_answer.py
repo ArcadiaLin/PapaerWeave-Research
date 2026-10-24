@@ -118,6 +118,13 @@ def test_list_markers_bold_and_none_are_tolerated() -> None:
     }
 
 
+def test_t7_own_and_not_stated_may_carry_a_note() -> None:
+    text = 'Final answer\n2405.11470 | own (App. A.3: "All the baselines are reproduced")\nPatchTST | not stated. See Table 3\n'
+    assert parse("T7", text) == {"entries": [{"paper": "2405.11470", "provenance": "own"},
+                                             {"paper": "PatchTST", "provenance": "not stated"}]}  # fmt: skip
+    assert parse("T7", "Final answer\nPatchTST | owner of the code\n") is None
+
+
 def test_malformed_sections_do_not_parse() -> None:
     assert parse("T1", "Final answer\nThe MSE is 0.37.") is None
     assert parse("T5", "Final answer\nBeaten:\nPatchTST\n") is None  # 缺 Later papers
