@@ -16,59 +16,32 @@
 
 # Abstract
 
-（暂定。）先不写评测数字，结果用定性表述；终稿有了实验结果再决定是否补数字。
+（2026-10-24 与用户逐句定稿的草稿，替换旧版。）每句只承担一件事，现状与问题的描述留给引言：
 
-宏观主线是“agent memory 的谱系 → 研究知识没有可信的整合者 → 外部锚点代替协调”：
+1. 背景：agent 参与研究。冒号后的动词交代围绕论文的工作，不出现 paper 一词。
+2. 已有工作：持久化记忆用于长程任务，近期扩展到跨 agent、跨用户共享。
+3. 要求：研究知识对照来源判断，因此共享时系统要保留与来源的明确关联和 agent 之间的分歧。只陈述要求，不概括别的系统怎么做；它们做不到什么，放到引言与相关工作中逐个对照。
+4. 系统：经典机制改造到研究知识上，使 agent 无需协调即可协作。"不协调"是要证明的性质，不是预设的场景（AGENTS.md 与引言的相应表述待改）。
+5. 结果：A3 对 P，数字取自 f3-A3 读者记录第 4、6 节。只说模型调用少，不说更便宜、更快（A3 输出 token 多 15%、用时多 11%），也不计入建库成本。
+6. 结果：对通用 memory（Graphiti，E3），如实写明是特化对不特化；数字待 A4。
 
-- **Agent 从知识的消费者变成生产者。** 它们读、比较、核查时留下的记录，别的 Agent 可以接着用。
-- **从 agent memory 的谱系切入，指出它共同的假设。** memory 从把交互历史提炼成教训、技能、工作流开始，发展到把记忆当作数据管理问题（如 GEM 的 *Is Agent Memory a Database?*），再到跨用户共享（Collaborative Memory、ShareMem）。这些系统都假设有一个可信的整合者：拥有记忆的 Agent，或改写共享池的内部 LLM。于是最新整合出的条目可以代表真值。
-  - 这对过程性经验成立：经验好不好，看下一个任务成不成功。
-  - 对研究知识不成立：研究知识对不对，要对照它的来源。
-
-  摘要只陈述这一点，不点名反驳。
-- **答案是外部锚点代替协调。** 研究知识的权威不在任何写者，而在论文原文及其版本、官方代码与外部标识。数据模型沿用 Entity / Concept / Content / Artifact 四类，分成两层：前三类是证据节点，属于有据层，对来源负责；写者自己的判断不写成证据节点，写进产物（Artifact），属于解释层。写入机制（不是模型本身）让每一类在不协调下达成一致：
-  - Entity 与 Concept 的身份收敛到外部标识与名称；可能重复的候选退回写者，由写者判定；
-  - 论文所说的 Content 单值，绑定论文的材料版本，修订须带锚点和理由，历史全部保留；
-  - 写者的判断不需要一致，写进产物，带形成者与所用输入并存；
-  - 共同产物按身份键唯一、共同编辑，每次改动都有版本、可追溯到人；输入变了，读到产物的人会看到过期标记，改了输入的写者在提交时就被告知。
-- **不卷 memory 的性能。** 评测三点，摘要定性表述：
-  - 写者增多时库不退化，也不把维护的代价转嫁给读者和写者（主结果；“代价”一半是 2026-10-19 的提议，见引言“可证伪的现象”）；
-  - 库中内容足以支撑研究意图，不必回读论文；
-  - 答题效果不逊于 agent memory 系统（非劣效）。
-- 机制压缩成一句“经典机制的改造”。四类对象与经典机制的对应留给引言与设计章节，摘要不展开。
-- **照顾主题领域：**
-  - 数据模型一句（四类对象及其一致方式）对应 *Data models and semantics*；
-  - 实体解析直接写 entity resolution，对应 *Data integration*。实际机制是存储层给出候选（id、alias、语义近邻），由写入者在写入时判定；不做匹配算法，也没有 merge/split。摘要不展开，正文讲清。
-  - Agent 产物只标记过时、不重算，所以写 view invalidation：读取时附带过时提示，改动输入的提交同时告诉写者哪些产物受影响。
-- **领域立场：** 摘要第一句就落在研究论文上，不先提通用问题再收回。泛化只在 Discussion 留一段，不进摘要。
+待定：H2（对文件加 Git，E1 主张）放在第 6 句之前还是替换它，等 A0 读者结果；H2 不显著时按规则改写为文件加 Git 在哪些情形下够用。
 
 ```text
-LLM agents now read, compare, and verify research papers, and what they record
-can serve the agents that come after them. Agent memory systems distill
-experience into lessons and workflows, and increasingly share it across users,
-but they assume a trusted consolidator: the owning agent, or an internal model
-that rewrites the shared pool, so that the latest consolidated entry can stand
-for the truth. This suits procedural experience, which is judged by whether the
-next task succeeds, but not research knowledge, which is judged against its
-sources. When many agents that do not coordinate accumulate knowledge about
-papers in one store, no writer's word is authoritative; the papers, their
-versions, their code, and their external identifiers are. We present
-PaperWeave, a data management system in which these external anchors
-substitute for coordination. It separates evidence records, which answer to
-their sources, from artifacts, which carry writers' judgments, and its write
-mechanisms give each kind of record its own way to agree: entities and
-concepts converge on external identifiers and names, with candidate
-duplicates returned to the writer; what a paper states holds one value, pinned
-to a version of the paper and revisable only with an anchor and a reason;
-writers' judgments coexist in artifacts with their writers and inputs; shared
-artifacts are keyed and co-edited, every edit is versioned and attributable,
-and a change to an artifact's inputs is flagged to its readers and reported to
-the writer who made it. PaperWeave adapts entity resolution, view
-invalidation, and data versioning to agent writers. On a workload derived from
-six research intents, we evaluate whether the store stays sound as writers
-accumulate, and at what cost to writers and readers; whether its contents
-suffice for these intents without rereading the papers; and whether its
-answers match those of agent memory systems.
+LLM agents increasingly take part in research: they search the literature,
+compare methods, and check claims. Prior work has explored persistent memory
+for long-horizon agent tasks, with recent systems extending it to shared
+settings across agents and users. Research knowledge, however, is judged
+against its sources, so sharing it in memory requires the system to keep
+both explicit links to those sources and the disagreements among agents. We
+introduce PaperWeave, a graph-based data management system that adapts
+entity resolution, provenance, and check-out/check-in versioning to
+research knowledge, so that agents can collaborate on it without
+coordinating. In experiments with 30 papers and 70 writer sessions, readers
+that reach the papers only through PaperWeave are as accurate as readers
+given the full papers (0.926 vs. 0.922 on 200 questions) and make 35% fewer
+model calls, saving most on questions that span papers. Against Graphiti, a
+general-purpose agent memory, PaperWeave's research-specific design [__].
 ```
 
 # Introduction
@@ -88,6 +61,18 @@ answers match those of agent memory systems.
    - **声明性的研究知识以来源评判。**
 
    ShareMem 的共享池由内部 LLM 覆盖改写，不记出处、不留历史。对经验来说这没问题，合并后的教训往往更好；对论文知识来说，这正是退化：值被悄悄改掉，分歧被悄悄抹平。
+
+   Collaborative Memory 走的是另一端：它选择只追加。在论文的实现与实验中，内部 LLM 只在写入时把本次回答抽成片段，不合并、也不改写已有片段；矛盾的片段并存，但系统不察觉，读者读到哪一条由检索相似度决定。作者在 ICLR 2026 的反驳中把只追加说成有意的设计，冲突与更正交给读取层或应用处理（选最新、并列给出、或由 LLM 调和），这些都没有实现，也没有评测。它没有整合者，也没有让分歧可见的机制。
+
+   〔待确认 2026-10-23〕因此上面“这些系统都有一个可信的整合者”对 Collaborative Memory 不准确，本点的英文候选段落同此（10-24 新摘要只陈述要求，不再概括别的系统）。可放宽为两种形态共有的假设：或由内部 LLM 覆盖改写，最新整合的条目代表真值；或只追加，由检索相似度决定读者看到哪一条。两者都不对照来源核对条目，也不让读者看到条目之间的分歧。候选英文：
+
+   ```text
+   These systems share one assumption: what enters the memory can be used on
+   its own word. Either an internal model rewrites the shared pool, so the
+   latest consolidated entry stands for the truth, or entries are only
+   appended and retrieval similarity decides which one a reader sees. Neither
+   checks an entry against its source or shows a reader that entries disagree.
+   ```
 3. **积累是共享的，写入者互不协调：** 同一个人或研究组在几个月里开出大量 session，彼此上下文不通；不同项目、不同成员的 Agent 各自读到同一批论文。愿景是一个公共平台（paper4agents）。共享库是写入者之间唯一的通道，读者往往是当初不在场的陌生人。
 4. **单写者不需要数据库：** 一个 Agent 在一个项目里复用自己的产物，文件加 Git 作为基线，可能是最强的（尤其是在大厂都在卷这种场景下的模型能力的背景下，与这个模式做竞争没有必要），可能已经够用。数据库的理由来自许多写入者长期写同一个库，这也是 DBMS 的经典理由：共享数据、完整性、多用户。
 
@@ -496,6 +481,13 @@ staleness, and downstream correctness.
        - 它按**归属**把偏好与经验分开，我们按**权威**把有据层与解释层分开，两者是平行的洞见；
        - 它的失败审计说明，来源标签和明确指令挡不住 Agent 误用他人的值，可作为“冲突与过时要有结构约束、不能只靠提示”的外部证据；
        - 它的共享池由内部 LLM 覆盖改写，不记出处、不留历史，正是过程性经验与研究知识要求不同的例子。
+     - Collaborative Memory（`2025-CollaborativeMemory`，精读笔记在 `references/papers/narrative-adjust/shared-agent-memory/2025-CollaborativeMemory/`）是多用户共享记忆的代表，设定同样接近本文：多个用户经各自被授权的 agent 写入同一个库，彼此不知道对方写了什么，读者不在写入现场。可从以下几方面引用：
+       - **它选择只追加。** 在论文的实现中，内部 LLM 只在写入时把本次回答抽成 key–value 片段，分私有、共享两层存入；不合并、也不改写已有片段。重复与矛盾的片段并存而不被察觉，读者读到哪一条由检索相似度决定。作者在 ICLR 2026 的反驳中称片段 "immutable and append-only"，冲突与更正交给读取层或应用（选最新、并列、或由 LLM 调和），均未实现、未评测；审稿人也正是在冲突、过时与错误污染上追问（公开审稿见精读目录的 `openreview-iclr2026.txt`）。所以不能把它归入“由整合者改写共享池”的一类。它与 ShareMem 是同一缺口的两种形态：一个覆盖，一个盲目追加，都不对照来源，也不让读者看到分歧。
+       - **追加本身不是区别。** 我们的解释层同样让判断并存、库不裁决。区别在于并存是否可见、可追溯：有据层按身份收敛，论文所说的值单值、绑定锚点；解释层的每条判断带形成者与所用输入，冲突与过时随读取结果返回。在 Collaborative Memory 中，并存只是没有去重的副作用。
+       - **provenance 用于授权，不用于问责。** 每个片段记下产生它的 agent、访问过的资源与时间，读时按读者当前的权限过滤，权限撤销后旧片段自动不可见。粒度是“哪个 agent、哪个资源”，不指向原文位置，读者无法据此核对内容。我们的来源（`stated_by`、原文锚点、产物的输入声明）用于核对与问责。访问控制不是本文的问题。
+       - **派生片段不继承来源。** agent 读了别人的片段后写出新片段，新片段的来源是否并入所读片段的来源，文中没有定义。在它那里，这是越权的信息流；在我们这里，同一个缺口就是派生产物的输入变了而无人知道，对应产物的输入声明与过时提示（C4）。同一个缺口，它看作安全问题，我们看作完整性问题。
+       - **评测只看复用省了多少。** 它以“共享对隔离”比较外部资源调用次数，说明跨用户复用省事，准确率不降；没有度量片段是否重复、矛盾或错误，资源调用也没有计入写入时 LLM 抽取片段的成本。OpenReview 修订版补了与 Memory Sharing 的对比（后者约 59% 的检索带出无权片段），本质仍是有过滤对无过滤。
+       - 该文投 ICLR 2026 被拒，AC 列出而未解决的是：没有新算法、可扩展性、隐私分析。对我们的启示整理在精读目录的 `lessons-for-paperweave.md`。
    - 语义算子系统（AgenticScholar、LOTUS 等）：LLM 内化于算子；我们把语义工作外置、契约内化。
    - provenance 与版本化数据管理（`2026-Git4Data`、`2013-GraphSnapshot` 等）：管数据版本；我们管多写者积累的知识状态。
    - ontology engineering 与 schema induction：与本文正交，说明领域词表问题有人在做、不是我们的贡献。
