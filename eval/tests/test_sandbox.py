@@ -160,6 +160,7 @@ def test_a0_writer_works_in_the_shared_repository(host: Path) -> None:
 def test_readers_get_no_papers_and_no_code(host: Path) -> None:
     for arm in (
         Arm("A0", None, store=host / "store", read_only=True),
+        Arm("A3F", None, store=host / "store", read_only=True),
         Arm("A3", None, neo4j="bolt://x", data=host / "data", read_only=True, evidence_scope="artifacts"),
         Arm("A4", None, graphiti="http://127.0.0.1:8765/mcp/", hide_tools=("mcp__Graphiti__add_memory",)),
     ):
@@ -167,8 +168,9 @@ def test_readers_get_no_papers_and_no_code(host: Path) -> None:
         sandbox.prepare(paths, arm, **SETTINGS)
         mounts = _mounts(sandbox._bwrap(paths, arm, WRITER))
         assert "/work/papers" not in mounts and "/work/code" not in mounts
-        if arm.name == "A0":
+        if arm.name in ("A0", "A3F"):
             assert mounts["/work"] == ("--ro-bind", str(host / "store"))  # 检查点处的副本，只读
+            assert "PaperWeave" not in json.loads((paths.home / ".pi/agent/mcp.json").read_text())["mcpServers"]
 
 
 def test_an_isolated_reader_has_no_network_and_reaches_the_model_through_a_socket(host: Path) -> None:

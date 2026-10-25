@@ -15,7 +15,7 @@ import yaml
 
 from pweval.harness import store_readers
 from pweval.harness.store_readers import A0_TOOLS, HIDDEN, TOOLS
-from test_allowlist import P, Q, S, _a0_run, _git
+from test_allowlist import P, Q, S, _a0_run, _a3f_run, _git
 
 WRITERS = {
     "probes_repo": "~/probes", "corpus_papers": "~/papers", "code": "~/code", "workdir_root": "~/runs",
@@ -272,14 +272,14 @@ def a0(tmp_path: Path) -> tuple[Path, Path, dict]:
     _git(work, "push", "-q", str(run / "A0/shared.git"), "main")
     out = tmp_path / "out"
     meta = store_readers.a0_checkpoint({"probes_repo": tmp_path / "bank"}, run, 1)
-    store_readers.build_a0(run, out, 1, meta)
+    store_readers.build_repo(run, out, "A0", 1, meta)
     return run, out, meta
 
 
 def test_the_a0_readers_repository_holds_the_checkpoint_and_nothing_after(a0) -> None:
     run, out, meta = a0
-    store = store_readers.a0_store(out, 1)
-    checked = store_readers.verify_a0(run, out, 1, meta)
+    store = store_readers.repo_store(out, "A0", 1)
+    checked = store_readers.verify_repo(run, out, "A0", 1, meta)
     assert checked["commits"] == 3 and checked["later_absent"] == 1 and checked["sources"] == 2
     later = _git(run / "A0/shared.git", "rev-parse", "main")
     show = subprocess.run(["git", "-C", str(store), "show", later], capture_output=True, text=True)
@@ -291,9 +291,9 @@ def test_the_a0_readers_repository_holds_the_checkpoint_and_nothing_after(a0) ->
     # 原文只有检查点上开放的 P、Q；S 在组的来源目录中，但之后才开放
     assert sorted(p.name for p in (out / "A0/readers/k1/sources").iterdir()) == sorted([P, Q])
     assert meta["sources"].keys() == {P, Q} and S not in meta["sources"]
-    assert store_readers.verify_a0(run, out, 1, meta) == checked  # 已建好的不重建，核对照样通过
-    store_readers.build_a0(run, out, 1, meta)
-    assert store_readers.verify_a0(run, out, 1, meta) == checked
+    assert store_readers.verify_repo(run, out, "A0", 1, meta) == checked  # 已建好的不重建，核对照样通过
+    store_readers.build_repo(run, out, "A0", 1, meta)
+    assert store_readers.verify_repo(run, out, "A0", 1, meta) == checked
 
 
 def _hidden_objects(run: Path, store: Path) -> None:
@@ -320,9 +320,88 @@ def _hidden_objects(run: Path, store: Path) -> None:
 )  # fmt: skip
 def test_a_damaged_a0_readers_repository_stops_the_readers(a0, damage, message: str) -> None:
     run, out, meta = a0
-    damage(run, store_readers.a0_store(out, 1), out)
+    damage(run, store_readers.repo_store(out, "A0", 1), out)
     with pytest.raises(RuntimeError, match=message):
-        store_readers.verify_a0(run, out, 1, meta)
+        store_readers.verify_repo(run, out, "A0", 1, meta)
+
+
+
+# ---------------------------------------------------------------- A3F：A3 检查点的只读文件视图
+
+
+def test_the_a3f_reader_reads_the_view_read_only_with_only_the_evidence_server(tmp_path: Path) -> None:
+    config = store_readers.load(configs(tmp_path, {**READERS, "arms": {"A3F": {}}}))
+    assert config["arms"]["A3F"] == {"llm": "http://h:30000/v1"}  # 不继承 A3 的库设置
+    assert store_readers.guard(config, "A3F") is None
+    run, out = tmp_path / "run", tmp_path / "out"
+    box = store_readers.reader_arm(config, run, out, "A3F", 10, "p1")
+    assert (box.name, box.store, box.read_only, box.neo4j) == ("A3F", out / "A3F/readers/k10/store", True, None)
+    assert box.evidence.allowlist == run / "allowlists/A3F/k10.json"
+    assert box.evidence.library == out / "A3F/readers/k10/sources"
+    assert store_readers.HINT == {"A3F": "a0"}  # 说明句用 A0 的，不改题库
+
+
+@pytest.mark.parametrize(("spec", "writers", "message"), [
+    ({"neo4j": "bolt://localhost:7700"}, WRITERS, "give no store settings"),
+    ({}, {**WRITERS, "arms": {k: v for k, v in WRITERS["arms"].items() if k != "A3"}}, "a view of A3"),
+])  # fmt: skip
+def test_the_a3f_reader_config_names_no_store(tmp_path: Path, spec: dict, writers: dict, message: str) -> None:
+    with pytest.raises(SystemExit, match=message):
+        store_readers.load(configs(tmp_path, {**READERS, "arms": {"A3F": spec}}, writers))
+
+
+@pytest.fixture
+def a3f(tmp_path: Path) -> tuple[Path, Path, dict]:
+    """``test_allowlist`` 的 A3F 检查点（k1）；k2 的导出仓库多出两个提交（k1 的读者不能看到它们）。"""
+    run, out = _a3f_run(tmp_path), tmp_path / "out"
+    meta = store_readers.a3f_checkpoint(run, 1)
+    store_readers.build_repo(run, out, "A3F", 1, meta)
+    return run, out, meta
+
+
+def test_the_a3f_readers_repository_holds_the_checkpoint_and_nothing_after(a3f) -> None:
+    run, out, meta = a3f
+    store = store_readers.repo_store(out, "A3F", 1)
+    assert meta["version"] == _git(store, "rev-parse", "HEAD") and meta["view_of"] == "commit_000002"
+    checked = store_readers.verify_repo(run, out, "A3F", 1, meta)
+    assert checked["commits"] == 4 and checked["later_absent"] == 2 and checked["sources"] == 2
+    later = _git(store_readers.allowlist.a3f_repo(run, 2), "rev-parse", "main")
+    assert subprocess.run(["git", "-C", str(store), "show", later], capture_output=True).returncode != 0
+    assert (store / "store/nodes/experiment/exp_0001.yaml").read_text().count("_revised") == 1  # 派生字段在最后的提交中
+    # 原文取 A3 的来源目录，只有清单中开放的 P、Q
+    assert sorted(p.name for p in (out / "A3F/readers/k1/sources").iterdir()) == sorted([P, Q])
+    assert store_readers.verify_repo(run, out, "A3F", 1, meta) == checked
+
+
+def _hidden_later(run: Path, store: Path) -> None:
+    """把更晚检查点（k2）的导出取进来再删掉引用与取库记录：对象留在库里，引用看不出来。"""
+    _git(store, "fetch", "-q", "--no-tags", str(store_readers.allowlist.a3f_repo(run, 2)), "refs/heads/main:refs/heads/other")
+    _git(store, "update-ref", "-d", "refs/heads/other")
+    (store / ".git/FETCH_HEAD").unlink()
+    subprocess.run(["rm", "-rf", str(store / ".git/logs")], check=True)
+
+
+@pytest.mark.parametrize(
+    ("damage", "message"),
+    [
+        (lambda run, store, out: _hidden_later(run, store), "beyond checkpoint"),
+        (lambda run, store, out: (store / "AGENTS.md").write_text("changed\n"), "files of the readers' repository"),
+        (lambda run, store, out: subprocess.run(["cp", "-r", str(run / "A3/sources" / S), str(out / "A3F/readers/k1/sources")],
+                                                check=True), "sources differ"),
+    ],
+)  # fmt: skip
+def test_a_damaged_a3f_readers_repository_stops_the_readers(a3f, damage, message: str) -> None:
+    run, out, meta = a3f
+    damage(run, store_readers.repo_store(out, "A3F", 1), out)
+    with pytest.raises(RuntimeError, match=message):
+        store_readers.verify_repo(run, out, "A3F", 1, meta)
+
+
+def test_the_a3f_checkpoint_stops_when_the_view_no_longer_matches_a3(tmp_path: Path) -> None:
+    run = _a3f_run(tmp_path)
+    (run / "snapshots/A3/k1/graph.jsonl").write_text("{ }\n")
+    with pytest.raises(RuntimeError, match="A3 snapshot k1 changed"):
+        store_readers.a3f_checkpoint(run, 1)
 
 
 # ---------------------------------------------------------------- A4：Graphiti 的读者库与读者服务

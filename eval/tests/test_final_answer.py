@@ -171,6 +171,7 @@ STORE_TOOLS = {
     "A3": "Use the PaperWeave tools.",
     "A2": "Use the PaperWeave tools.",
     "A0": "Use the shared repository in this directory.",
+    "A3F": "Use the shared repository in this directory.",  # A3F 借用 A0 的说明句（store_readers.HINT）
     "A4": "Use the Graphiti memory tools.",
 }
 
@@ -188,7 +189,7 @@ def test_store_group_prompt_is_question_note_tools_format_env() -> None:
         # 要点题：同时省去引用位置说明与 Final answer 段，末尾仍是环境说明
         assert reader_prompt(group, manual, tools=tools) == "\n\n".join(
             ["Q?", f"{STORE_NOTE_FINAL} {tools}", ENV_NOTE]) + "\n"
-    # 四组去掉各自的 TOOLS 后逐字相同
+    # 各组去掉各自的 TOOLS 后逐字相同
     bare = {reader_prompt(g, auto("T1", {}), tools=t).replace(t, "<TOOLS>") for g, t in STORE_TOOLS.items()}
     assert len(bare) == 1
     for bad in (None, "", "   "):
@@ -200,8 +201,10 @@ def test_store_group_prompt_is_question_note_tools_format_env() -> None:
 def test_store_tools_match_hints() -> None:
     import yaml
 
+    from pweval.harness.store_readers import HINT
+
     hints = yaml.safe_load((PROBES_REPO / "tasks/hints.yml").read_text(encoding="utf-8"))
-    assert {g: hints[g.lower()]["TOOLS"] for g in STORE_TOOLS} == STORE_TOOLS
+    assert {g: hints[HINT.get(g, g).lower()]["TOOLS"] for g in STORE_TOOLS} == STORE_TOOLS
 
 
 @pytest.mark.skipif(not (PROBES_REPO / "probes/sample.yml").exists(), reason="题库仓库不在本机")

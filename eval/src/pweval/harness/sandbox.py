@@ -45,6 +45,7 @@ from ..paths import REPO
 BRIDGE = Path(__file__).with_name("bridge.py")
 ABLATED_MCP = REPO / "eval/baselines/a2_mcp.py"  # A2：关掉机制的 PaperWeave MCP 服务
 GRAPH = ("A3", "A2")  # 经 PaperWeave MCP 进入库的组
+REPOS = ("A0", "A3F")  # 库就是 /work 中的 Git 仓库的组（A3F：A3 检查点的只读文件视图）；读者只读挂载
 LLM_PORT = 18080  # 断网的沙箱内，pi 连这个回环端口，转发到沙箱外的大模型服务
 PI_DIR = "/opt/pi"  # 托管安装的 pi：当前版本的 release 目录只读挂到这里
 # V3 §7 第 6 条：沙箱中的 python3 另有固定版本的 PyYAML（为系统 python3 安装，只读），所有组相同
@@ -472,7 +473,7 @@ def _bwrap(paths: Paths, arm: Arm, writer: Writer) -> list[str]:
         "--ro-bind", "/etc", "/etc", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
         "--ro-bind", str(node), str(node),
         *(["--ro-bind", str(pi_dir), PI_DIR] if (pi_dir := pi_install()[0]) else []),
-        "--ro-bind" if arm.read_only and arm.name == "A0" else "--bind", str(work), "/work",
+        "--ro-bind" if arm.read_only and arm.name in REPOS else "--bind", str(work), "/work",
         "--bind", str(paths.home), "/home/agent",
         "--ro-bind", str(SITE), SITE_DIR,
     ]  # fmt: skip

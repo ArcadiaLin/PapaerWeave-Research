@@ -445,6 +445,173 @@ def test_a0_checkpoint_versions_must_agree(tmp_path: Path) -> None:
         _collect_a0(run)
 
 
+
+# ---------------------------------------------------------------- A3F：A3 检查点的只读文件视图
+
+A3_HEAD = "commit_000002"
+
+
+def _a3f_export(run: Path, work: Path, papers: int, flags: Path) -> None:
+    """把工作仓库 ``work`` 当前的 ``main`` 作为第 ``papers`` 个检查点的导出：裸仓库只有 main 与标签，快照同 A0 的格式，
+    ``meta.yml`` 另记清单（与导出脚本 tmps/A3F-export.py 的字段相同）。"""
+    _git(work, "tag", "-f", f"checkpoint-{papers}")
+    bare = allowlist.a3f_repo(run, papers)
+    bare.parent.mkdir(parents=True, exist_ok=True)
+    _git(bare.parent, "init", "-q", "--bare", "-b", "main", bare.name)
+    _git(work, "push", "-q", str(bare), "main", f"refs/tags/checkpoint-{papers}")
+    out = run / "snapshots/A3F" / f"k{papers}"
+    meta = export_a0(bare, f"checkpoint-{papers}", out)
+    a3, backup_meta = run / "snapshots/A3/k1", run / "backups/A3/k1/meta.yml"
+    sha = lambda f: hashlib.sha256(f.read_bytes()).hexdigest()  # noqa: E731
+    meta |= {
+        "arm": "A3F",
+        "view_of": {"arm": "A3", "papers": papers, "version": A3_HEAD,
+                    "snapshot": {**{n: sha(a3 / n) for n in ("meta.yml", "graph.jsonl", "commits.jsonl")},
+                                 "documents": tree_sha256(a3 / "documents")},
+                    "backup_meta": {"path": str(backup_meta), "sha256": sha(backup_meta)}},
+        "inputs": {"flags": {"path": str(flags), "sha256": sha(flags)}, "agents_md": sha(out / "tree/AGENTS.md")},
+        "sources": yaml.safe_load(backup_meta.read_text())["sources"],
+    }  # fmt: skip
+    (out / "meta.yml").write_text(yaml.safe_dump(meta, sort_keys=False))
+
+
+def _a3f_run(tmp_path: Path) -> Path:
+    """A3 的一个检查点（k1，版本 ``commit_000002``）与它的 A3F 导出：提交 1 为说明文字（引用未开放的示例来源），提交 2、
+    3 为两个库提交（锚点 11:11 改为 4:4，并加一个产物），提交 4 写入派生字段（``_revised`` 的 reason 中引用 Q::3:3）。
+    A3 的名单与 A3F 共有 P 3–4 一块；只在 A3 的 Q 1–1（USED 的 locators，导出不放）与 P 13–13。另导出一个更晚的检查点 k2（多一个库提交）。"""
+    run = tmp_path / "run"
+    texts = {P: PAPER_TEXT, Q: "Q\n\nq text\n", S: "S\n\ns text\n"}
+    for source, text in texts.items():
+        (run / "A3/sources" / source).mkdir(parents=True)
+        (run / "A3/sources" / source / "paper.md").write_text(text)
+    opened = {s: hashlib.sha256(texts[s].encode()).hexdigest() for s in (P, Q)}
+    a3 = run / "snapshots/A3/k1"
+    (a3 / "documents").mkdir(parents=True)
+    (a3 / "documents/art.v1.md").write_text("doc\n")
+    (a3 / "meta.yml").write_text(yaml.safe_dump({"branches": {"main": A3_HEAD}}))
+    (a3 / "graph.jsonl").write_text("{}\n")
+    (a3 / "commits.jsonl").write_text("{}\n")
+    (run / "backups/A3/k1").mkdir(parents=True)
+    (run / "backups/A3/k1/meta.yml").write_text(yaml.safe_dump({"arm": "A3", "papers": 1, "version": A3_HEAD,
+                                                                "sources": opened}))  # fmt: skip
+    (run / "checkpoints.yml").write_text(yaml.safe_dump({"A3": {0: "commit_000001", 1: A3_HEAD}}))
+    a3_list = {"arm": "A3", "checkpoint": 1, "version": A3_HEAD, "inputs": {"sources": opened},
+               "origins": [{"channel": "structured", "ref": f"{P}::4:4", "source": P, "lines": [4, 4], "passage": [3, 4],
+                            "where": {"node": "exp_0001", "field": "anchor"}},
+                           {"channel": "structured", "ref": f"{Q}::3,::1:1", "source": Q, "lines": [1, 1], "passage": [1, 1],
+                            "where": {"edge": "art_0001-[USED]->paper_0002", "field": "locators"}},
+                           {"channel": "structured", "ref": f"{P}::13:13", "source": P, "lines": [13, 13],
+                            "passage": [13, 13], "where": {"node": "claim_0001", "field": "anchor", "side": "before"}}],
+               "readable": {P: [[3, 4], [13, 13]], Q: [[1, 1]]}}  # fmt: skip
+    (run / "allowlists/A3").mkdir(parents=True)
+    (run / "allowlists/A3/k1.json").write_text(json.dumps(a3_list))
+    flags = tmp_path / "flags/k1.json"
+    flags.parent.mkdir()
+    flags.write_text('{"flags": {}}')
+    work = tmp_path / "view"
+    work.mkdir()
+    _git(work, "init", "-q", "-b", "main")
+    (work / "AGENTS.md").write_text(f"Cite like [{U}::120:135].\n")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "-m", "Set up the shared repository")
+    node = work / "store/nodes/experiment/exp_0001.yaml"
+    node.parent.mkdir(parents=True)
+    node.write_text(f'id: exp_0001\nkind: Experiment\nanchor: ["{P}::11:11"]\n')
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "-m", "add exp_0001\n\nPaperWeave-Commit: commit_000001")
+    node.write_text(f'id: exp_0001\nkind: Experiment\nanchor: ["{P}::4:4"]\n')
+    board = work / "store/artifacts/Board.md"
+    board.parent.mkdir(parents=True)
+    board.write_text(f"---\ntype: Leaderboard\nid: art_0001\ntitle: Board\n---\n| M | x [{P}::4:4] |\n")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "-m", f"fix the anchor\n\nPaperWeave-Commit: {A3_HEAD}")
+    later = work.with_name("later")
+    _git(tmp_path, "clone", "-q", str(work), str(later))
+    node.write_text(f'id: exp_0001\nkind: Experiment\n_revised: {{reason: "see {Q}::3:3"}}\nanchor: ["{P}::4:4"]\n')
+    _git(work, "add", "-A")
+    _git(work, "commit", "-q", "-m", f"Write the store's read-only fields as of {A3_HEAD}")
+    _a3f_export(run, work, 1, flags)
+    # 更晚的检查点：同一段历史之后多一个库提交，再写它自己的派生字段（k2 只为读者仓库核对“之后的提交”）
+    (later / "store/nodes/experiment/exp_0002.yaml").write_text("id: exp_0002\nkind: Experiment\n")
+    _git(later, "add", "-A")
+    _git(later, "commit", "-q", "-m", "add exp_0002\n\nPaperWeave-Commit: commit_000003")
+    (later / "store/nodes/experiment/exp_0002.yaml").write_text("id: exp_0002\nkind: Experiment\n_formed_by: w\n")
+    _git(later, "add", "-A")
+    _git(later, "commit", "-q", "-m", "Write the store's read-only fields as of commit_000003")
+    _git(later, "tag", "-f", "checkpoint-2")
+    bare = allowlist.a3f_repo(run, 2)
+    _git(bare.parent, "init", "-q", "--bare", "-b", "main", bare.name)
+    _git(later, "push", "-q", str(bare), "main", "refs/tags/checkpoint-2")
+    bank = tmp_path / "bank"
+    (bank / "facts").mkdir(parents=True)
+    (bank / "facts/tables.csv").write_text(f"table,arxiv,first,last,number\n{P}:T6,{P},6,9,1\n")
+    return run
+
+
+def _collect_a3f(run: Path) -> dict:
+    return collect(run, "A3F", 1, run.parent / "bank")
+
+
+def test_a3f_collects_every_file_version_including_the_read_only_fields(tmp_path: Path) -> None:
+    r = _collect_a3f(_a3f_run(tmp_path))
+    by_ref = {(o["channel"], o["ref"]): o for o in r["origins"]}
+    assert by_ref[("text", f"{P}::11:11")]["where"]["seq"] == 2  # 被改掉的旧锚点照样放行
+    derived = by_ref[("text", f"{Q}::3:3")]["where"]  # 只在写派生字段的最后一个提交中出现
+    assert (derived["seq"], derived["file"]) == (4, "store/nodes/experiment/exp_0001.yaml")
+    assert [(d["reason"], d["ref"]) for d in r["dropped"]] == [("unopened", f"{U}::120:135")]  # 说明文字的示例
+    assert "structured" not in {c for c, _ in by_ref}
+    assert r["readable"] == {P: [[3, 4], [11, 11]], Q: [[3, 3]]}
+    assert r["inputs"]["sources"].keys() == {P, Q} and r["checks"]["view"]["versions"]["manifest"] == A3_HEAD
+    assert r["version"] == r["inputs"]["repository"]["head"] == _git(allowlist.a3f_repo(tmp_path / "run", 1), "rev-parse",
+                                                                      "checkpoint-1")  # fmt: skip
+    c = r["compare_a3"]
+    assert c["blocks"] == {"A3F": 3, "A3": 3, "both": 1, "only_A3F": 2, "only_A3": 2}
+    assert c["readable_lines"] == {"A3F": 4, "A3": 4, "only_A3F": 2, "only_A3": 2}
+    assert [(b["source"], b["passage"]) for b in c["only_A3F"]] == [(Q, [3, 3]), (P, [11, 11])]
+    assert c["only_A3"] == [
+        {"source": Q, "passage": [1, 1], "origins": [
+            {"channel": "structured", "ref": f"{Q}::3,::1:1", "where": {"edge": "art_0001-[USED]->paper_0002", "field": "locators"}}]},
+        {"source": P, "passage": [13, 13], "origins": [
+            {"channel": "structured", "ref": f"{P}::13:13", "where": {"node": "claim_0001", "field": "anchor", "side": "before"}}]}]  # fmt: skip
+
+
+def _manifest(run: Path, change) -> None:
+    path = run / "snapshots/A3F/k1/meta.yml"
+    meta = yaml.safe_load(path.read_text())
+    change(meta)
+    path.write_text(yaml.safe_dump(meta, sort_keys=False))
+
+
+@pytest.mark.parametrize(
+    ("damage", "message"),
+    [
+        (lambda run: _edit(run / "snapshots/A3/k1/graph.jsonl", "{}", "{ }"), "A3 snapshot k1 changed"),
+        (lambda run: _edit(run / "snapshots/A3/k1/documents/art.v1.md", "doc", "Doc"), "A3 snapshot k1 changed"),
+        (lambda run: _edit(run / "checkpoints.yml", "1: commit_000002", "1: commit_000003"), "versions disagree"),
+        (lambda run: _edit(run / "backups/A3/k1/meta.yml", "version: commit_000002", "version: commit_000003"),
+         "versions disagree"),
+        (lambda run: _edit(run / "snapshots/A3/k1/meta.yml", "main: commit_000002", "main: commit_000003"),
+         "versions disagree"),
+        (lambda run: _edit(run / "backups/A3/k1/meta.yml", "papers: 1", "papers: 1\nnote: x"), "backup meta k1 changed"),
+        (lambda run: _edit(run.parent / "flags/k1.json", "{}", "{ }"), "read-only fields"),
+        (lambda run: _manifest(run, lambda m: m["sources"].pop(Q)), "other sources than the A3 backup"),
+        (lambda run: _manifest(run, lambda m: m["view_of"].update(papers=2)), "not an A3F view"),
+        (lambda run: _edit(run / "snapshots/A3F/k1/tree/AGENTS.md", "Cite", "Quote"), "AGENTS.md differs"),
+        (lambda run: (run / "snapshots/A3F/k1/tree/store/nodes/experiment/exp_0001.yaml").write_text("x\n"), "tree differs"),
+        (lambda run: _git(allowlist.a3f_repo(run, 1), "tag", "-f", "checkpoint-1", "checkpoint-1~1"), "disagree"),
+        (lambda run: _edit(run / "allowlists/A3/k1.json", f'"{Q}": ', '"x": '), "other opened sources than the A3F view"),
+        (lambda run: _edit(run / "allowlists/A3/k1.json", '"version": "commit_000002"', '"version": "commit_000003"'),
+         "A3 allowlist is of"),
+        (lambda run: _edit(run / "A3/sources" / P / "paper.md", "Para two.", "Para 2."), "sha256"),
+    ],
+)  # fmt: skip
+def test_a3f_damaged_inputs_stop_the_collection(tmp_path: Path, damage, message: str) -> None:
+    run = _a3f_run(tmp_path)
+    damage(run)
+    with pytest.raises(InputError, match=message):
+        _collect_a3f(run)
+
+
 # ---------------------------------------------------------------- A4：Graphiti 的 episode
 
 

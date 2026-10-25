@@ -106,7 +106,7 @@ STORE_NOTE = (  # 一行，与定稿逐字相同
     "reads the source lines at the anchors the store records. Cite the ids, files or anchors your answer rests on. "
     "Do not change the store."
 )
-STORE_GROUPS = ("A0", "A2", "A3", "A4")
+STORE_GROUPS = ("A0", "A2", "A3", "A3F", "A4")
 # 要求引用的组带 Final answer 段时：引用写在正文，Final answer 段只放格式规定的字段（引用混进字段会使名称无法归一）。
 CITE_OUTSIDE_FORMAT = "Give the citations in the body of your reply; the Final answer section holds only the fields below."
 NO_TOOLS = ("--no-tools", "--no-mcp", "--no-skills", "--no-extensions", "--no-context-files", "--no-prompt-templates")

@@ -16,6 +16,14 @@
 为 ``commit`` 通道。开放的来源以写者运行时的计划与材料表为准（运行记录中的题库提交，从 Git 取那个版本），与 A0 的
 会话记录交叉核对；标签、``checkpoints.yml`` 与快照一致，快照的文件树与提交列表（逐字段）与 Git 相同。另报告开放来源的原文逐行进入仓库的程度（``source_text``）。
 
+**A3F**（:func:`collect_a3f`，10-25 用户定；f4 设计 §4.3）：A3 检查点的只读文件视图，导出仓库 ``A3F/export/k<篇数>.git``
+与快照 ``snapshots/A3F/k<篇数>/`` 由导出脚本生成（本模块不生成）。收集规则同 A0：每个提交写下的每个文件版本（含最后
+写入派生字段的提交）与完整的提交说明，都按 :func:`scan` 扫描。导出只是 A3 的一种投影（不放提交的 input、USED 的
+locators 等），所以名单不必与 A3 相同。核对（:func:`a3f_view`）：快照的清单所记的 A3 检查点与 ``checkpoints.yml``、
+A3 备份、A3 快照三方版本相同，所记的 A3 快照、备份 meta 与派生字段 JSON 的哈希与现在的文件相同，说明文字与清单相同。
+开放的来源取清单（即 A3 备份的 meta），并须与 A3 同一检查点的名单所用的相同，否则停。另与 A3 的名单逐块对照
+（``compare_a3``）：只在一边的块连同各自的出处列出，只报告，不要求相同。
+
 **收集范围：读者可见的已发布内容**（10-23 用户定，补充设计 §6.3）。检查点之前每次提交的变更集（``commits.jsonl``）：
 
 - 节点与边的可见属性，按变更集的真实格式取：创建取对象级 ``after``，修改取 ``props.<字段>`` 的 ``before`` 与
@@ -471,8 +479,10 @@ def collect(run: Path, arm: str, papers: int, bank: Path = BANK) -> dict[str, An
         return collect_a0(run, papers, bank)
     if arm == "A4":
         return collect_a4(run, papers, bank)
+    if arm == "A3F":
+        return collect_a3f(run, papers, bank)
     if arm not in GRAPH_ARMS:
-        raise NotImplementedError(f"{arm}: only {GRAPH_ARMS}, A0 and A4 are implemented")
+        raise NotImplementedError(f"{arm}: only {GRAPH_ARMS}, A0, A3F and A4 are implemented")
     snapshot = run / "snapshots" / arm / f"k{papers}"
     backup_meta = run / "backups" / arm / f"k{papers}" / "meta.yml"
     recorded = yaml.safe_load((run / "checkpoints.yml").read_text(encoding="utf-8"))[arm][papers]
@@ -799,18 +809,10 @@ def source_text(texts: list[tuple[dict[str, Any], str]], sources: Sources) -> di
     return {"shingle_words": SHINGLE, "sources": per_source, "source_like_paths": paths}
 
 
-def collect_a0(run: Path, papers: int, bank: Path = BANK) -> dict[str, Any]:
-    """A0 的放行名单：检查点及之前每个提交写下的每个文件版本（text 通道）与完整的提交说明（commit 通道），同一套扫描、
-    校验与扩块。不按 YAML 解析文件，没有 structured 通道（10-24 用户定）。"""
-    repo, snapshot = run / A0_REPO, run / "snapshots" / "A0" / f"k{papers}"
-    checkpoints = yaml.safe_load((run / "checkpoints.yml").read_text(encoding="utf-8"))["A0"]
-    recorded = checkpoints[papers]
-    commits, versions, history = a0_history(repo, snapshot, recorded)
-    tree = a0_tree(repo, history["head"], snapshot)
-    frozen = a0_frozen(run, bank)
-    opened, sessions = a0_opened(run, papers, frozen, checkpoints[0], recorded)
-    gather = Gather(Sources(run / "A0" / "sources", opened), load_tables(bank))
-
+def _gather_repo(repo: Path, commits: list[dict[str, Any]],
+                 gather: Gather) -> tuple[list[dict[str, Any]], list[tuple[dict[str, Any], str]], list[dict[str, Any]]]:  # fmt: skip
+    """每个提交写下的每个文件版本（``text`` 通道，不按 YAML 解析）与完整的提交说明（``commit`` 通道）交给 ``gather``。
+    返回文件版本、解码出的正文（出处与文字）与不是 UTF-8 文本的文件版本。"""
     files = a0_files(repo, commits)
     blobs = _objects(repo, [f["blob"] for f in files])
     texts, not_text = [], []
@@ -824,6 +826,22 @@ def collect_a0(run: Path, papers: int, bank: Path = BANK) -> dict[str, Any]:
         gather.scan(where, "text", text)
     for c in commits:
         gather.scan({"commit": c["id"], "seq": c["seq"], "field": "message"}, "commit", c["message"])
+    return files, texts, not_text
+
+
+def collect_a0(run: Path, papers: int, bank: Path = BANK) -> dict[str, Any]:
+    """A0 的放行名单：检查点及之前每个提交写下的每个文件版本（text 通道）与完整的提交说明（commit 通道），同一套扫描、
+    校验与扩块。不按 YAML 解析文件，没有 structured 通道（10-24 用户定）。"""
+    repo, snapshot = run / A0_REPO, run / "snapshots" / "A0" / f"k{papers}"
+    checkpoints = yaml.safe_load((run / "checkpoints.yml").read_text(encoding="utf-8"))["A0"]
+    recorded = checkpoints[papers]
+    commits, versions, history = a0_history(repo, snapshot, recorded)
+    tree = a0_tree(repo, history["head"], snapshot)
+    frozen = a0_frozen(run, bank)
+    opened, sessions = a0_opened(run, papers, frozen, checkpoints[0], recorded)
+    gather = Gather(Sources(run / "A0" / "sources", opened), load_tables(bank))
+
+    files, texts, not_text = _gather_repo(repo, commits, gather)
 
     passages, readable = gather.result()
     inputs = {
@@ -849,6 +867,132 @@ def collect_a0(run: Path, papers: int, bank: Path = BANK) -> dict[str, Any]:
         "origins": gather.origins,
         "dropped": gather.dropped,
     }  # fmt: skip
+
+
+# ---------------------------------------------------------------- A3F：A3 检查点的只读文件视图
+
+A3F_HASHED = ("meta.yml", "graph.jsonl", "commits.jsonl")  # 清单记下哈希的 A3 快照文件（另有 documents/ 的目录哈希）
+A3F_CHANNELS = ("text", "commit")
+
+
+def a3f_repo(run: Path, papers: int) -> Path:
+    """A3F 检查点的导出仓库（裸仓库，只有 ``main`` 与 ``checkpoint-<篇数>``；导出脚本生成）。"""
+    return run / "A3F" / "export" / f"k{papers}.git"
+
+
+def a3f_view(run: Path, papers: int) -> tuple[dict[str, Any], dict[str, Any]]:
+    """A3F 快照的清单（``snapshots/A3F/k<篇数>/meta.yml``）与核对结果。核对它出自指定的 A3 状态：
+
+    - 清单记的 A3 版本与 ``checkpoints.yml``、A3 备份的 meta、A3 快照的分支头四者相同；
+    - 清单记的 A3 快照文件与 ``documents/`` 的哈希、备份 meta 的哈希、派生字段 JSON 的哈希都与现在的文件相同；
+    - 开放的来源与 A3 备份的 meta 相同；视图中的 ``AGENTS.md`` 与清单记的说明文字相同。
+
+    任何一处不符即停：清单之外的东西变了，视图就不能再说出自这个 A3 检查点。"""
+    snapshot = run / "snapshots" / "A3F" / f"k{papers}"
+    meta = yaml.safe_load((snapshot / "meta.yml").read_text(encoding="utf-8"))
+    view = meta.get("view_of") or {}
+    if meta.get("arm") != "A3F" or (view.get("arm"), view.get("papers")) != ("A3", papers):
+        raise InputError(f"{snapshot}: not an A3F view of A3 k{papers} ({meta.get('arm')}, {view.get('arm')} "
+                         f"k{view.get('papers')})")  # fmt: skip
+    a3 = run / "snapshots" / "A3" / f"k{papers}"
+    backup_meta = run / "backups" / "A3" / f"k{papers}" / "meta.yml"
+    backup = yaml.safe_load(backup_meta.read_text(encoding="utf-8"))
+    versions = {
+        "manifest": view["version"],
+        "checkpoints.yml": yaml.safe_load((run / "checkpoints.yml").read_text(encoding="utf-8"))["A3"][papers],
+        "backup": backup["version"],
+        "snapshot": yaml.safe_load((a3 / "meta.yml").read_text(encoding="utf-8"))["branches"]["main"],
+    }
+    if len(set(versions.values())) != 1 or (backup.get("arm"), backup.get("papers")) != ("A3", papers):
+        raise InputError(f"the A3 checkpoint versions disagree with the A3F manifest: {versions}")
+    now = {**{n: sha256_file(a3 / n) for n in A3F_HASHED}, "documents": tree_sha256(a3 / "documents")}
+    if now != {k: view["snapshot"].get(k) for k in now}:
+        raise InputError(f"the A3 snapshot k{papers} changed since the A3F export")
+    if sha256_file(backup_meta) != view["backup_meta"]["sha256"]:
+        raise InputError(f"the A3 backup meta k{papers} changed since the A3F export")
+    flags = meta["inputs"]["flags"]
+    if not Path(flags["path"]).is_file() or sha256_file(Path(flags["path"])) != flags["sha256"]:
+        raise InputError(f"{flags['path']}: the read-only fields of the A3F export are missing or changed")
+    if meta["sources"] != backup["sources"]:
+        raise InputError(f"the A3F manifest opens other sources than the A3 backup k{papers}")
+    if sha256_file(snapshot / "tree" / "AGENTS.md") != meta["inputs"]["agents_md"]:
+        raise InputError(f"{snapshot}: AGENTS.md differs from the one the manifest records")
+    return meta, {"versions": versions, "a3_snapshot": "sha256 ok", "backup_meta": "sha256 ok", "flags": "sha256 ok",
+                  "agents_md": "sha256 ok"}  # fmt: skip
+
+
+def _lines(readable: dict[str, list[list[int]]]) -> set[tuple[str, int]]:
+    return {(k, i) for k, spans in readable.items() for a, b in spans for i in range(a, b + 1)}
+
+
+def compare_blocks(mine: dict[str, Any], theirs: dict[str, Any]) -> dict[str, Any]:
+    """两份名单逐块对照：块（来源与扩块后的起止行）与可读行的计数，只在一边的块连同各自名单中的出处。"""
+
+    def blocks(r: dict[str, Any]) -> set[tuple[str, int, int]]:
+        return {(o["source"], *o["passage"]) for o in r["origins"]}
+
+    def listing(only: set[tuple[str, int, int]], r: dict[str, Any]) -> list[dict[str, Any]]:
+        found: dict[tuple[str, int, int], list[dict[str, Any]]] = defaultdict(list)
+        for o in r["origins"]:
+            if (key := (o["source"], *o["passage"])) in only:
+                found[key].append({"channel": o["channel"], "ref": o["ref"], "where": o["where"]})
+        return [{"source": k[0], "passage": [k[1], k[2]], "origins": found[k]} for k in sorted(only)]
+
+    a, b = blocks(mine), blocks(theirs)
+    la, lb = _lines(mine["readable"]), _lines(theirs["readable"])
+    return {
+        "blocks": {mine["arm"]: len(a), theirs["arm"]: len(b), "both": len(a & b),
+                   f"only_{mine['arm']}": len(a - b), f"only_{theirs['arm']}": len(b - a)},
+        "readable_lines": {mine["arm"]: len(la), theirs["arm"]: len(lb),
+                           f"only_{mine['arm']}": len(la - lb), f"only_{theirs['arm']}": len(lb - la)},
+        f"only_{mine['arm']}": listing(a - b, mine),
+        f"only_{theirs['arm']}": listing(b - a, theirs),
+    }  # fmt: skip
+
+
+def collect_a3f(run: Path, papers: int, bank: Path = BANK) -> dict[str, Any]:
+    """A3F 的放行名单：导出仓库在检查点标签及之前每个提交写下的每个文件版本（含写入派生字段的最后一个提交）与完整的
+    提交说明，规则同 A0（:func:`_gather_repo`）。清单与所出自的 A3 检查点先经 :func:`a3f_view` 核对；仓库的历史与
+    文件树与 A3F 快照相同（:func:`a0_history`、:func:`a0_tree`）。开放的来源取清单，须与 A3 同一检查点的名单相同
+    （实验条件：A3F 只换读取方式，原文范围不变）；读的是 A3 的来源目录。另附与 A3 名单的逐块对照。"""
+    snapshot = run / "snapshots" / "A3F" / f"k{papers}"
+    meta, view = a3f_view(run, papers)
+    repo = a3f_repo(run, papers)
+    commits, versions, history = a0_history(repo, snapshot, meta["head"])
+    tree = a0_tree(repo, history["head"], snapshot)
+    opened = dict(meta["sources"])
+    a3_path = run / "allowlists" / "A3" / f"k{papers}.json"
+    a3 = json.loads(a3_path.read_text(encoding="utf-8"))
+    if (a3["arm"], a3["checkpoint"], a3["version"]) != ("A3", papers, meta["view_of"]["version"]):
+        raise InputError(f"{a3_path}: the A3 allowlist is of {a3['arm']} k{a3['checkpoint']} at {a3['version']}")
+    if a3["inputs"]["sources"] != opened:
+        raise InputError(f"{a3_path}: A3 was given other opened sources than the A3F view")
+    gather = Gather(Sources(run / "A3" / "sources", opened), load_tables(bank))
+    files, texts, not_text = _gather_repo(repo, commits, gather)
+
+    passages, readable = gather.result()
+    inputs = {
+        "repository": {"tag": meta["tag"], "head": history["head"]},
+        "snapshot": {"meta.yml": sha256_file(snapshot / "meta.yml"), "log.jsonl": sha256_file(snapshot / "log.jsonl"),
+                     "tree": tree_sha256(snapshot / "tree")},
+        "view_of": {"arm": "A3", "version": meta["view_of"]["version"], "allowlist_sha256": sha256_file(a3_path)},
+        "tables_csv": sha256_file(bank / "facts/tables.csv"),
+        "sources": opened,
+    }  # fmt: skip
+    result = {
+        "arm": "A3F", "checkpoint": papers, "version": history["head"], "rule": RULE,
+        "inputs": inputs,
+        "checks": {"versions": versions, "view": view, "history": history, "tree": tree,
+                   "files": {"versions": len(files), "text": len(texts), "not_text": not_text}, "sources": "sha256 ok"},
+        "stats": _stats(gather.origins, gather.dropped, gather.mentions, readable, A3F_CHANNELS),
+        "source_text": source_text(texts, gather.sources),
+        "passages": dict(sorted(passages.items())),
+        "readable": dict(sorted(readable.items())),
+        "origins": gather.origins,
+        "dropped": gather.dropped,
+    }  # fmt: skip
+    result["compare_a3"] = compare_blocks(result, a3)
+    return result
 
 
 # ---------------------------------------------------------------- A4：Graphiti 的 episode
@@ -961,7 +1105,7 @@ def write(result: dict[str, Any], out: Path, force: bool = False) -> Path:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("run", type=Path, help="运行目录，如 ~/pw-lab/runs/f3")
-    parser.add_argument("--arm", required=True, choices=(*GRAPH_ARMS, "A0", "A4"))
+    parser.add_argument("--arm", required=True, choices=(*GRAPH_ARMS, "A0", "A3F", "A4"))
     parser.add_argument("--checkpoint", type=int, required=True, help="检查点（篇数）：10、20 或 30")
     parser.add_argument("--bank", type=Path, default=BANK, help="题库仓库（facts/tables.csv）")
     parser.add_argument("--out", type=Path, help="输出目录，默认 <运行目录>/allowlists")
@@ -982,5 +1126,5 @@ def main(argv: Sequence[str] | None = None) -> int:
 if __name__ == "__main__":
     raise SystemExit(main())
 
-__all__ = ["Gather", "InputError", "Ref", "a4_fingerprint", "collect", "collect_a0", "collect_a4", "merge", "normalize",
-           "parse", "scan", "source_text", "write"]  # fmt: skip
+__all__ = ["Gather", "InputError", "Ref", "a3f_repo", "a3f_view", "a4_fingerprint", "collect", "collect_a0", "collect_a3f",
+           "collect_a4", "compare_blocks", "merge", "normalize", "parse", "scan", "source_text", "write"]  # fmt: skip
