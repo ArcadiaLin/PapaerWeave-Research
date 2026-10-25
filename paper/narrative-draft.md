@@ -56,7 +56,7 @@ general-purpose agent memory, PaperWeave's research-specific design [__].
    - 随后被当作数据管理问题；
    - 现在开始跨用户、跨 Agent 共享。
 
-   这些系统都有一个可信的整合者，最新整合的条目代表真值。我们不在这条线上比高低：经验类 memory 已经发展出 skill、偏好与经验分离等高层设计，我们存的不是经验，是**知识与产物**。要切的一刀是：
+   我们不在这条线上比高低：经验类 memory 已经发展出 skill、偏好与经验分离等高层设计，我们存的不是经验，是**知识与产物**。要切的一刀是：
    - **过程性经验以使用效果评判；**
    - **声明性的研究知识以来源评判。**
 
@@ -64,39 +64,31 @@ general-purpose agent memory, PaperWeave's research-specific design [__].
 
    Collaborative Memory 走的是另一端：它选择只追加。在论文的实现与实验中，内部 LLM 只在写入时把本次回答抽成片段，不合并、也不改写已有片段；矛盾的片段并存，但系统不察觉，读者读到哪一条由检索相似度决定。作者在 ICLR 2026 的反驳中把只追加说成有意的设计，冲突与更正交给读取层或应用处理（选最新、并列给出、或由 LLM 调和），这些都没有实现，也没有评测。它没有整合者，也没有让分歧可见的机制。
 
-   〔待确认 2026-10-23〕因此上面“这些系统都有一个可信的整合者”对 Collaborative Memory 不准确，本点的英文候选段落同此（10-24 新摘要只陈述要求，不再概括别的系统）。可放宽为两种形态共有的假设：或由内部 LLM 覆盖改写，最新整合的条目代表真值；或只追加，由检索相似度决定读者看到哪一条。两者都不对照来源核对条目，也不让读者看到条目之间的分歧。候选英文：
-
-   ```text
-   These systems share one assumption: what enters the memory can be used on
-   its own word. Either an internal model rewrites the shared pool, so the
-   latest consolidated entry stands for the truth, or entries are only
-   appended and retrieval similarity decides which one a reader sees. Neither
-   checks an entry against its source or shows a reader that entries disagree.
-   ```
-3. **积累是共享的，写入者互不协调：** 同一个人或研究组在几个月里开出大量 session，彼此上下文不通；不同项目、不同成员的 Agent 各自读到同一批论文。愿景是一个公共平台（paper4agents）。共享库是写入者之间唯一的通道，读者往往是当初不在场的陌生人。
+   （10-25 修改：按新摘要的原则，引言只陈述研究知识对存储的要求，不概括别的系统共有什么假设；各系统做不到什么，在相关工作中逐个对照。原先“这些系统都有一个可信的整合者，最新整合的条目代表真值”一句对 Collaborative Memory 不准确，已删。）
+3. **积累是共享的，写入者互不协调：** 同一个人或研究组在几个月里开出大量 session，彼此上下文不通；不同项目、不同成员的 Agent 各自读到同一批论文。愿景是一个公共平台（paper4agents）。共享库是写入者之间唯一的通道，读者往往是当初不在场的陌生人。不协调不只是假定的条件，也是设计要证明的性质：写者只经库协作，无需协调（10-24 商定，AGENTS.md 已改）。
 4. **单写者不需要数据库：** 一个 Agent 在一个项目里复用自己的产物，文件加 Git 作为基线，可能是最强的（尤其是在大厂都在卷这种场景下的模型能力的背景下，与这个模式做竞争没有必要），可能已经够用。数据库的理由来自许多写入者长期写同一个库，这也是 DBMS 的经典理由：共享数据、完整性、多用户。
 
-背景第 2 点的候选段落。引文来自 ShareMem 的背景写法：前三条是 Reflexion、ExpeL、AWM。这三条与 GEM、ShareMem 尚未进 `references/refs.bib`；`2024-MemorySharing`、`2025-CollaborativeMemory`、`2025-Zep` 已在。
+背景第 2 点的候选段落。引文来自 ShareMem 的背景写法：前三条是 Reflexion、ExpeL、AWM。这三条与 ShareMem 尚未进 `references/refs.bib`；`2026-GEM`、`2024-MemorySharing`、`2025-CollaborativeMemory`、`2025-Zep` 已在。
 
 ```text
 LLM agents increasingly retain memory beyond a single context. Early work
 distills interaction histories into lessons, skills, or workflows for later
 tasks (Shinn et al., 2023; Zhao et al., 2024; Wang et al., 2024b). Recent work
 treats agent memory as a data management problem, and begins to share memory
-across users and agents. These systems share one assumption: the memory has a
-consolidator it trusts, either the owning agent or an internal model that
-rewrites the shared pool, so the latest consolidated entry can stand for the
-truth. This holds for procedural experience, whose worth is judged by whether
-the next task succeeds. It fails for knowledge about the world, such as what a
-paper reports, whose worth is judged against its source.
+across users and agents. Procedural experience is judged by whether the next
+task succeeds, so a memory may merge or rewrite it freely. Knowledge about the
+world, such as what a paper reports, is judged against its source: a memory
+that shares it must keep the link to that source and the disagreements among
+the agents that wrote it.
 ```
 
 ```text
 Background: General-purpose agents read, extract, compare, and judge papers,
 and their outputs accumulate.
-Setting: The accumulation is shared. Many agents and sessions that never
-coordinate write to one long-lived store, and later readers were not there
-when it was written.
+Setting: The accumulation is shared. Many agents and sessions with separate
+tasks write to one long-lived store without knowing what the others wrote,
+and later readers were not there when it was written. The store is to make
+coordination unnecessary: writers collaborate through it alone.
 Not the setting: One agent reusing its own work within one project, where
 files and Git are a strong baseline and may suffice.
 ```
@@ -107,8 +99,8 @@ files and Git are a strong baseline and may suffice.
 | --- | --- | --- |
 | **写入高度重叠：** 引用呈长尾分布，少数热门方法、数据集和 benchmark（如 PatchTST、ETTh1）几乎被每个项目、每个 Agent 反复读到 | 同一对象被许多写者各写一遍，身份必须收敛 | Entity、Concept 的身份；也是 E1 中退化压力的来源 |
 | **身份难判，但有外部锚点：** 别名、变体、子集（ETT 与 ETTh1）让判断不平凡；同名不同物也常见：Informer 的 Weather 是 NOAA 的美国站点数据，后来论文的 Weather 是 BGC-Jena 的 21 个气象指标；arXiv ID、DOI、代码仓库与数据集主页提供外部标识 | 收敛借助外部标识，而不是写者之间互相协调；名称相同不等于同一对象，所以名称只产生候选，由写者判定 | Entity 的 `identities`；名称与别名的精确查找；写入时的查重候选 |
-| **权威来源固定且有版本：** 论文原文是作者陈述的唯一依据；arXiv 版本、勘误、撤稿会改变它 | 对“论文说了什么”的分歧可以回原文裁决；引用要固定到版本，来源变化要能被发现 | Content（全部带锚点）；Paper 的 `material` 按内容登记版本，Content 记下写入时的材料，锚点落在旧版本上时读取给出提示 |
-| **代码也是来源：** 结果的口径常由代码决定、论文正文不写：PatchTST 官方代码的测试 DataLoader 设 `drop_last=True`，TiDE 修正后重新评测，两篇论文同一格的差别由此而来 | 官方代码库按 commit 固定，作为与论文并列的材料；读代码、记配置在库内，运行与复现在库外 | Code 的材料与代码锚点（2026-10-18 商定方向，模型改动待设计评审） |
+| **权威来源固定且有版本：** 论文原文是作者陈述的唯一依据；arXiv 版本、勘误、撤稿会改变它 | 对“论文说了什么”的分歧可以回原文裁决；引用要固定到版本，来源变化要能被发现 | Content（全部带锚点）；锚点写作带版本的来源 ID 加行号（如 `2205.13504v2::120:135`）；Paper 的 `source` 列出读过的版本，锚点落在旧版本上时读取给出提示（`_anchor_version`） |
+| **代码也是来源：** 结果的口径常由代码决定、论文正文不写：PatchTST 官方代码的测试 DataLoader 设 `drop_last=True`，TiDE 修正后重新评测，两篇论文同一格的差别由此而来 | 官方代码库按 commit 固定，作为与论文并列的材料；读代码、记配置在库内，运行与复现在库外 | Code 节点的 `source` 是固定到 commit 的仓库（如 `Autoformer@09994619`），代码锚点写作 `<仓库>@<commit>::<文件>::<起>:<止>`（f3 起实现） |
 | **合理的分歧：** 结果依赖条件，比较与综合因目的而异，读者也可能误读 | 判断不需要一致，需要带着出处并存 | 产物：Verify 保留前人的判断、另起一节；CompareSettings、Summarize 各带形成者与所用输入 |
 | **派生内容依赖其他记录：** 比较表、综述、核查结论建立在别人写下的记录上；有的输入是隐含的，排行榜应当收进表头数据集上的全部实验 | 派生内容声明输入，输入变了要能被发现；隐含的输入多出来，也要能被发现 | Artifact 的 `USED`；读取时的 `_stale`（含隐含输入的 `uncovered`）；提交时的 `affected_artifacts` |
 | **知识寿命长、重读成本高：** 每个研究 Agent 从头重读同一批论文，冗余很大 | 值得在写入时多投入，由后来的读者摊销 | E3 的成本账 |
@@ -126,7 +118,7 @@ files and Git are a strong baseline and may suffice.
 
 **主张范围：** 写成领域系统论文，标题点出领域，主张与实验结果只针对研究知识。Discussion 留一段：法律、临床指南等同样有外部权威来源的领域，可以借鉴按对象类别规定一致方式的做法。这一段是讨论，不是主张。
 
-“写入高度重叠”是身份收敛压力的前提，需在选定语料上核实（例如热门方法与数据集被多少篇论文用到）；若重叠不足，E1 测不出退化。开发语料上已初步核实（`tmps/pilot/p0-overlap.md`）：7 篇论文两两之间平均共享 4 个被评测的方法、6.5 个数据集，ETTh1、Weather 等被 7 篇全部用到。正式语料另抽，要重测。
+“写入高度重叠”是身份收敛压力的前提，需在选定语料上核实（例如热门方法与数据集被多少篇论文用到）；若重叠不足，E1 测不出退化。开发语料上已初步核实（`tmps/pilot/p0-overlap.md`）：7 篇论文两两之间平均共享 4 个被评测的方法、6.5 个数据集，ETTh1、Weather 等被 7 篇全部用到。正式语料另抽，要重测。f3 的任务表另有 7 个 build-overlap 任务（另一位写者重做已入库的论文），这部分重叠由任务设计保证；正式语料上的自然重叠仍待测。
 
 参照 AgenticScholar 的数据管理问题引入：
 **学术知识系统管理文档与人工整理的知识，Agent Memory 管理单个 Agent 的交互历史；由许多互不协调的 Agent 持续写入的共享派生知识，尚无人管理。**
@@ -144,7 +136,7 @@ files and Git are a strong baseline and may suffice.
 
 错的答案往往看不出错。例子：只读论文正文，TiDE 表中的 PatchTST 列像是转载自 PatchTST 论文；实际上 TiDE 修正了 PatchTST 官方代码中测试集丢样本的问题（`drop_last=True`）后重新评测，只在脚注中一笔带过。写下“转载”的记录有锚点、读起来通顺，却是错的；我们自己按论文正文写的探针标准答案，起初也这样写错（先导决策日志 D17）。这个例子同时说明为什么代码要作为来源。
 
-（2026-10-19 提议，待确认：在“错而不显”之外加上“代价转嫁”这一半。依据是先导的方向：5–9 篇论文的规模下，各组的读者正确率接近，失分多来自某位写者的一次判断；拉开的是读者与写者的代价、Graphiti 的身份重复与版本变化。先导不进结论，只用来调整要检验的命题。若同意，E1 把代价与库健康度、正确率并列为主指标，以库的规模为自变量，AGENTS.md 中 E1 一句随之修改。）
+（2026-10-19 提议，待确认；10-25 的 f3 数据见本节英文段后的〔待定〕说明：在“错而不显”之外加上“代价转嫁”这一半。依据是先导的方向：5–9 篇论文的规模下，各组的读者正确率接近，失分多来自某位写者的一次判断；拉开的是读者与写者的代价、Graphiti 的身份重复与版本变化。先导不进结论，只用来调整要检验的命题。若同意，E1 把代价与库健康度、正确率并列为主指标，以库的规模为自变量，AGENTS.md 中 E1 一句随之修改。）
 
 ```text
 Without identity, contracts, provenance, and versions, shared accumulation
@@ -156,6 +148,11 @@ every write and every read, and it grows with the store. What is not repaired
 yields answers that are wrong without looking wrong. Content stored on each
 writer's own terms is, moreover, hard to find for readers with other purposes.
 ```
+
+〔待定 2026-10-25〕本节的主张暂不改写。f3 的观察与可调整的方向：
+
+- **完整性：** A0 的约定（AGENTS.md 加 16 个模板）对文件格式要求很高，k30 时库在结构上是干净的：规范化名称下没有重复，1,111 个锚点全部有效，没有悬空引用；只见到一个会话把论文留在旧版本，FiLM 的锚点 v3、v4 混用而没有标记。完整性好，很可能正是严格约定的结果，所以“没有机制就退化”在本规模上难以断言。换了说法的重复、转录忠实度、过时是否被发现，要等库层审计。方向：审计若显示 A0 也保持完整，主张改为“约定也能保持完整，但维护由写者自己承担”（见下一条）；审计若发现约定守不住的退化，保留原主张，以审计为证据。只给最少约定的 A0（10-25 提议的 A0-min，待评审）可以区分数据模型与约定各自的作用。
+- **代价：** 写入一侧确实落在写者身上：到 k30，A0 写者用时 16.1 小时对 A3 的 10.5 小时，模型调用 3,407 对 1,880，多出的主要是查找。读取一侧没有转给读者：A0 读者是三组中最省的，用时比 A3 少 26%。读取的省等物化视图（A3F，`docs/experiments/f4/`）运行后再定：A3F 若同样省而有效，这部分优势归到物化视图，叙事改为“写入由中间件强制，读取经库物化出的文件视图”。
 
 ## Figure 1：多写者共享积累及其退化
 
@@ -198,6 +195,8 @@ writer's own terms is, moreover, hard to find for readers with other purposes.
 └────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+〔待定 2026-10-25〕左栏“无约束的库”与实际最强的基线不符：A0 是按约定维护的文件仓库，f3 中保持得很干净。图的对比框架随上一节完整性主张的走向调整，可能改为“维护由写者按约定完成”对“由系统强制”，并标出各自的代价。字符图暂不改。
+
 初版（10-13，按旧的字符图画的，需按上面的字符图重画；脚本在 `tmps/draws/`）：
 [Figure1](./figures/introduction/Figure1.svg)
 
@@ -222,7 +221,7 @@ Band 2（共享库）：同一段写入历史分别落进两种库。左栏无�
 - **有据层的修订：** B 的结果是论文所说的内容，只有一个值。W2 读出不同的值时，不是并存两种读法，而是带原文锚点与理由修订；W1 的旧值留在历史中，读者看到最近一次修订的理由（C3）。系统不检测两种读法的冲突，冲突由后来的写者回原文判断。
 - **过期：** 比较表用到了 B 的记录。W2 的修订让它在读取时带上过期标记，W2 提交时也被告知这张表可能过期；是否更新由写者决定（C3）。
 - **证据并存：** D 与 B 的主张相反。W3 加一条从 D 的实验指向 B 的主张的 `OPPOSES`，B 自己的支持依据仍在；W3 对“B 的主张是否仍成立”的判断写进 Verify，与前人的判断分节并存（C3）。
-- **版本：** 引用固定到论文的材料版本（C2）。
+- **版本：** 引用固定到论文的版本：来源 ID 带版本号（C2）。
 
 图中数值只作示意。
 
@@ -254,7 +253,7 @@ still find, trust, and build on it?
 
 - **统一提交：** 每次写入都记录作者（来自服务端登录，不由写者自报）、时间、说明与前后值，对所有类别一视同仁，所以任何记录都能查到是谁写的；
 - **写入时的查重：** 新建 Entity、Concept 时，名称、别名与外部标识的精确命中，以及语义上的近邻，作为候选退回，这一批先不写；写者改用已有对象，或声明不同（`distinct_from`），判断记入提交；
-- **有据层的修订：** 改字段、改或删出边须带锚点与理由；Content 记下写入时论文的材料版本；
+- **有据层的修订：** 改字段、改或删出边须带锚点与理由；锚点固定到来源版本（来源 ID 带版本号）；
 - **共同产物：** 按身份键唯一；提交须基于最新版本；改他人的行须写理由；声明输入（`USED`）；
 - **过期：** 读取时计算（`_stale`），提交时也告诉造成它的写者（`affected_artifacts`）。
 
@@ -269,9 +268,9 @@ V2 用 `stated_by: paper / agent` 把 Content 分成两半，解释层里有 Obs
 | --- | --- | --- | --- | --- | --- | --- |
 | **Entity** | 有外部标识的资源：Paper、Dataset（含评测套件）、Code、Model、Tool | 外部标识（arXiv ID、DOI、Semantic Scholar ID）撞上即同一对象；名称、别名与语义近邻只作为候选，交写者判定 | 新建，或指向已有对象；被引用而未入库的可以先建桩，后来者补全 | 解析后的唯一对象；写者的查重判断记在提交上 | 重复、误合并、悬空引用 | 实体解析、自然键 |
 | **Concept** | 许多论文共同指向、没有外部标识的概念：Method、Task、Issue | 只有名称、别名与描述；候选交写者判定，系统不按描述相似自动合并；变体与配置不建节点 | 同 Entity | 同 Entity | 重复与误合并最集中的地方（见下） | 实体解析、受控词表 |
-| **Content** | 论文在某处说的话：Experiment、Claim、Contribution；带锚点的论证边 | 写者之间不必协调，分歧回到原文锚点 | 单值；修订须带锚点和理由；绑定材料版本；论文出新版本时换材料，旧锚点留在旧版本上 | 当前值；最近一次修订的理由与锚点（`_revised`）；哪些锚点还落在旧版本上（`_anchor_version`） | 值不忠实；引用了旧版本而不自知；被静默覆盖 | 有修订日志的权威数据、truth maintenance |
+| **Content** | 论文在某处说的话：Experiment、Claim、Contribution；带锚点的论证边 | 写者之间不必协调，分歧回到原文锚点 | 单值；修订须带锚点和理由；锚点固定到来源版本；论文出新版本时 Paper 的 `source` 加上新版本，旧锚点留在旧版本上 | 当前值；最近一次修订的理由与锚点（`_revised`）；哪些锚点还落在旧版本上（`_anchor_version`） | 值不忠实；引用了旧版本而不自知；被静默覆盖 | 有修订日志的权威数据、truth maintenance |
 | **Artifact**，有身份键 | Leaderboard（任务、数据集、设置）、CompareSettings（所比较的对象）、Verify（一条主张） | 一个键一份，共同编辑；分歧写进同一份产物，Verify 保留前人的判断、另起一节 | 检出、编辑、提交；须基于最新版本，每个版本不可变；改他人的行须写理由；声明输入 | 当前版本、各编辑者与改动说明、过期标记（`_stale`） | 同一张表各写一份；他人的行或判断被静默改掉；输入已变而无人知道 | check-out/check-in、乐观校验、CRDT 多值寄存器、Wikidata ranks、视图失效 |
-| **Artifact**，无身份键 | Summarize、Generate | 不需要一致，各自并存，带形成者 | 同上，只是不撞键 | 多份并存，各带出处与过期标记 | 找不到，或分不清；输入已变而无人知道 | provenance、视图失效 |
+| **Artifact**，无身份键 | Summarize、Note | 不需要一致，各自并存，带形成者 | 同上，只是不撞键 | 多份并存，各带出处与过期标记 | 找不到，或分不清；输入已变而无人知道 | provenance、视图失效 |
 
 Skill 也是有身份键的产物类型（按名称），但它是写者“怎么写”的知识，不是论文派生的知识，不进 E1，表中不列。
 
@@ -302,11 +301,11 @@ replaces adjudication wherever they are not.
    由此得到一个可以检验的预测：外部锚点越弱，越依赖写者判断，退化越多。E1 按对象类型拆开报告重复率，预期 Paper 的重复率接近 0、Method 最高。若数据支持，它本身就是对这种划分的支持；若不支持，如实报告。
 
    名称也不是可靠的锚点：两个 Weather 同名不同物，按名称自动合并必然合错，所以查重只列候选，不自动合并。候选交给写者以后，写者仍可能判错；写者一开始就复用已有的同名节点时，查重根本不起作用（查重只对新建起作用）。误合并率按对象类型报告，这一点作为局限如实写出。
-2. **派生内容分两种，对应数据库中两种处理视图的方式。**
-   - **确定性的派生：** 例如从论文所说的结果行 join 出 Leaderboard。它可以像物化视图一样精确重算，来源被修订后跟着变（view maintenance）。
-   - **Agent 生成的派生：** Artifact，包括 Leaderboard。重算代价高且结果不确定，只标记过期（view invalidation），是否更新由写者决定。
+2. **派生内容分两种，对应数据库中两种处理视图的方式；按“这个派生是否出自 Agent 的判断”分工。**
+   - **确定性的派生，由系统重算：** 计划中的只读文件树（AGENTS.md 的两条访问路径，10-25 提出，f4 检验）是库的物化视图：每个节点一个文件，产物取最新版本，派生字段（`_stale`、`_anchor_version`、`_revised` 等）一并写入，每个 Git 提交对应一个库提交；库提交后重写（view maintenance，目前为全量重算，增量维护不做）。
+   - **Agent 生成的派生，只标记过期：** Artifact，包括 Leaderboard，由写者从论文读出并共同维护，不由系统 join 生成。重算代价高且结果不确定，只标记过期（view invalidation），是否更新由写者决定。
 
-   两者的分界线是“这个派生是否出自 Agent 的判断”，正好落在“Agent 写者改变了什么”上。系统只做后一种：Leaderboard 由写者从论文读出并共同维护，不由系统 join 生成，所以摘要只写 view invalidation。
+   分界线正好落在“Agent 写者改变了什么”上：确定的派生由系统重算，需要判断的派生由系统标出、由 Agent 重写。这与责任边界是同一条原则。
 
    过期按输入的来路分三种，都是读取时计算、提交时告知：
    - **声明的输入：** 产物经 `USED` 指向它用到的节点与其他产物。节点被修订（`revised`）、论文出了新版本（`superseded`）、材料文件被改动（`material`）、所引的产物出了新版本（`superseded`），都使产物过期；过期沿产物之间的 `USED` 传递（`stale input`），例如 CompareSettings 引用了排行榜的行，排行榜更新后它也过期。
@@ -338,6 +337,14 @@ C5. Let readers with one purpose find what writers with another stored.
 
 一个面向外部通用 Agent 的共享知识积累中间件：Agent 经 MCP 读写。写侧，中间件对身份、契约、来源与版本施加约束，使互不协调的写入在长期积累中不退化；读侧，它提供从研究意图推出的检索面与知识访问工具，使别人写下的内容能被找到。
 
+〔待定 2026-10-25〕读侧可能增加第二条路径：库在提交后物化出只读文件树，派生字段写进文件，读者用自带的文件工具读取（AGENTS.md 的两条访问路径；f3 中写入经中间件更省、读取经文件更省）。f4 的 A3F 结果出来前不写进主张；成立时的候选英文：
+
+```text
+Reads may also go through a read-only file tree that the store materializes
+after each commit, with staleness and version flags written into the files,
+so that agents read with the file tools they already use.
+```
+
 ```text
 We propose a middleware for shared accumulation of paper-derived knowledge
 by uncoordinated agents. On the write side, it enforces identity, contracts,
@@ -361,7 +368,7 @@ readers can find what others stored for other purposes.
 - 错误是语义性的且读起来通顺，所以保留来源与分歧比保证正确更重要；
 - 派生内容重算昂贵且不确定，所以只标记过时，不做自动维护；改动输入的写者在提交时就被告知哪些产物受影响，是否更新由写者决定；
 - 读者不会主动查 provenance，所以分歧与过时随查询结果一起返回；
-- MCP 接口就是契约，Agent 会不会用、会不会绕开都可以测量。
+- 写入的 MCP 接口就是契约，Agent 会不会用、会不会绕开都可以测量。
 
 对照与文献见 `docs/discussions/2026-10-10-challenges-and-classical-mechanisms.md`。
 
@@ -386,7 +393,8 @@ readers can find what others stored for other purposes.
    co-edited with every edit versioned and attributable.
    Read side: a retrieval surface and access tools derived from the
    intents; a thin graph of identity anchors and references, with rich
-   content in artifact documents.
+   content in artifact documents; [if f4 holds] a read-only file view
+   materialized from the store.
    Write side: tool contracts that make contributions self-describing;
    staleness over declared and implicit inputs, flagged on read and reported
    at commit to the writer whose change caused it; keyed, versioned artifacts
@@ -405,7 +413,7 @@ readers can find what others stored for other purposes.
 
 评测的三点：不去卷 memory 的性能，三点分开验证，最后归纳。
 
-- **E1 完整性（主结果）：** 写者增多时库不退化，也不把维护的代价转嫁给读者和写者（后一半待确认，见“可证伪的现象”）。
+- **E1 完整性（主结果）：** 写者增多时库不退化，也不把维护的代价转嫁给读者和写者（后一半待确认，见“可证伪的现象”；f3 之后可调整的方向见后续章节大纲第 9 项的〔待定〕说明）。
 - **E2 充分性：** 整理出的内容足以支撑研究意图，不必回读论文。
 - **E3 对等：** 作为一种 memory，答题效果不逊于 agent memory 系统。
 
@@ -415,7 +423,7 @@ E1 与 E2 必须一起报告：一个什么都不存的库永远不会退化，�
 
 责任边界是立论核心，在新命题下更自然：组合的规划在 Agent 侧，Agent 把意图翻译成工具调用，翻译是否忠实单独评估；中间件校验提交的结构与引用、执行写入、持久化产物并记录谱系与状态变化。写入者之间有分歧时，库无权判断谁对，只负责让分歧可见、可追溯。我们管理 Agent 的写入，而不是替 Agent 判断。
 
-随后以 Figure 2 介绍整体架构：多个 Agent 经 MCP 调用工具；读者经知识访问工具在检索面上定位、遍历与读取证据；每次写入经统一提交进入共享库；共同产物经检出、编辑、提交形成版本链。回看 Figure 1 的写入历史如何沿这条链路落地。评测结果出来后，在 intro 末尾补主要发现。
+随后以 Figure 2 介绍整体架构（f4 成立时加上库物化出的只读文件树）：多个 Agent 经 MCP 调用工具；读者经知识访问工具在检索面上定位、遍历与读取证据；每次写入经统一提交进入共享库；共同产物经检出、编辑、提交形成版本链。回看 Figure 1 的写入历史如何沿这条链路落地。评测结果出来后，在 intro 末尾补主要发现。
 
 # Related Work and Positioning
 
@@ -429,11 +437,11 @@ E1 与 E2 必须一起报告：一个什么都不存的库永远不会退化，�
 
 **一、裁决位置。** Graphiti 在摄入时由系统内部完成语义裁决：实体身份先走精确名称、模糊匹配等确定性路径，未决部分交给内部 LLM；关系的去重与矛盾也由内部 LLM 判断，被判矛盾的旧关系按有效时间失效。直接写三元组的 `add_triplet` 跳过的是抽取，不是这些解析。当前的矛盾判断指令要求保留数值、日期与限定条件的差异，只在两条事实不能同时为真时判为矛盾，这是实际的防误判设计，应当承认；但判断仍在系统内部做出，提交内容的写者既看不到也无法确认。PaperWeave 的系统内部不做语义判断：可能重复的候选随提交结果退回写者，由写者复用已有对象或声明不同（`distinct_from`），判断记入提交，由形成者负责。不协调写入下，内部裁决一旦出错，例如合并了同名的不同数据集，或让一个合理的不同解释失效，错误不经任何人确认就进入共享状态；交回写者则把成本转为写入时的交互，并可能增加重复。两种做法的误合并率、重复率与交互成本都要测量，我们不主张交回写者天然更准确。
 
-**二、有据层与解释层。** Graphiti 的来源是 episode 级的：一条事实可追溯到摄入它的那次输入。PaperWeave 进一步区分两类记录。有据层（实体身份与论文自身的陈述）对来源负责，引用绑定材料的内容版本与章节、行号锚点；分歧视为暂时的错误，修订须附原文锚点和理由，历史全部保留。解释层（Observation、写者对主张之间支持或反对的判断、派生产物）让不同形成者的判断并存：他人可以新增关系，但不能改写或删除。Graphiti 可以用声明节点、属性与外部规则表示类似的区分；差别在于 PaperWeave 把它作为写入契约执行。分歧在读取时是否足够可见，由评测检验。
+**二、有据层与解释层。** Graphiti 的来源是 episode 级的：一条事实可追溯到摄入它的那次输入。PaperWeave 进一步区分两类记录。有据层（实体身份、论文自身的陈述，以及带锚点的论证边 `SUPPORTS` / `OPPOSES`）对来源负责，引用固定到来源版本（如 `2205.13504v2`）与行号锚点；分歧视为暂时的错误，修订须附原文锚点和理由，历史全部保留；论证边可以由后来者跨论文新增，但不替代、不删除已有的边。解释层（写者的判断，写进 Verify、CompareSettings、Summarize 等派生产物）让不同形成者的判断并存，各带形成者与所用输入。Graphiti 可以用声明节点、属性与外部规则表示类似的区分；差别在于 PaperWeave 把它作为写入契约执行。分歧在读取时是否足够可见，由评测检验。
 
 **三、派生依赖与版本状态。** 研究工作会产出跨论文比较、可比性核查与综合报告等派生产物。PaperWeave 要求每份产物声明所用输入，形成可追溯的谱系；输入被修订、删除或材料变化后，读取该产物时会附带可能过时的提示；造成这一变化的写者在提交时也会收到受影响产物的清单。重算派生内容代价高且结果不确定，因此只提示、不自动维护，这是对视图失效这一经典做法的改编。每次写入都是带前后值的提交，任意历史状态都可以重建。据本次核查，Graphiti 的一等机制围绕关系的有效时间与系统时间，未见与声明输入、过时提示及提交祖先对应的机制。一条事实何时不再成立，与一份比较所依据的输入是否发生变化，是两种不同的维护要求。
 
-**产物类型的位置。** Leaderboard、CompareSettings、Verify、Summarize、Generate 等产物类型是上述契约的载体：外部通用 Agent 完成语义工作，经 checkout、commit 提交带引用的文档；系统按类型契约校验结构与引用后，把它登记为产物的新版本，供后来者检索、引用和继续使用。类型清单本身不是贡献，同样的文档可以在通用框架的应用层组合出来；贡献在于这些类型执行的声明、修订与依赖规则。
+**产物类型的位置。** Leaderboard、CompareSettings、Verify、Summarize、Note 等产物类型是上述契约的载体：外部通用 Agent 完成语义工作，经 checkout、commit 提交带引用的文档；系统按类型契约校验结构与引用后，把它登记为产物的新版本，供后来者检索、引用和继续使用。类型清单本身不是贡献，同样的文档可以在通用框架的应用层组合出来；贡献在于这些类型执行的声明、修订与依赖规则。
 
 **实验检验与主张边界。** 区别由实验检验，而不由特性表证明。评测中 Graphiti 作为基线，使用与 PaperWeave 相同的领域类型，承接相同的写者任务，测量误合并、分歧被失效、过时未被发现，以及下游答案的正确率。先导语料已包含对应情形：Informer 使用的 NOAA Weather 与后续论文常用的 Jena Weather 同名而不同；SCINet 的部分基线数值转录自 Informer；不同论文在不同条件下报告相互冲突的结果。若 Graphiti 在这些情形上不弱于 PaperWeave，我们相应缩小主张。Agent 承担语义执行，系统承担契约校验与产物管理；这不意味着系统接管完整科研过程、捕获全部隐性输入或验证科学结论。约束只作用于经系统入口提交的内容，通用 Agent 仍保留文件和 shell 工具，绕过行为另行审计。本文是学术知识积累的领域系统研究，采用并适配已有机制，跨领域有效性留作讨论。
 
@@ -484,16 +492,24 @@ staleness, and downstream correctness.
      - Collaborative Memory（`2025-CollaborativeMemory`，精读笔记在 `references/papers/narrative-adjust/shared-agent-memory/2025-CollaborativeMemory/`）是多用户共享记忆的代表，设定同样接近本文：多个用户经各自被授权的 agent 写入同一个库，彼此不知道对方写了什么，读者不在写入现场。可从以下几方面引用：
        - **它选择只追加。** 在论文的实现中，内部 LLM 只在写入时把本次回答抽成 key–value 片段，分私有、共享两层存入；不合并、也不改写已有片段。重复与矛盾的片段并存而不被察觉，读者读到哪一条由检索相似度决定。作者在 ICLR 2026 的反驳中称片段 "immutable and append-only"，冲突与更正交给读取层或应用（选最新、并列、或由 LLM 调和），均未实现、未评测；审稿人也正是在冲突、过时与错误污染上追问（公开审稿见精读目录的 `openreview-iclr2026.txt`）。所以不能把它归入“由整合者改写共享池”的一类。它与 ShareMem 是同一缺口的两种形态：一个覆盖，一个盲目追加，都不对照来源，也不让读者看到分歧。
        - **追加本身不是区别。** 我们的解释层同样让判断并存、库不裁决。区别在于并存是否可见、可追溯：有据层按身份收敛，论文所说的值单值、绑定锚点；解释层的每条判断带形成者与所用输入，冲突与过时随读取结果返回。在 Collaborative Memory 中，并存只是没有去重的副作用。
-       - **provenance 用于授权，不用于问责。** 每个片段记下产生它的 agent、访问过的资源与时间，读时按读者当前的权限过滤，权限撤销后旧片段自动不可见。粒度是“哪个 agent、哪个资源”，不指向原文位置，读者无法据此核对内容。我们的来源（`stated_by`、原文锚点、产物的输入声明）用于核对与问责。访问控制不是本文的问题。
+       - **provenance 用于授权，不用于问责。** 每个片段记下产生它的 agent、访问过的资源与时间，读时按读者当前的权限过滤，权限撤销后旧片段自动不可见。粒度是“哪个 agent、哪个资源”，不指向原文位置，读者无法据此核对内容。我们的来源（原文锚点、提交记录中的作者、产物的输入声明）用于核对与问责。访问控制不是本文的问题。
        - **派生片段不继承来源。** agent 读了别人的片段后写出新片段，新片段的来源是否并入所读片段的来源，文中没有定义。在它那里，这是越权的信息流；在我们这里，同一个缺口就是派生产物的输入变了而无人知道，对应产物的输入声明与过时提示（C4）。同一个缺口，它看作安全问题，我们看作完整性问题。
        - **评测只看复用省了多少。** 它以“共享对隔离”比较外部资源调用次数，说明跨用户复用省事，准确率不降；没有度量片段是否重复、矛盾或错误，资源调用也没有计入写入时 LLM 抽取片段的成本。OpenReview 修订版补了与 Memory Sharing 的对比（后者约 59% 的检索带出无权片段），本质仍是有过滤对无过滤。
        - 该文投 ICLR 2026 被拒，AC 列出而未解决的是：没有新算法、可扩展性、隐私分析。对我们的启示整理在精读目录的 `lessons-for-paperweave.md`。
+   - 数据库视角的 agent memory 与面向 agent 的数据系统（10-25 补入 `references/refs.bib`）：
+     - GEM（`2026-GEM`）把 agent memory 定为新的数据管理负载，正确性是状态轨迹的性质，给出四个状态级算子与六条正确性条件（含依赖一致、保留来源）；它的记忆系统替 agent 做修订与遗忘，我们把判断交给写者，遗忘不做。
+     - Li 等的 VLDB 教程（`2026-AgenticMemoryDM`）梳理记忆算子，开放问题列出多 agent 协作记忆与记忆评测，正是本文的设定。
+     - AgentNativeMemory（`2026-AgentNativeMemory`）拆模块评测 12 个记忆系统：结构化系统的建库与查询成本高出数量级而准确率未相应提高，效率取决于维护波及的范围；可与 f3 中准确率打平、成本分化的结果对照。
+     - AgentFirst（`2026-AgentFirst`）主张数据系统适应 agent 负载，其 agentic memory store 的过时问题与分支更新已占据相关概念，须说明区别在多写者长期积累的论文知识及其完整性；也是文件视图面向 agent 接口的参照。
+     - EvoOntology（`2026-EvoOntology`）是最近的系统近邻（MCP、类型化、带证据、有版本）。区别：写者是许多不协调的外部 agent，不是内部构建 agent；正确性对照来源，不看任务分数；版本指来源版本，不只是库的编辑历史；持续积累，不是适配后冻结。它按基座各自演化，与我们“不为某个 agent 定制”相反。
+     - Chatty-KG（`2026-Chatty-KG`）一笔带过：存储层给候选、由 LLM 选择，与我们查重候选交写者判定的分工相同。
+   - 面向 agent 的接口：SWE-agent（`2024-SWE-agent`）表明为 LM 设计的接口优于直接给 shell，并给出动作简单、紧凑、反馈简洁、护栏四条原则。用于讨论读取路径的设计；它不支持“agent 天生偏爱 grep”的说法。
    - 语义算子系统（AgenticScholar、LOTUS 等）：LLM 内化于算子；我们把语义工作外置、契约内化。
    - provenance 与版本化数据管理（`2026-Git4Data`、`2013-GraphSnapshot` 等）：管数据版本；我们管多写者积累的知识状态。
    - ontology engineering 与 schema induction：与本文正交，说明领域词表问题有人在做、不是我们的贡献。
 
    能力矩阵区分原生支持、组合支持、需外部推理。上述多写者知识库与多 Agent 记忆的文献是否已在 `references/` 中，待核实。
-3. **Problem and Workloads.** 把中枢规约展开为可评测的形式：六类意图及其任务来源与必要信息（取自 intents 分解），写入者模型、事件类型、读者探针，各自给出具体输入、所需输出、数据状态与操作序列。显式写出几条假设：不协调是语义上的而非并发事务；领域词表给定；库不判断谁对（可问责而非权威，按对象类别与 `stated_by` 规定一致方式）；起点只有论文原文与外部标识。明确责任边界。
+3. **Problem and Workloads.** 把中枢规约展开为可评测的形式：六类意图及其任务来源与必要信息（取自 intents 分解），写入者模型、事件类型、读者探针，各自给出具体输入、所需输出、数据状态与操作序列。显式写出几条假设：不协调是语义上的而非并发事务；领域词表给定；库不判断谁对（可问责而非权威，按对象类别规定一致方式）；起点只有论文原文与外部标识。明确责任边界。
 4. **System Overview.** Figure 2：共享库、产物版本与提交历史的整体关系；用 Figure 1 中一段写入历史端到端走查各部件。
 5. **Accumulation Meta-Model.** Entity / Concept / Content / Artifact 主类与系统记录；写入机制在每一类上的效果放在第 7 节；身份规则（精确键、标识、重复与歧义的处理）、材料引用、来源与派生谱系；薄图、厚文档的分工；从意图推出的检索面（描述面与检索子集、关系为何进入检索面）。CS 论文的领域词表作为实例单列（回应 C1、C2、C5）。
 6. **Tool Contracts and Artifact Persistence.** 知识访问工具（search、get、traverse、read_evidence）的契约：混合检索中关系的作用、有界视图与分页、分歧与过时随结果返回（回应 C5）。产物类型的契约：产物是按类型检查的版本化文档，写者经 checkout / commit 检出与检入，中间件校验文档结构与引用、保存各版本、记录所用的节点，使贡献自描述、可复查、可继续组合（回应 C2）。以意图的数据流说明两类契约如何组合。
@@ -507,11 +523,18 @@ staleness, and downstream correctness.
    | E2 充分性 | 库中内容足以支撑意图 | 按 I1–I6 分别报告 $\rho_I = \mathrm{Acc}_{\text{store\_only}}/\mathrm{Acc}_{\text{with\_papers}}$；同时检验“由意图推导读取面”这一设计方法 |
    | E3 对等 | 作为 memory 不吃亏 | 对 Graphiti 做非劣效检验，阈值 $\delta$ 事先声明；附构建与使用的成本账 |
 
+   〔待定 2026-10-25〕E1 的主张暂不改。f3 之后可调整的方向：
+   - **证据来源：** k30 准确率 A3 0.926、A0 0.924（差 $-0.002$，区间 $[-0.035, 0.030]$），准确率这一半在本规模不成立；E1 的证据改由库层审计承担（换了说法的重复、转录忠实度、过时是否被发现、知识流失），写入时 PaperWeave 已强制的检查不作为对方失分。
+   - **代价：** 写入一侧成立（见“可证伪的现象”后的〔待定〕说明）；读取一侧等 f4。
+   - **实验设计：** f3 实际是一条时间线（70 个写者会话、10 个写者身份、30 篇论文），在第 10、20、30 篇的检查点上比较各组，不是下表的 $Y(4) - Y(1)$；按检查点看的是“随积累”，写者数与写入量同时增长，二者分不开。
+   - **消融：** 现有的 A2 是四项机制一起关掉；逐项消融没有跑。另有 10-25 提议、待评审的两组：只给最少约定的 A0（数据模型的作用）、在 A0 与 A3 上都换较弱的写者模型（强制执行的作用）。
+   - **E1 与 E2、E3 的关系：** 准确率打平后，“只经库读的读者与读全文一样准”更像 E2 充分性的证据，不专属于 PaperWeave。
+
    - **E1：** 重复率按对象类型拆开，检验“外部锚点越弱、退化越多”；探针落在多写者交汇处；注入事件即 Figure 1 的重演。审计 DAG 只用系统写入时不检查的项作为 A3 胜过对照组的证据。
    - **消融：** 去掉查重（身份候选）、写入时提示（`affected_artifacts` 与 `related_artifacts`）、读取时的过时标记（`_stale`）、共同编辑，各一项，放在 E1 中。
    - **E2：** 充分性要按意图拆开：哪些意图库能独立支撑，哪些仍需回读论文。一个什么都不存的库永远不会退化，所以 E2 与 E1 一起报告。
    - **E3：** 不跑 LongMemEval、DMR 等对话记忆基准，它们不是本文的工作负载。主张写成带阈值的非劣效，而不是“接近”。成本账：构建成本前移、按使用者摊销，盈亏点 $N^* = C_{\text{build}}/(c_{\text{base}}-c_{\text{ours}})$；baseline 给相同预计算预算。
-   - **对照组：** A0 文件 + Git（最强配置）、A2 同一 schema 的裸 Neo4j + Cypher、A3 完整系统、A4 Graphiti；A1 RAG 只用于 E2。A0 拿到与 A3 工具说明对等的约定文档与模板（文字对等，机制不同）：schema 的文字相同，但没有任何执行。A2 与 A3 共用 schema 与存储，二者之差只来自机制；A0 与 A3 之差是机制加上图层；与 A4 的比较混有 schema 的作用，需如实标出。
+   - **对照组：** A0 文件 + Git（最强配置）、A2 同一服务关掉查重、修订约束、过时标记、受影响产物四项（f3）、A3 完整系统、A4 Graphiti；A1 RAG 只用于 E2。A0 拿到与 A3 工具说明对等的约定文档与模板（文字对等，机制不同）：schema 的文字相同，但没有任何执行。A2 与 A3 共用 schema 与存储，二者之差只来自机制；A0 与 A3 之差是机制加上图层；与 A4 的比较混有 schema 的作用，需如实标出。
    - **起点与金标准：** 起点只有论文原文与外部标识，种子在各组之间相同，且不与金标准重合。有据层以原文锚点为金标准；解释层不测真值，只测分歧是否保留、读者是否看得到。
    - **schema 覆盖不足作为观测量：** 记录写入内容装不进类型的次数与去向（Artifact 文档、描述字段或丢弃），不作为要解决的问题。
    - 结果可能为负，例如 A0 始终不输；那时报告文件加 Git 足够的区间，收窄主张。

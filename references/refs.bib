@@ -368,3 +368,106 @@
                   机制依据源码 references/repos/terminusdb（不入库的本地 clone）与官方文档
                   terminusdb.org/docs/graphs-explanation/，均无独立出版物，附于此条目。}
 }
+
+% ---- 数据库视角的 agent 记忆与 agent-first 数据系统（db-for-agents，2026-10-25 入库）
+% 本地副本在 papers/narrative-adjust/db-for-agents/<citekey>/。
+
+@article{2026-GEM,
+  title        = {Is Agent Memory a Database? Rethinking Data Foundations for Long-Term {AI} Agent Memory},
+  author       = {Orogat, Abdelghny and Mansour, Essam},
+  journal      = {arXiv preprint arXiv:2605.26252},
+  year         = {2026},
+  eprint       = {2605.26252},
+  eprintclass  = {cs.AI},
+  version      = {v1},
+  url          = {https://arxiv.org/abs/2605.26252v1},
+  note         = {支撑 AGENTS.md 主题定位（agent memory 作为数据管理问题，GEM 一脉）与相关工作：
+                  记忆正确性是状态轨迹的性质，形式化为四个状态级算子与六条正确性条件（含依赖一致、保留来源），
+                  原型 MemState 建在 Kuzu 上；也是评测侧"答题准确率看不出库的差别"的依据（E1 库层审计）。}
+}
+
+@article{2026-AgenticMemoryDM,
+  title        = {Data Management for Agentic Memory: Foundations, Systems, and Challenges},
+  author       = {Li, Guoliang and Tian, Jiaqi and Zhou, Xuanhe},
+  journal      = {Proceedings of the VLDB Endowment},
+  volume       = {19},
+  number       = {12},
+  pages        = {4888--4892},
+  year         = {2026},
+  doi          = {10.14778/3827998.3828145},
+  url          = {https://doi.org/10.14778/3827998.3828145},
+  note         = {支撑相关工作中数据库界对 agent memory 的整体梳理（VLDB 2026 教程）：
+                  算子分类（抽取、更新与冲突检测、检索、整合、遗忘、压缩、反思）；
+                  开放问题列出多 agent 协作记忆与记忆评测，对应 PaperWeave 的多写者设定。}
+}
+
+@article{2026-AgentNativeMemory,
+  title        = {Are We Ready For An Agent-Native Memory System?},
+  author       = {Zhou, Wei and Zhou, Xuanhe and Han, Shaokun and Xu, Hongming and Li, Guoliang and Li, Zhiyu and Xiong, Feiyu and Wu, Fan},
+  journal      = {arXiv preprint arXiv:2606.24775},
+  year         = {2026},
+  eprint       = {2606.24775},
+  eprintclass  = {cs.CL},
+  version      = {v1},
+  url          = {https://arxiv.org/abs/2606.24775v1},
+  note         = {支撑评测原则"先评库、计入建库成本"（E1、E3）：12 个记忆系统按四个模块拆开实验，
+                  指出端到端分数不足以评记忆系统；结构化系统建库与查询成本高出数量级而准确率未相应提高，
+                  效率取决于维护波及范围，可与 f3 中 A3、A0 准确率打平而成本分化的结果对照。}
+}
+
+@inproceedings{2026-AgentFirst,
+  title        = {Supporting Our {AI} Overlords: Redesigning Data Systems to be Agent-First},
+  author       = {Liu, Shu and Ponnapalli, Soujanya and Shankar, Shreya and Zeighami, Sepanta and Zhu, Alan and Agarwal, Shubham and Chen, Ruiqi and Suwito, Samion and Yuan, Shuo and Stoica, Ion and Zaharia, Matei and Cheung, Alvin and Crooks, Natacha and Gonzalez, Joseph E. and Parameswaran, Aditya G.},
+  booktitle    = {Conference on Innovative Data Systems Research (CIDR)},
+  year         = {2026},
+  eprint       = {2509.00997},
+  eprintclass  = {cs.AI},
+  url          = {https://vldb.org/cidrdb/2026/supporting-our-ai-overlords-redesigning-data-systems-to-be-agent-first.html},
+  note         = {支撑相关工作中 agent-first 数据系统一脉：agent 成为数据系统主要负载；
+                  其 agentic memory store（底层变化后的过时问题）与分支更新已占据持久记忆、过时、分支的概念，
+                  PaperWeave 须区分在多写者长期积累的论文知识及其完整性；也是物化文件视图（A3F）面向 agent 接口的参照。}
+}
+
+@article{2026-EvoOntology,
+  title        = {{EvoOntology}: A Self-Evolving Ontology Layer for Data Agents},
+  author       = {Chong, Meiduo and Zhang, Shaolei and Fan, Ju and Du, Xiaoyong},
+  journal      = {arXiv preprint arXiv:2609.15779},
+  year         = {2026},
+  eprint       = {2609.15779},
+  eprintclass  = {cs.AI},
+  version      = {v1},
+  url          = {https://arxiv.org/abs/2609.15779v1},
+  note         = {支撑相关工作中最接近的系统近邻：以 MCP 服务提供类型化、带证据、有版本的本体层，
+                  由内部构建 agent 维护、按任务分数接受编辑；PaperWeave 须区分在多个不协调的外部写者、
+                  对照来源判断正确性、来源版本（论文版本、代码提交）作为知识条件、持续积累而非适配后冻结。}
+}
+
+@article{2026-Chatty-KG,
+  title        = {{Chatty-KG}: A Multi-Agent {AI} System for On-Demand Conversational Question Answering over Knowledge Graphs},
+  author       = {Omar, Reham and Orogat, Abdelghny and Abdelaziz, Ibrahim and Mangukiya, Omij and Kalnis, Panos and Mansour, Essam},
+  journal      = {Proceedings of the ACM on Management of Data},
+  volume       = {4},
+  number       = {1},
+  pages        = {1--26},
+  year         = {2026},
+  doi          = {10.1145/3786632},
+  eprint       = {2511.20940},
+  url          = {https://doi.org/10.1145/3786632},
+  note         = {SIGMOD 2026。仅在相关工作中一笔带过：多 LLM agent 在知识图谱上做只读问答，
+                  存储层给候选、由 LLM 选择、校验器只确认选项在候选集内，与 PaperWeave
+                  "存储层给疑似重复候选、由写者判定"的分工相同；不涉及持久写入。}
+}
+
+@inproceedings{2024-SWE-agent,
+  title        = {{SWE-agent}: Agent-Computer Interfaces Enable Automated Software Engineering},
+  author       = {Yang, John and Jimenez, Carlos E. and Wettig, Alexander and Lieret, Kilian and Yao, Shunyu and Narasimhan, Karthik and Press, Ofir},
+  booktitle    = {Advances in Neural Information Processing Systems 37 (NeurIPS 2024)},
+  year         = {2024},
+  eprint       = {2405.15793},
+  eprintclass  = {cs.SE},
+  url          = {https://papers.neurips.cc/paper_files/paper/2024/hash/5a7c947568c1b1328ccc5230172e1e7c-Abstract-Conference.html},
+  note         = {支撑读取路径的接口设计（物化文件视图、面向 agent 的读取工具）：提出 agent-computer interface，
+                  为 LM 定制的接口比只给 Linux shell 的基线在 SWE-bench Lite 上相对提高 64%；
+                  给出四条原则（动作简单、动作紧凑高效、反馈信息充分但简洁、护栏），
+                  并发现逐条翻看的搜索会耗尽预算，表现甚至不如不给搜索工具。}
+}

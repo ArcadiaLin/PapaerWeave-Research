@@ -3,8 +3,10 @@
 ## Overview
 
 This repository supports a data management research project. The system is
-called PaperWeave. The near-term goal is a quick arXiv preprint; the longer-term
-target is a top database venue (SIGMOD, VLDB, ICDE, or similar). The repository
+called PaperWeave. The near-term goal is a quick arXiv preprint of the main
+body, with further modules (such as the file export below) added in later
+versions; the longer-term target is a top database venue (SIGMOD, VLDB, ICDE,
+or similar). The repository
 name CachePlan is historical; cache optimization and inference scheduling are no
 longer research objectives.
 
@@ -29,7 +31,10 @@ the others wrote. The store is their only channel, and later readers were not
 present at the writes. "Uncoordinated" is semantic, not transactional: writers
 run in turn, and atomicity is left to backend transactions. One agent reusing
 its own work within one project is **not** the setting; there, files and Git are
-the strongest baseline and may suffice.
+the strongest baseline and may suffice. The paper presents the absence of
+coordination as what the design makes unnecessary, not only as an assumed
+condition: writers collaborate through the store without coordinating, and the
+evaluation is to show it (agreed 2026-10-24).
 
 **Domain.** Paper-derived knowledge, starting with time-series forecasting.
 Claims cover this domain only; the mechanisms are domain-agnostic by design, and
@@ -66,6 +71,13 @@ without looking wrong.
   the middleware checks each against its type's contract. Artifacts declare
   their inputs: reads flag artifacts that may be stale, and a commit tells its
   writer which artifacts it may have made stale.
+- **Two access paths (proposed 2026-10-25, design pending).** Writes always go
+  through the middleware. Reads may also use a read-only file tree materialized
+  from the store, laid out like the files + Git baseline, with staleness and
+  version flags written into the files and refreshed after each commit. The
+  file tree is a materialized view: the store keeps it current, and agents
+  never write through it. Motivation: in f3, middleware writes cost less, while
+  file reads cost less.
 - **Responsibility boundary.** External agents interpret materials, make
   semantic judgments, and plan calls. The middleware validates structure and
   references, executes, persists, and records lineage. It does no internal LLM
@@ -89,7 +101,8 @@ without looking wrong.
   configurations or protocol differences is in scope; running code and
   reproducing results stay with external agents and are not stored.
 - **Classical mechanisms, adapted.** Each mechanism has a DB predecessor (entity
-  resolution, provenance, view invalidation, coexisting alternatives,
+  resolution, provenance, materialized views and their invalidation,
+  coexisting alternatives,
   check-out/check-in, dataspaces). The contribution is adapting them to agent
   writers and showing empirically which matter; engage the predecessors
   substantively.
@@ -124,7 +137,8 @@ without looking wrong.
 
 ## Scope
 
-**In scope.** The existing prototype is the system; no new subsystem is planned.
+**In scope.** The existing prototype is the system; the only planned addition
+is the read-only file export (see Approach).
 
 - `system/` (package `paperweave`, formerly `experiments/e09`): data model,
   Commit, operators, `_stale`, MCP server; `packages/graph-doc` and
@@ -165,6 +179,13 @@ the mandate in `docs/decisions/2026-10-17-pilot-mandate.md`.
 - **E1 integrity (core):** adding uncoordinated writers costs PaperWeave
   significantly less than files + Git, in store health and in probe accuracy.
   Falsified if, at affordable scale, the difference is not significant.
+  f3 (2026-10-25): against a files + Git baseline whose conventions encode the
+  same data model (A0), probe accuracy ties (k30 0.924 vs. 0.926), so the
+  accuracy half is not supported at this scale; writers cost less with
+  PaperWeave, readers less with files. Next: the store-level audit, then arms
+  that separate what the data model contributes (minimal conventions) from
+  what enforcement contributes (a weaker writer model on both arms), and the
+  file-export arm. All three await design review.
 - **E2 sufficiency:** how much of each intent the store alone can answer.
 - **E3 parity:** not worse than a general memory system (Graphiti) on reads,
   with a cost ledger.
