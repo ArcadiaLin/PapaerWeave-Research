@@ -7,6 +7,7 @@ import hashlib
 import json
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -30,8 +31,8 @@ READERS = {"writers": "w.yml", "llm": "http://h:30000/v1",
            "runner": {"probe_timeout_min": 60, "max_tool_calls": 300}}  # fmt: skip
 
 
-def configs(tmp_path: Path, readers: dict = READERS) -> Path:
-    (tmp_path / "w.yml").write_text(yaml.safe_dump(WRITERS))
+def configs(tmp_path: Path, readers: dict = READERS, writers: dict = WRITERS) -> Path:
+    (tmp_path / "w.yml").write_text(yaml.safe_dump(writers))
     (tmp_path / "r.yml").write_text(yaml.safe_dump(readers))
     return tmp_path / "r.yml"
 
@@ -193,7 +194,7 @@ def test_a_graph_reader_is_isolated_read_only_and_reads_sources_only_through_the
     assert store_readers.reader_arm(store_readers.load(configs(tmp_path, a2)), run, out, "A2", 20, "p").ablate == ("dedup",)
     with pytest.raises(RuntimeError, match="A0 has no readers' store"):  # 读者配置没有声明 A0
         store_readers.reader_arm(config, run, out, "A0", 10, "p")
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(RuntimeError, match="A4 has no readers' store"):  # 读者配置没有声明 A4
         store_readers.reader_arm(config, run, out, "A4", 10, "p")
     assert TOOLS["PaperWeave"].isdisjoint({"commit", "read_evidence"})
 
@@ -322,3 +323,177 @@ def test_a_damaged_a0_readers_repository_stops_the_readers(a0, damage, message: 
     damage(run, store_readers.a0_store(out, 1), out)
     with pytest.raises(RuntimeError, match=message):
         store_readers.verify_a0(run, out, 1, meta)
+
+
+# ---------------------------------------------------------------- A4：Graphiti 的读者库与读者服务
+
+A4_WRITERS = {**WRITERS, "arms": {**WRITERS["arms"], "A4": {
+    "graphiti": "http://127.0.0.1:8765/mcp/", "neo4j": "bolt://localhost:7698", "neo4j_container": "neo4j-a4",
+    "graphiti_log": "~/runs/graphiti.log", "group_id": "formal", "llm": "http://h:30001/v1"}}}  # fmt: skip
+A4_READERS = {"neo4j": "bolt://localhost:7701", "neo4j_container": "neo4j-a4-reader",
+              "graphiti": "http://127.0.0.1:8766/mcp/", "graphiti_python": "~/g/.venv/bin/python",
+              "graphiti_src": "~/g/src"}  # fmt: skip
+
+
+def test_the_a4_readers_get_their_own_store_and_graphiti_service(tmp_path: Path) -> None:
+    config = store_readers.load(configs(tmp_path, {**READERS, "arms": {"A4": A4_READERS}}, A4_WRITERS))
+    spec = config["arms"]["A4"]
+    assert (spec["neo4j"], spec["graphiti"], spec["group_id"]) == ("bolt://localhost:7701", "http://127.0.0.1:8766/mcp/",
+                                                                   "formal")  # fmt: skip
+    assert spec["graphiti_python"] == str(Path("~/g/.venv/bin/python").expanduser()) and spec["llm"] == "http://h:30000/v1"
+    run, out = tmp_path / "run", tmp_path / "out"
+    box = store_readers.reader_arm(config, run, out, "A4", 10, "p1")
+    assert box.graphiti == "http://127.0.0.1:8766/mcp/" and box.isolated_tcp == ("127.0.0.1:8766",)
+    assert box.hide_tools == () and box.read_source is None and box.papers is None and box.neo4j is None
+    assert box.isolated_llm == "http://h:30000/v1" and box.evidence.allowlist == run / "allowlists/A4/k10.json"
+    assert box.evidence.library == out / "A4/readers/k10/sources"
+
+
+@pytest.mark.parametrize(("spec", "message"), [
+    ({**A4_READERS, "graphiti": "http://127.0.0.1:8765/mcp/"}, "writers' Graphiti"),
+    ({k: v for k, v in A4_READERS.items() if k != "graphiti_src"}, "own Graphiti service \\(graphiti_src missing\\)"),
+    ({**A4_READERS, "neo4j_container": "neo4j-a4"}, "writers' store \\(neo4j-a4\\)"),
+    ({**A4_READERS, "neo4j": "bolt://localhost:7698"}, "writers' store \\(bolt://localhost:7698\\)"),
+])  # fmt: skip
+def test_the_a4_readers_never_use_the_writers_store_or_service(tmp_path: Path, spec: dict, message: str) -> None:
+    with pytest.raises(SystemExit, match=message):
+        store_readers.load(configs(tmp_path, {**READERS, "arms": {"A4": spec}}, A4_WRITERS))
+
+
+def test_the_readers_graphiti_must_not_have_touched_its_internal_llm(tmp_path: Path) -> None:
+    log = tmp_path / "serve.log"
+    log.write_text("old run: llm usage prompt=5 completion=1\n")  # 上次启动的不算
+    service = {"log": log, "from": log.stat().st_size}
+    with log.open("a") as f:
+        f.write("read-only: 31 indexes online, none built\nPOST /mcp 200\n")
+    assert store_readers.check_service_log(service, 10) == {"blocked": 0, "usage": 0}
+    with log.open("a") as f:
+        f.write(f"{store_readers.A4_BLOCKED}: chat.completions.create\n")
+    with pytest.raises(RuntimeError, match="called its internal LLM"):
+        store_readers.check_service_log(service, 10)
+
+
+# ---------------------------------------------------------------- 作答中途失败与结束核验（10-25 评审）
+
+
+class _Timeline:
+    reader = {"user": "u"}
+    hints = {"a4": {"TOOLS": "Use the tools."}, "a3": {"TOOLS": "Use the tools."}}
+
+    def group(self, group: str) -> list[dict]:
+        return [{"id": f"{group}-{i}"} for i in range(3)]
+
+
+def _fake_run(monkeypatch, tmp_path: Path, *, fail_at: str | None, store_ok, log_ok: bool = True) -> dict:
+    """``_run_readers`` 的外部都换成假的：A4，一组三题，单线程按序作答；``fail_at`` 那题抛错，``store_ok()`` 决定
+    结束核对库是否通过。返回调用记录。"""
+    calls: dict = {"answered": [], "store": 0, "service log": 0, "service": []}
+    monkeypatch.setattr(store_readers, "timeline_of", lambda config: _Timeline())
+    monkeypatch.setattr(store_readers, "eligible", lambda timeline, papers, group: timeline.group(group))
+    monkeypatch.setattr(store_readers, "restore", lambda *a: {"version": "v1"})
+    monkeypatch.setattr(store_readers, "check_allowlist", lambda *a: "d" * 64)
+    monkeypatch.setattr(store_readers, "check_tools", lambda *a: {})
+    pre = iter([True])
+
+    def verify_a4(*a):
+        if next(pre, False):  # 作答前的核对总是通过
+            return {"version": "v1", "counts": {"nodes": 1, "edges": 0}, "store_sha256": "s" * 64, "sources": 1}
+        calls["store"] += 1
+        if not store_ok():
+            raise RuntimeError("store changed")
+
+    monkeypatch.setattr(store_readers, "verify_a4", verify_a4)
+
+    @contextmanager
+    def service(config, out, papers, mark):
+        mark["pid"] = 42
+        calls["service"].append("up")
+        try:
+            yield
+        finally:
+            calls["service"].append("down")
+
+    def log(service, papers):
+        calls["service log"] += 1
+        if not log_ok:
+            raise RuntimeError("called its internal LLM")
+        return {"blocked": 0, "usage": 0}
+
+    monkeypatch.setattr(store_readers, "graphiti_service", service)
+    monkeypatch.setattr(store_readers, "check_service_log", log)
+
+    def answer(config, sentence, run, out, arm, papers, group, probe, reader):
+        if probe["id"] == fail_at:
+            raise RuntimeError("pi crashed")
+        calls["answered"].append(probe["id"])
+        return {"arm": arm, "checkpoint": papers, "probe": probe["id"], "exit": 0, "seconds": 1, "tools": {}, "answer": "a"}
+
+    monkeypatch.setattr(store_readers, "answer", answer)
+    return calls
+
+
+def _go(tmp_path: Path) -> None:
+    config = {"runner": {"agent": "pi", "model": "m", "reader_workers": 1}}
+    store_readers._run_readers(config, tmp_path / "run", tmp_path / "out", "A4", 10, ["main"], None, False)
+
+
+def _ids(path: Path) -> list[str]:
+    return [json.loads(line)["probe"] for line in path.read_text().splitlines()] if path.exists() else []
+
+
+def test_a_crash_after_some_answers_still_runs_both_final_checks_and_keeps_verified_answers(monkeypatch, tmp_path):
+    calls = _fake_run(monkeypatch, tmp_path, fail_at="main-2", store_ok=lambda: True)
+    with pytest.raises(RuntimeError, match="pi crashed"):  # 核验通过：抛出的是作答的错误
+        _go(tmp_path)
+    assert calls["service"] == ["up", "down"] and calls["service log"] == 1 and calls["store"] == 1
+    out = tmp_path / "out"
+    answers = out / "answers/A4/k10.jsonl"
+    assert _ids(answers) == ["main-0", "main-1"]
+    assert not (out / "A4/readers/k10" / store_readers.UNVERIFIED).exists()  # 这两条已核验
+    calls = _fake_run(monkeypatch, tmp_path, fail_at=None, store_ok=lambda: True)
+    _go(tmp_path)
+    assert calls["answered"] == ["main-2"] and _ids(answers) == ["main-0", "main-1", "main-2"]
+
+
+@pytest.mark.parametrize(("store_ok", "log_ok"), [(False, True), (True, False), (False, False)])
+def test_answers_of_a_run_that_fails_its_final_checks_are_set_aside_and_asked_again(monkeypatch, tmp_path, store_ok,
+                                                                                    log_ok):  # fmt: skip
+    out = tmp_path / "out"
+    answers = out / "answers/A4/k10.jsonl"
+    answers.parent.mkdir(parents=True)
+    old = {"arm": "A4", "checkpoint": 10, "probe": "main-0", "version": "v1", "allowlist_sha256": "d" * 64}
+    answers.write_text(json.dumps(old) + "\n")  # 早先的回答（没有运行标识）不动
+    calls = _fake_run(monkeypatch, tmp_path, fail_at="main-2", store_ok=lambda: store_ok, log_ok=log_ok)
+    with pytest.raises(RuntimeError, match="final verification failed") as raised:
+        _go(tmp_path)
+    assert isinstance(raised.value.__cause__, RuntimeError) and "pi crashed" in str(raised.value.__cause__)
+    assert calls["service log"] == 1 and calls["store"] == 1  # 一项失败也不跳过另一项
+    marker = yaml.safe_load((out / "A4/readers/k10" / store_readers.UNVERIFIED).read_text())
+    assert len(marker["failed"]) == (not store_ok) + (not log_ok)
+    assert _ids(answers) == ["main-0", "main-1"]
+    calls = _fake_run(monkeypatch, tmp_path, fail_at=None, store_ok=lambda: True)
+    _go(tmp_path)  # 续跑：上次的 main-1 未经核验，移开重答
+    assert calls["answered"] == ["main-1", "main-2"]
+    assert _ids(answers) == ["main-0", "main-1", "main-2"]
+    assert json.loads(answers.read_text().splitlines()[0]) == old
+    aside = out / "A4/readers/k10/unverified/k10.jsonl"
+    assert _ids(aside) == ["main-1"] and json.loads(aside.read_text())["invocation"] == marker["invocation"]
+    assert not (out / "A4/readers/k10" / store_readers.UNVERIFIED).exists()
+
+
+def test_a_run_killed_before_its_final_checks_leaves_its_answers_unverified(monkeypatch, tmp_path):
+    calls = _fake_run(monkeypatch, tmp_path, fail_at=None, store_ok=lambda: True)
+
+    def killed(*a):
+        raise SystemExit(9)
+
+    monkeypatch.setattr(store_readers, "final_checks", killed)
+    with pytest.raises(SystemExit):  # 模拟进程在结束核验前被杀：标记留下
+        _go(tmp_path)
+    out = tmp_path / "out"
+    assert (out / "A4/readers/k10" / store_readers.UNVERIFIED).exists()
+    monkeypatch.undo()
+    calls = _fake_run(monkeypatch, tmp_path, fail_at=None, store_ok=lambda: True)
+    _go(tmp_path)
+    assert calls["answered"] == ["main-0", "main-1", "main-2"]  # 三题都重答
+    assert _ids(out / "A4/readers/k10/unverified/k10.jsonl") == ["main-0", "main-1", "main-2"]

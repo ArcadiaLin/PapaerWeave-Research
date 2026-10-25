@@ -12,9 +12,19 @@
 用法（运行框架之外，长驻；日志即 eval/config/formal-ltsf.yml 的 ``graphiti_log``，运行框架按它判断处理完）：
 
     $GRAPHITI_ENV/bin/python -I eval/baselines/a4/serve.py >> ~/pw-lab/runs/graphiti.log 2>&1
+
+**读者模式**（``--read-only --config <读者的配置>``，f3 设计 §6.1，10-25 定）：由读者运行器
+（``pweval.harness.store_readers``）对检查点恢复出的读者库启动，配置是写者配置换了端口与库的一份。见 :func:`read_only`：
+
+- 不列出写入与删除的工具（:data:`READ_ONLY_HIDDEN`，同 ``timeline.A4_WRITE_TOOLS``）；
+- 内部 LLM 的请求在入口拦下：每次尝试记一行 ``llm blocked``（:data:`BLOCKED`）并报错，读者运行器核对次数为零。
+  检索走 RRF 或节点距离排序，不调用它，但查询仍要嵌入服务；
+- 不建索引（上游启动时会建）：核对 Graphiti 要的索引在恢复出的库中都在线，缺一个即不启动。
 """
 
+import argparse
 import logging
+import re
 import os
 import sys
 from pathlib import Path
@@ -97,6 +107,54 @@ def episode_result(episode: EpisodicNode) -> dict:
         "group_id": episode.group_id,
     }
 
+
+READ_ONLY_HIDDEN = ("add_memory", "add_triplet", "delete_episode", "delete_entity_edge", "build_communities",
+                    "summarize_saga")  # fmt: skip
+BLOCKED = "llm blocked (read-only)"
+INDEX_NAME = re.compile(r"INDEX (\w+) IF NOT EXISTS")
+
+
+def read_only() -> None:
+    """读者模式：撤掉写入工具，拦下内部 LLM，启动时只核对索引不建索引。"""
+    from graphiti_core.driver.driver import GraphProvider
+    from graphiti_core.graph_queries import get_fulltext_indices, get_range_indices
+    from graphiti_core.graphiti import Graphiti
+    from openai.resources.responses import AsyncResponses
+
+    for name in READ_ONLY_HIDDEN:
+        server.mcp.remove_tool(name)
+
+    def blocked(name: str):
+        # 同步函数，调用时就记下并报错：stream() 是同步返回异步上下文管理器的（async with），create() 被 SDK
+        # 包成同步返回协程的；同步抛出对 await f() 与 async with f() 两种用法都在调用处生效
+        def call(self, *args, **kwargs):
+            usage_log.error("%s: %s", BLOCKED, name)
+            raise RuntimeError(f"read-only Graphiti service: the internal LLM call {name} is blocked")
+
+        return call
+
+    for cls, prefix in ((AsyncCompletions, "chat.completions"), (AsyncResponses, "responses")):
+        for method in ("create", "parse", "stream"):
+            setattr(cls, method, blocked(f"{prefix}.{method}"))
+
+    async def check_indices(self, delete_existing: bool = False) -> None:
+        queries = get_range_indices(GraphProvider.NEO4J) + get_fulltext_indices(GraphProvider.NEO4J)
+        expected = sorted({n for q in queries for n in INDEX_NAME.findall(q)})
+        records, _, _ = await self.driver.execute_query("SHOW INDEXES YIELD name, state")
+        state = {r["name"]: r["state"] for r in records}
+        if bad := [n for n in expected if state.get(n) != "ONLINE"]:
+            raise RuntimeError(f"read-only: indexes missing or not online in the restored store: {bad}")
+        usage_log.info("read-only: %d indexes online, none built", len(expected))
+
+    Graphiti.build_indices_and_constraints = check_indices
+
+
 if __name__ == "__main__":
-    sys.argv = [sys.argv[0], "--config", str(HERE / "config.yaml")]
+    parser = argparse.ArgumentParser(description="A4 的 Graphiti MCP 服务")
+    parser.add_argument("--config", type=Path, default=HERE / "config.yaml", help="缺省为写者的配置")
+    parser.add_argument("--read-only", action="store_true", help="读者模式（读者运行器启动）")
+    args = parser.parse_args()
+    if args.read_only:
+        read_only()
+    sys.argv = [sys.argv[0], "--config", str(args.config)]
     server.main()

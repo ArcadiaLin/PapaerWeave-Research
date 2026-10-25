@@ -476,8 +476,13 @@ def version(config: dict[str, Any], run: Path, arm: str) -> str | None:
         return _git(shared_repo(run), "rev-parse", "refs/heads/main").strip()
     settle(config)
     spec = config["arms"]["A4"]
-    with export.driver(spec["neo4j"]) as d:
-        rows = d.execute_query(A4_CONTENT, g=spec["group_id"]).records
+    return a4_fingerprint(spec["neo4j"], spec["group_id"])
+
+
+def a4_fingerprint(uri: str, group: str) -> str:
+    """A4 的内容指纹（:func:`version`），不等 Graphiti：读者库没有写者在写。"""
+    with export.driver(uri) as d:
+        rows = d.execute_query(A4_CONTENT, g=group).records
     content = sorted(json.dumps([r["what"], r["id"], sorted(r["kind"]) if r["what"] == "node" else r["kind"],
                                  sorted(r["props"])], default=str) for r in rows)  # fmt: skip
     nodes = sum(r["what"] == "node" for r in rows)

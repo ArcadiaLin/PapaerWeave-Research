@@ -30,13 +30,22 @@
 只有 ``main`` 一个引用，对象库恰好是检查点可达的对象，之后的提交取不到，提交列表、Git 树与工作树同快照；原文目录
 只有检查点上开放的来源（与放行名单同一推导）。读者配置中 A0 不能写任何库的设置。证据服务之外没有 MCP 服务。
 
-A3、A2、A0 已实现；A4 的放行名单与读者库待做（f3 设计 §6.3），没有在读者配置中声明的组一律拒绝。
+**A4**（10-25 用户定）：检查点备份载入读者专用容器（同 A3、A2，只有 ``neo4j.dump`` 与 ``sources.tar.gz``），整库恢复，
+``cats`` 等其他组照样在库里（读者显式传 ``group_ids`` 仍可能检索到，这是 Graphiti 的原生行为，不另封锁；放行名单
+只收 ``formal``，其他组中的引用不因此能经 ``read_evidence`` 读）。读者配置中 A4 另写读者服务的地址与 Graphiti 的环境
+（:data:`A4_SERVICE`），地址不能是写者的。每个检查点由运行器启动只连读者库的 Graphiti 服务（:func:`graphiti_service`，
+``serve.py --read-only``），作答结束即停。核对（:func:`verify_a4`，服务启动前与停下后）：``formal`` 的指纹与导出同
+快照，全库指纹（含其他组与向量）与载入时相同，向量与索引齐全；服务停下后核对它没有调用、也没有尝试调用内部 LLM
+（:func:`check_service_log`）。读者的 ``/work`` 中放写者的说明 ``AGENTS.md``，原文照给（10-23 用户定）。
+
+没有在读者配置中声明的组一律拒绝。
 """
 
 from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -44,6 +53,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import time
 from collections import Counter
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -57,7 +67,7 @@ import yaml
 
 from ..protocol import allowlist
 from . import export
-from .mcp_client import Client
+from .mcp_client import Client, HttpClient
 from .refs import reader_prompt
 from .sandbox import (
     GRAPH,
@@ -71,13 +81,17 @@ from .sandbox import (
     run_session,
 )
 from .timeline import (
+    A4_KIT,
     BACKUP_DB,
     GROUPS,
     _docker,
     _locked,
     _record_invocation,
     _sha256,
+    _write_atomic,
     _wait_store,
+    a4_conventions,
+    a4_fingerprint,
     answered,
     answers_file,
     append_jsonl,
@@ -107,7 +121,17 @@ TOOLS = {
 }
 HIDDEN = ("read_evidence",)  # A3、A2：PAPERWEAVE_HIDE_TOOLS；commit 由 PAPERWEAVE_READ_ONLY 去掉
 A0_TOOLS = {"Evidence": {"read_evidence"}}  # A0：没有库的服务，仓库就是 /work（pi 自带的工具），原文只经证据服务
-ARMS = (*GRAPH, "A0")
+# A4：Graphiti 的读者服务（serve.py --read-only）只列只读的工具，写入与删除的六个不列出（timeline.A4_WRITE_TOOLS）
+A4_TOOLS = {
+    "Graphiti": {"search_nodes", "search_memory_facts", "get_episodes", "get_episodes_by_uuid", "get_episode_entities",
+                 "get_entity_edge", "get_status"},
+    "Evidence": {"read_evidence"},
+}  # fmt: skip
+A4_SERVICE = ("graphiti", "graphiti_python", "graphiti_src")  # 读者配置中 A4 另要写明的：读者服务的地址与 Graphiti 的环境
+A4_BLOCKED = "llm blocked (read-only)"  # serve.py 读者模式拦下内部 LLM 时记的行（serve.BLOCKED）
+A4_USAGE = "llm usage prompt="  # serve.py 内部 LLM 每次成功返回记的行
+A4_INDEXES = re.compile(r"read-only: (\d+) indexes online, none built")
+ARMS = (*GRAPH, "A0", "A4")
 # A0 读者仓库建好后删掉的 git 记录：FETCH_HEAD 与引用日志写着共享仓库的宿主机路径与标签名
 A0_LEFTOVERS = ("FETCH_HEAD", "ORIG_HEAD", "logs")
 # 读者仓库中不能有的：引用日志、取库记录、浅克隆与借用对象库（alternates 会让共享仓库的对象可达）
@@ -139,6 +163,12 @@ def load(path: Path) -> dict[str, Any]:
             raise SystemExit(f"{path}: the readers of {arm} need their own store ({', '.join(missing)} missing)")
         if used := sorted({spec["neo4j"], spec["neo4j_container"]} & taken):
             raise SystemExit(f"{path}: the readers of {arm} must not use a writers' store ({', '.join(used)})")
+        if arm == "A4":  # 读者另起自己的 Graphiti 服务（:func:`graphiti_service`），不连写者的
+            if missing := [k for k in A4_SERVICE if not spec.get(k)]:
+                raise SystemExit(f"{path}: the readers of A4 need their own Graphiti service ({', '.join(missing)} missing)")
+            if spec["graphiti"] == config["arms"]["A4"].get("graphiti"):
+                raise SystemExit(f"{path}: the readers of A4 must not use the writers' Graphiti ({spec['graphiti']})")
+            spec = spec | {k: str(Path(spec[k]).expanduser()) for k in ("graphiti_python", "graphiti_src")}
         arms[arm] = config["arms"][arm] | spec | {"llm": readers["llm"]}
     config["arms"] = arms
     config["runner"] = config["runner"] | (readers.get("runner") or {})
@@ -220,7 +250,11 @@ def allowlist_of(run: Path, arm: str, papers: int) -> Path:
 
 
 def restore(config: dict[str, Any], run: Path, out: Path, arm: str, papers: int) -> dict[str, Any]:
-    """把检查点备份恢复到读者库与 ``<输出>/<组>/readers/k<篇数>/``；返回备份的 meta。"""
+    """把检查点备份恢复到读者库与 ``<输出>/<组>/readers/k<篇数>/``；返回备份的 meta。
+
+    A4：载入后、读者的 Graphiti 服务启动前，记下全库（含 ``cats`` 等其他组与向量）的指纹（:func:`store_digest`），
+    写进 ``restored.yml``；之后每次核对（:func:`verify_a4`，作答前后）都与它相同。已载入时也要全库指纹仍与记录相同，
+    否则重载。"""
     backup = run / "backups" / arm / f"k{papers}"
     meta = yaml.safe_load((backup / "meta.yml").read_text(encoding="utf-8"))
     if (meta["arm"], meta["papers"]) != (arm, papers):
@@ -237,17 +271,28 @@ def restore(config: dict[str, Any], run: Path, out: Path, arm: str, papers: int)
     want = {"run": str(run), "arm": arm, "papers": papers, "version": meta["version"],
             "dump_sha256": meta["sha256"]["neo4j.dump"]}  # fmt: skip
     loaded = yaml.safe_load(marker.read_text(encoding="utf-8")) if marker.exists() else None
-    if loaded != want or _head(config, run, arm) != meta["version"]:
+    if arm == "A4":
+        fresh = (isinstance(loaded, dict) and {k: v for k, v in loaded.items() if k != "store_sha256"} == want
+                 and _head(config, run, arm) == meta["version"]
+                 and store_digest(config["arms"][arm]["neo4j"]) == loaded.get("store_sha256"))  # fmt: skip
+    else:
+        fresh = loaded == want and _head(config, run, arm) == meta["version"]
+    if not fresh:
         emit("RESTORE", arm, k=papers, container=container, version=meta["version"])
         marker.unlink(missing_ok=True)
         _docker("stop", container)
         _docker("run", "--rm", "-v", f"{data_dir}:/data", "-v", f"{backup}:/backups", image_id,
                 "neo4j-admin", "database", "load", BACKUP_DB, "--from-path=/backups", "--overwrite-destination=true")  # fmt: skip
         _docker("start", container)
-        _wait_store(config, run, arm)
+        _wait_head(config, run, arm)
+        if arm == "A4":
+            want = want | {"store_sha256": store_digest(config["arms"][arm]["neo4j"])}
         marker.write_text(yaml.safe_dump(want, sort_keys=False), encoding="utf-8")
     where = reader_dir(out, arm, papers)
-    for name, part in (("data.tar.gz", "data"), ("sources.tar.gz", "sources")):
+    for name in backup_files(arm):
+        if not name.endswith(".tar.gz"):
+            continue
+        part = name.removesuffix(".tar.gz")  # A3、A2：data 与 sources；A4：只有 sources
         if not (where / part).exists():
             partial = where / f"{part}.partial"
             shutil.rmtree(partial, ignore_errors=True)
@@ -261,9 +306,48 @@ def restore(config: dict[str, Any], run: Path, out: Path, arm: str, papers: int)
 
 def _head(config: dict[str, Any], run: Path, arm: str) -> str | None:
     try:
-        return version(config, run, arm)
+        return store_head(config, run, arm)
     except Exception:  # 容器停着或库未就绪：按未恢复处理
         return None
+
+
+def store_head(config: dict[str, Any], run: Path, arm: str) -> str:
+    """读者库的版本。A4 直接读内容指纹：``timeline.version`` 先等写者的 Graphiti 日志安静，读者库与它无关。"""
+    if arm == "A4":
+        spec = config["arms"]["A4"]
+        return a4_fingerprint(spec["neo4j"], spec["group_id"])
+    return version(config, run, arm)
+
+
+def _wait_head(config: dict[str, Any], run: Path, arm: str) -> None:
+    if arm != "A4":
+        _wait_store(config, run, arm)
+        return
+    deadline = time.monotonic() + 180
+    while True:
+        try:
+            store_head(config, run, arm)
+            return
+        except Exception:  # 容器刚启动：连接被拒或库尚未就绪
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(2)
+
+
+def store_digest(uri: str) -> str:
+    """整个库（各组、各标签，含向量）的指纹：每个节点（标签与全部属性）、每条边（类型、两端的 uuid 与全部属性）各
+    写成一行 JSON 取 sha256，排序后再取 sha256。逐行流式读取，不把全部向量装进内存。"""
+    rows = []
+    with export.driver(uri) as d, d.session() as session:
+        for r in session.run("MATCH (n) RETURN labels(n) AS labels, properties(n) AS props"):
+            rows.append(_row_digest(["node", sorted(r["labels"]), r["props"]]))
+        for r in session.run("MATCH (a)-[e]->(b) RETURN type(e) AS type, a.uuid AS a, b.uuid AS b, properties(e) AS props"):
+            rows.append(_row_digest(["edge", r["type"], r["a"], r["b"], r["props"]]))
+    return hashlib.sha256("".join(sorted(rows)).encode()).hexdigest()
+
+
+def _row_digest(row: list[Any]) -> str:
+    return hashlib.sha256(json.dumps(row, sort_keys=True, default=str).encode()).hexdigest()
 
 
 def verify(config: dict[str, Any], run: Path, out: Path, arm: str, papers: int, meta: dict[str, Any]) -> dict[str, Any]:
@@ -307,6 +391,133 @@ def verify(config: dict[str, Any], run: Path, out: Path, arm: str, papers: int, 
     return {"version": head, "counts": got["counts"], "vectors": vectors, "sources": len(digests)}
 
 
+def verify_a4(config: dict[str, Any], run: Path, out: Path, papers: int, meta: dict[str, Any]) -> dict[str, Any]:
+    """A4 的读者库与原文目录仍是检查点的，作答前后各一次（读者服务启动前、停下后）：
+
+    - ``formal`` 组的内容指纹是备份的版本；导出（:func:`pweval.harness.export.export_graphiti`，按组、去掉向量）的
+      ``graph.jsonl`` 与检查点快照逐字节相同，计数相同；
+    - 全库指纹（各组、含向量，:func:`store_digest`）与载入时记下的相同（``restored.yml``）；
+    - 向量：每个实体都有 ``name_embedding``、每条事实（``RELATES_TO``）都有 ``fact_embedding``，维度都是 Graphiti 配置的
+      嵌入维度；整个库，不只 ``formal``；
+    - 索引都在线（Graphiti 要的那些另由读者服务启动时核对，:func:`graphiti_service`）；
+    - 原文目录恰好是开放的来源，哈希相同。"""
+    spec = config["arms"]["A4"]
+    uri, where = spec["neo4j"], reader_dir(out, "A4", papers)
+    if (head := a4_fingerprint(uri, spec["group_id"])) != meta["version"]:
+        raise RuntimeError(f"A4 readers' store is at {head}, not at checkpoint {papers} ({meta['version']})")
+    snap = run / "snapshots/A4" / f"k{papers}"
+    check = where / "verify"
+    shutil.rmtree(check, ignore_errors=True)
+    try:
+        got = export.export_graphiti(uri, spec["group_id"], check)
+        expected = yaml.safe_load((snap / "meta.yml").read_text(encoding="utf-8"))
+        if got["counts"] != expected["counts"]:
+            raise RuntimeError(f"A4 k{papers}: readers' store {got['counts']} differs from the snapshot {expected['counts']}")
+        if _sha256(check / "graph.jsonl") != _sha256(snap / "graph.jsonl"):
+            raise RuntimeError(f"A4 k{papers}: graph.jsonl of the readers' store differs from the snapshot")
+    finally:
+        shutil.rmtree(check, ignore_errors=True)
+    marker = guard(config, "A4").parent / "restored.yml"  # type: ignore[union-attr]
+    recorded = (yaml.safe_load(marker.read_text(encoding="utf-8")) or {}).get("store_sha256") if marker.exists() else None
+    if (whole := store_digest(uri)) != recorded:
+        raise RuntimeError(f"A4 k{papers}: the whole readers' store changed since it was loaded ({recorded} → {whole})")
+    dims = yaml.safe_load((A4_KIT / "config.yaml").read_text(encoding="utf-8"))["embedder"]["dimensions"]
+    with export.driver(uri) as d:
+        rows = {kind: dict(d.execute_query(query).records[0]) for kind, query in (
+            ("entities", "MATCH (n:Entity) RETURN count(n) AS all, count(n.name_embedding) AS vec, "
+                         "collect(DISTINCT size(n.name_embedding)) AS dims"),
+            ("facts", "MATCH ()-[e:RELATES_TO]->() RETURN count(e) AS all, count(e.fact_embedding) AS vec, "
+                      "collect(DISTINCT size(e.fact_embedding)) AS dims"),
+        )}  # fmt: skip
+        indexes = {r["name"]: r["state"] for r in d.execute_query("SHOW INDEXES YIELD name, state").records}
+    if any(r["all"] != r["vec"] or r["dims"] not in ([dims], []) for r in rows.values()):
+        raise RuntimeError(f"A4 k{papers}: vectors are missing or not {dims}-dimensional: {rows}")
+    if not indexes or (offline := sorted(n for n, state in indexes.items() if state != "ONLINE")):
+        raise RuntimeError(f"A4 k{papers}: indexes not online: {offline if indexes else 'none'}")
+    found = sorted(p.name for p in (where / "sources").iterdir() if p.is_dir())
+    digests = {s: source_digest(where / "sources", s) for s in found}
+    if digests != meta["sources"]:
+        raise RuntimeError(f"A4 k{papers}: restored sources differ from the backup")
+    return {"version": head, "counts": got["counts"], "store_sha256": whole, "vectors": rows, "indexes": len(indexes),
+            "sources": len(digests)}  # fmt: skip
+
+
+@contextmanager
+def graphiti_service(config: dict[str, Any], out: Path, papers: int, service: dict[str, Any]) -> Iterator[None]:
+    """A4 读者的 Graphiti 服务：本检查点内由运行器启动、结束时停下，只连读者库。
+
+    配置是写者的 ``eval/baselines/a4/config.yaml`` 换了服务的地址与库（``<输出>/A4/readers/k<篇数>/graphiti/``，日志
+    ``serve.log`` 同目录），实体类型、嵌入与内部 LLM 的设置不变；以 ``serve.py --read-only`` 启动（不列写入工具，拦下
+    内部 LLM，不建索引而核对索引在线）。启动前这个地址不能已有服务在答；启动后要它经自己的连接查得到库
+    （``get_status``），日志中有索引核对通过的一行。``service`` 是启动前取的日志位置（:func:`service_log`），
+    启动后记入进程号；无论这里成败，运行器都用它核对内部 LLM 没被调用（:func:`check_service_log`）。"""
+    spec = config["arms"]["A4"]
+    url, where = urlsplit(spec["graphiti"]), reader_dir(out, "A4", papers) / "graphiti"
+    where.mkdir(parents=True, exist_ok=True)
+    kit = yaml.safe_load((A4_KIT / "config.yaml").read_text(encoding="utf-8"))
+    kit["server"] |= {"host": url.hostname, "port": url.port}
+    kit["database"]["providers"]["neo4j"]["uri"] = spec["neo4j"]
+    (where / "config.yaml").write_text(yaml.safe_dump(kit, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    if _answers(spec["graphiti"]):
+        raise RuntimeError(f"something already serves {spec['graphiti']}; stop it before the A4 readers start theirs")
+    log, start = service["log"], service["from"]
+    command = [spec["graphiti_python"], "-I", str(A4_KIT / "serve.py"), "--read-only", "--config", str(where / "config.yaml")]
+    with open(log, "ab") as handle:
+        proc = subprocess.Popen(command, env=os.environ | {"GRAPHITI_SRC": spec["graphiti_src"]}, stdout=handle,
+                                stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)  # fmt: skip
+    try:
+        deadline = time.monotonic() + 180
+        while not _answers(spec["graphiti"], status=True):
+            if proc.poll() is not None or time.monotonic() > deadline:
+                raise RuntimeError(f"the A4 readers' Graphiti did not come up (exit {proc.poll()}): "
+                                   f"{_tail(log, start)}")  # fmt: skip
+            time.sleep(2)
+        if not (m := A4_INDEXES.search(_tail(log, start, None))):
+            raise RuntimeError(f"the A4 readers' Graphiti did not report its index check: {_tail(log, start)}")
+        emit("GRAPHITI", "A4", k=papers, url=spec["graphiti"], pid=proc.pid, indexes=m[1])
+        service["pid"] = proc.pid
+        yield
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+
+
+def service_log(out: Path, papers: int) -> dict[str, Any]:
+    """A4 读者服务的日志与本次启动前的长度（:func:`graphiti_service`、:func:`check_service_log`）。"""
+    log = reader_dir(out, "A4", papers) / "graphiti" / "serve.log"
+    return {"log": log, "from": log.stat().st_size if log.exists() else 0}
+
+
+def _answers(url: str, status: bool = False) -> bool:
+    """这个地址上有 MCP 服务在答（``status`` 时要 ``get_status`` 报告连得上库）。"""
+    try:
+        with HttpClient(url, timeout_s=10) as client:
+            return json.loads(client.call("get_status", {})).get("status") == "ok" if status else True
+    except Exception:  # 连不上、还没起来、或答复不是预期的格式
+        return False
+
+
+def _tail(log: Path, start: int, limit: int | None = 2000) -> str:
+    with log.open("rb") as f:
+        f.seek(start)
+        text = f.read().decode("utf-8", errors="replace")
+    return text if limit is None else text[-limit:]
+
+
+def check_service_log(service: dict[str, Any], papers: int) -> dict[str, int]:
+    """读者服务在本次启动后的日志：内部 LLM 没有被调用，也没有被尝试调用（serve.py 只为成功返回且带用量的请求记
+    ``llm usage``，所以另数被拦下的 ``llm blocked``）。不为零即停。"""
+    text = _tail(service["log"], service["from"], None) if service["log"].exists() else ""
+    counts = {"blocked": text.count(A4_BLOCKED), "usage": text.count(A4_USAGE)}
+    if any(counts.values()):
+        raise RuntimeError(f"A4 k{papers}: the readers' Graphiti called its internal LLM: {counts}")
+    return counts
+
+
 def _tree(root: Path) -> dict[str, str]:
     return {str(p.relative_to(root)): _sha256(p) for p in sorted(root.rglob("*")) if p.is_file()} if root.exists() else {}
 
@@ -329,9 +540,9 @@ def check_allowlist(run: Path, arm: str, papers: int, meta: dict[str, Any]) -> s
 def check_tools(config: dict[str, Any], run: Path, out: Path, arm: str, papers: int,
                 reader: Writer) -> dict[str, list[str]]:  # fmt: skip
     """读者会话登记的 MCP 服务（``prepare`` 写下的 ``mcp.json``）正是预期的那几个，再以会话的同一命令与环境启动
-    它们，取实际列出的工具；与 :data:`TOOLS`（A3、A2）或 :data:`A0_TOOLS`（A0：只有证据服务，没有来源服务与库的
-    服务）不同即停。"""
-    expected = A0_TOOLS if arm == "A0" else TOOLS
+    它们，取实际列出的工具；与 :data:`TOOLS`（A3、A2）、:data:`A0_TOOLS`（A0：只有证据服务，没有来源服务与库的
+    服务）或 :data:`A4_TOOLS`（A4：读者的 Graphiti 服务经 HTTP 列出的）不同即停。"""
+    expected = A0_TOOLS if arm == "A0" else A4_TOOLS if arm == "A4" else TOOLS
     paths = Paths(reader_dir(out, arm, papers) / "tools-check")
     shutil.rmtree(paths.root, ignore_errors=True)
     paths.work.mkdir(parents=True)
@@ -348,6 +559,9 @@ def check_tools(config: dict[str, Any], run: Path, out: Path, arm: str, papers: 
         for name, command in sorted(commands.items(), reverse=True):
             with Client(command, dict(os.environ)) as client:  # 会话中的服务同样继承运行器的环境（命令中另给）
                 found[name] = sorted(client.tools())
+        if "Graphiti" in expected:
+            with HttpClient(config["arms"]["A4"]["graphiti"], timeout_s=30) as client:
+                found["Graphiti"] = sorted(client.tools())
     finally:
         shutil.rmtree(paths.root, ignore_errors=True)
     if {k: set(v) for k, v in found.items()} != expected:
@@ -452,7 +666,7 @@ def verify_a0(run: Path, out: Path, papers: int, meta: dict[str, Any]) -> dict[s
 
 def reader_arm(config: dict[str, Any], run: Path, out: Path, arm: str, papers: int, session: str) -> Arm:
     """读者的沙箱：断网，没有论文与代码目录，库只读；原文只经证据服务。A0 的 ``/work`` 是检查点的读者仓库（只读
-    挂载），没有来源服务。"""
+    挂载），没有来源服务。A4 连读者的 Graphiti 服务（断网时转发它的端口），只读由服务不列写入工具保证，pi 不另外隐藏。"""
     if arm not in ARMS:
         raise NotImplementedError(f"the offline readers of {arm} are not implemented yet (f3 design §6.3)")
     if arm not in config["arms"]:
@@ -461,6 +675,10 @@ def reader_arm(config: dict[str, Any], run: Path, out: Path, arm: str, papers: i
     evidence = ReadEvidence(allowlist_of(run, arm, papers), where / "sources", session)
     if arm == "A0":
         return Arm("A0", None, store=a0_store(out, papers), read_only=True, isolated_llm=config["llm"], evidence=evidence)
+    if arm == "A4":
+        url = urlsplit(spec["graphiti"])
+        return Arm("A4", None, graphiti=spec["graphiti"], read_only=True, isolated_llm=config["llm"],
+                   isolated_tcp=(f"{url.hostname}:{url.port}",), evidence=evidence)  # fmt: skip
     return Arm(arm, None, neo4j=spec["neo4j"], data=where / "data", read_only=True, hide_tools=HIDDEN,
                ablate=tuple(spec.get("ablate") or ()), isolated_llm=config["llm"], sources=where / "sources",
                evidence=evidence)  # fmt: skip
@@ -490,6 +708,8 @@ def answer(config: dict[str, Any], tools: str, run: Path, out: Path, arm: str, p
     box = reader_arm(config, run, out, arm, papers, probe["id"])
     runner = config["runner"]
     _prepare(config, paths, box)
+    if arm == "A4":
+        a4_conventions(paths)  # 读者也看到写者的说明，原文照给（10-23 用户定），与 A0 读者在仓库中看到约定对等
     text = reader_prompt(arm, probe, tools=tools)
     started = datetime.now(UTC).isoformat(timespec="seconds")
     result = run_session(paths, box, reader, text, timeout_s=runner["probe_timeout_min"] * 60,
@@ -562,12 +782,130 @@ def _run_readers(config: dict[str, Any], run: Path, out: Path, arm: str, papers:
         build_a0(run, out, papers, meta)
         checked = verify_a0(run, out, papers, meta)
         counts = {k: checked[k] for k in ("commits", "files", "objects", "later_absent")}
+    elif arm == "A4":
+        meta = restore(config, run, out, arm, papers)
+        checked = verify_a4(config, run, out, papers, meta)
+        counts = {**checked["counts"], "store": checked["store_sha256"][:12]}
     else:
         meta = restore(config, run, out, arm, papers)
         checked = verify(config, run, out, arm, papers, meta)
         counts = {k: checked["counts"][k] for k in ("nodes", "edges", "documents")}
+    quarantine(out, arm, papers)
     digest = check_allowlist(run, arm, papers, meta)
     check_answers(out, arm, papers, meta["version"], digest)
+    invocation = None if check_only else start_answering(out, arm, papers)
+    service = service_log(out, papers) if arm == "A4" else None
+    try:
+        if arm != "A4":
+            _ready_and_answer(config, timeline, run, out, arm, papers, groups, only, check_only, reader, meta, digest,
+                              checked, counts, invocation)  # fmt: skip
+        else:  # 读者的 Graphiti 服务只在作答期间运行；停下后核对它没调用内部 LLM，库没有变
+            with graphiti_service(config, out, papers, service):  # type: ignore[arg-type]
+                _ready_and_answer(config, timeline, run, out, arm, papers, groups, only, check_only, reader, meta,
+                                  digest, checked, counts, invocation)  # fmt: skip
+    except BaseException as exc:  # 作答中途失败或被中断：服务已停，照样做完结束核验，再把它抛出
+        failure: BaseException | None = exc
+    else:
+        failure = None
+    if check_only and arm != "A4":  # A4 的读者服务起停过一次：只核对时也再核对库没有变
+        if failure is not None:
+            raise failure
+        return
+    problems = final_checks(config, run, out, arm, papers, meta, service)
+    if invocation is not None:
+        finish_answering(out, arm, papers, invocation, problems)
+    if problems:
+        raise RuntimeError(f"{arm} k{papers}: the final verification failed; the answers of this run are kept apart "
+                           f"on the next run: {'; '.join(problems)}") from failure  # fmt: skip
+    if failure is not None:  # 核验通过：已存的回答有效，续跑跳过它们
+        raise failure
+    if not check_only:
+        emit("DONE", arm, k=papers)
+
+
+def final_checks(config: dict[str, Any], run: Path, out: Path, arm: str, papers: int, meta: dict[str, Any],
+                 service: dict[str, Any] | None) -> list[str]:  # fmt: skip
+    """结束核验（作答成败都做）：A4 读者服务没有调用内部 LLM（:func:`check_service_log`），库与原文仍是检查点的
+    （:func:`verify`、:func:`verify_a0`、:func:`verify_a4`）。每项都做，一项失败不跳过其余；返回失败的说明。"""
+    checks: list[tuple[str, Any]] = []
+    if service is not None:
+        checks.append(("service log", lambda: emit("GRAPHITI", arm, k=papers, stopped=service.get("pid"),
+                                                    **check_service_log(service, papers))))  # fmt: skip
+    if arm == "A0":
+        checks.append(("store", lambda: verify_a0(run, out, papers, meta)))
+    elif arm == "A4":
+        checks.append(("store", lambda: verify_a4(config, run, out, papers, meta)))
+    else:
+        checks.append(("store", lambda: verify(config, run, out, arm, papers, meta)))
+    problems = []
+    for name, check in checks:
+        try:
+            check()
+        except Exception as exc:
+            problems.append(f"{name}: {exc}")
+    return problems
+
+
+# 作答期间的标记：作答前写下本次运行的标识（每条回答也记它），结束核验通过才删；核验失败或进程中途被杀，标记
+# 留下，下次运行开始时把这次运行的回答移出回答文件（:func:`quarantine`），这些题重新作答
+UNVERIFIED = "unverified.yml"
+
+
+def start_answering(out: Path, arm: str, papers: int) -> str:
+    invocation = f"{datetime.now(UTC).isoformat(timespec='microseconds')}/{os.getpid()}"
+    marker = reader_dir(out, arm, papers) / UNVERIFIED
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    _write_atomic(marker, yaml.safe_dump({"invocation": invocation}, sort_keys=False))
+    return invocation
+
+
+def finish_answering(out: Path, arm: str, papers: int, invocation: str, problems: list[str]) -> None:
+    marker = reader_dir(out, arm, papers) / UNVERIFIED
+    if problems:
+        _write_atomic(marker, yaml.safe_dump({"invocation": invocation, "failed": problems}, sort_keys=False,
+                                             allow_unicode=True))  # fmt: skip
+        emit("UNVERIFIED", arm, k=papers, invocation=invocation)
+    else:
+        marker.unlink()
+        emit("VERIFIED", arm, k=papers, invocation=invocation)
+
+
+def quarantine(out: Path, arm: str, papers: int) -> None:
+    """上一次运行没通过结束核验（或没做完它）：它写下的回答原样移到 ``<读者目录>/unverified/`` 下同名的文件中备查，
+    回答文件中只留其余的；这些题在本次重新作答。没有运行标识的旧回答不动。"""
+    marker = reader_dir(out, arm, papers) / UNVERIFIED
+    if not marker.exists():
+        return
+    left = yaml.safe_load(marker.read_text(encoding="utf-8"))
+    moved = {}
+    for group in GROUPS:
+        path = answers_file(out, arm, papers, group)
+        read_jsonl(path)  # 先修好被截断的末行
+        if not path.exists():
+            continue
+        lines = path.read_bytes().split(b"\n")[:-1]
+        mine = [json.loads(line).get("invocation") == left["invocation"] for line in lines]
+        bad, kept = [x for x, m in zip(lines, mine) if m], [x for x, m in zip(lines, mine) if not m]
+        if not bad:
+            continue
+        aside = reader_dir(out, arm, papers) / "unverified" / path.name
+        aside.parent.mkdir(parents=True, exist_ok=True)
+        with open(aside, "ab") as f:
+            f.write(b"".join(line + b"\n" for line in bad))
+            f.flush()
+            os.fsync(f.fileno())
+        with _locked(path):
+            _write_atomic(path, b"".join(line + b"\n" for line in kept).decode())
+        moved[group] = len(bad)
+    marker.unlink()
+    emit("QUARANTINE", arm, k=papers, invocation=left["invocation"], moved=moved or 0,
+         reason="; ".join(left.get("failed") or ["the run ended before its final verification"]))  # fmt: skip
+
+
+def _ready_and_answer(config: dict[str, Any], timeline: Any, run: Path, out: Path, arm: str, papers: int,
+                      groups: Sequence[str], only: set[str] | None, check_only: bool, reader: Writer,
+                      meta: dict[str, Any], digest: str, checked: dict[str, Any], counts: dict[str, Any],
+                      invocation: str | None) -> None:  # fmt: skip
     tools = check_tools(config, run, out, arm, papers, reader)
     emit("READY", arm, k=papers, version=checked["version"], **counts, sources=checked["sources"],
          allowlist=digest[:12], tools=",".join(t for v in tools.values() for t in v))  # fmt: skip
@@ -583,7 +921,7 @@ def _run_readers(config: dict[str, Any], run: Path, out: Path, arm: str, papers:
 
         def ask(probe: dict[str, Any], group: str = group, path: Path = path) -> None:
             record = answer(config, sentence, run, out, arm, papers, group, probe, reader)
-            record |= {"version": meta["version"], "allowlist_sha256": digest}
+            record |= {"version": meta["version"], "allowlist_sha256": digest, "invocation": invocation}
             append_jsonl(path, record)
             emit("READER", arm, k=papers, group=group, probe=probe["id"], exit=record["exit"],
                  seconds=record["seconds"], tools=sum(record["tools"].values()), chars=len(record["answer"]))  # fmt: skip
@@ -591,11 +929,6 @@ def _run_readers(config: dict[str, Any], run: Path, out: Path, arm: str, papers:
         with ThreadPoolExecutor(max_workers=config["runner"]["reader_workers"]) as pool:
             list(pool.map(ask, todo))
         emit("GROUP", arm, k=papers, group=group, answered=f"{len(answered(out, arm, papers, group))}/{len(probes)}")
-    if arm == "A0":
-        verify_a0(run, out, papers, meta)
-    else:
-        verify(config, run, out, arm, papers, meta)
-    emit("DONE", arm, k=papers)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -639,5 +972,7 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
-__all__ = ["A0_TOOLS", "TOOLS", "a0_checkpoint", "a0_store", "answer", "build_a0", "check_answers", "check_tools", "guard", "store_lock", "evidence_summary", "load", "main", "reader_arm", "restore", "run_readers",
-           "verify", "verify_a0"]
+__all__ = ["A0_TOOLS", "A4_TOOLS", "TOOLS", "a0_checkpoint", "a0_store", "answer", "build_a0", "check_answers",
+           "check_service_log", "check_tools", "graphiti_service", "guard", "store_digest", "store_head", "store_lock",
+           "evidence_summary", "load", "main", "reader_arm", "restore", "run_readers", "verify", "verify_a0",
+           "verify_a4"]  # fmt: skip
