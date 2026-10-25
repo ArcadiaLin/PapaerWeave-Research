@@ -3,8 +3,13 @@
     python -m pweval.protocol.allowlist <运行目录> --arm A3 --checkpoint 10 [--bank DIR] [--out DIR] [--force]
 
 只读检查点快照（``snapshots/<组>/k<篇数>/``）、检查点备份的 ``meta.yml``（开放的来源与哈希）、组的来源目录与题库的
-``facts/tables.csv``，不连库、不调用模型。同样的输入得到逐字节相同的输出。A3、A2（图库组）与 A0 已实现；A4 另接
-入口，后面的解析、筛选与扩块共用（:class:`Gather`）。
+``facts/tables.csv``，不连库、不调用模型。同样的输入得到逐字节相同的输出。A3、A2（图库组）、A0 与 A4 各有入口，
+后面的解析、筛选与扩块共用（:class:`Gather`）。
+
+**A4**（:func:`collect_a4`，10-25 用户定）：检查点快照中 ``formal`` 组的每个 episode 的 ``content``、``name`` 与
+``source_description``（写者经 ``add_memory`` 写下、读者经 ``get_episodes`` 原样看到），按字段分三个通道扫描；Graphiti
+抽取出的实体与事实不收。``cats`` 等其他组不在快照中，其中的引用不因此放行。``checkpoints.yml``、备份与按快照重算的
+版本指纹三者相同；开放的来源取备份的 ``meta.yml``。
 
 **A0**（:func:`collect_a0`，10-24 用户定）：共享仓库 ``A0/shared.git`` 在检查点标签及之前的每个提交写下的每个文件
 版本，正文统一按 :func:`scan` 扫描（``text`` 通道，不按 YAML 解析，没有 ``structured`` 通道），完整的提交说明（``%B``）
@@ -464,8 +469,10 @@ class Gather:
 def collect(run: Path, arm: str, papers: int, bank: Path = BANK) -> dict[str, Any]:
     if arm == "A0":
         return collect_a0(run, papers, bank)
+    if arm == "A4":
+        return collect_a4(run, papers, bank)
     if arm not in GRAPH_ARMS:
-        raise NotImplementedError(f"{arm}: only {GRAPH_ARMS} and A0 are implemented")
+        raise NotImplementedError(f"{arm}: only {GRAPH_ARMS}, A0 and A4 are implemented")
     snapshot = run / "snapshots" / arm / f"k{papers}"
     backup_meta = run / "backups" / arm / f"k{papers}" / "meta.yml"
     recorded = yaml.safe_load((run / "checkpoints.yml").read_text(encoding="utf-8"))[arm][papers]
@@ -844,6 +851,96 @@ def collect_a0(run: Path, papers: int, bank: Path = BANK) -> dict[str, Any]:
     }  # fmt: skip
 
 
+# ---------------------------------------------------------------- A4：Graphiti 的 episode
+
+A4_GROUP = "formal"  # 写者默认的 group；版本指纹、快照与名单都只看它（seq 57 写进 cats 的内容不放行，10-25 用户定）
+A4_FIELDS = ("content", "name", "source_description")  # add_memory 的三个参数，原样存进 episode，get_episodes 原样返回
+
+
+def a4_fingerprint(snapshot: Path) -> str:
+    """按快照的 ``graph.jsonl`` 重算 A4 的版本指纹，与写者运行时 :func:`pweval.harness.timeline.version` 对 Cypher 读出
+    的内容所算相同（protocol 不导入 harness，两份由测试核对一致）：节点与边去掉以 ``embedding`` 结尾的属性，逐条写成
+    ``[类, uuid, 标签或 [类型, 起, 止], 排序后的属性对]``，排序后取 sha256 的前 16 位。"""
+    content, nodes = [], 0
+    for r in read_jsonl(snapshot / "graph.jsonl"):
+        props = sorted([k, v] for k, v in r["props"].items() if not k.endswith("embedding"))
+        if "node" in r:
+            nodes += 1
+            content.append(json.dumps(["node", r["node"], sorted(r["labels"]), props], default=str))
+        else:
+            src, kind, dst = r["edge"]
+            content.append(json.dumps(["edge", r["props"].get("uuid"), [kind, src, dst], props], default=str))
+    digest = hashlib.sha256("\n".join(sorted(content)).encode()).hexdigest()[:16]
+    return f"nodes={nodes} edges={len(content) - nodes} sha256={digest}"
+
+
+def a4_episodes(snapshot: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """快照中的 episode（``Episodic`` 节点），按创建时间与 uuid 排序。核对：快照是 A4 的 ``formal`` 组，计数与
+    ``graph.jsonl`` 相同，每个节点都属于这个组，每个 episode 的三个字段都是字符串。"""
+    meta = yaml.safe_load((snapshot / "meta.yml").read_text(encoding="utf-8"))
+    if (meta.get("arm"), meta.get("group")) != ("A4", A4_GROUP):
+        raise InputError(f"snapshot is for {meta.get('arm')} group {meta.get('group')}, not A4 group {A4_GROUP}")
+    rows = read_jsonl(snapshot / "graph.jsonl")
+    nodes = [r for r in rows if "node" in r]
+    counts = {"nodes": len(nodes), "edges": len(rows) - len(nodes)}
+    if meta["counts"] != counts:
+        raise InputError(f"snapshot says {meta['counts']}, graph.jsonl has {counts}")
+    if other := sorted({r["props"].get("group_id") for r in rows} - {A4_GROUP}, key=str):
+        raise InputError(f"snapshot has rows outside group {A4_GROUP}: {other}")
+    episodes = sorted((r for r in nodes if "Episodic" in r["labels"]), key=lambda r: (r["props"]["created_at"], r["node"]))
+    for r in episodes:
+        if bad := [f for f in A4_FIELDS if not isinstance(r["props"].get(f), str)]:
+            raise InputError(f"episode {r['node']}: {bad} not a string")
+    empty = {f: sum(not r["props"][f].strip() for r in episodes) for f in A4_FIELDS}
+    return episodes, {**counts, "episodes": len(episodes), "empty_fields": empty}
+
+
+def collect_a4(run: Path, papers: int, bank: Path = BANK) -> dict[str, Any]:
+    """A4 的放行名单（10-25 用户定）：检查点快照中 ``formal`` 组仍存在的每个 episode 的 ``content``、``name`` 与
+    ``source_description``，各为一个通道，同一套扫描、校验与扩块。Graphiti 没有版本历史、删除是硬删除，只能从检查点上
+    的 episode 收集（设计 §6.3）；Graphiti 抽取出的实体与事实是它改写过的文字，不收。核对：``checkpoints.yml``、备份的
+    ``meta.yml`` 与按快照重算的指纹（:func:`a4_fingerprint`）三者相同。开放的来源取备份的 ``meta.yml``（同 A3、A2）。
+    另报告开放来源的原文逐字进入 episode 的程度（``source_text``，同 A0）。"""
+    snapshot = run / "snapshots" / "A4" / f"k{papers}"
+    backup_meta = run / "backups" / "A4" / f"k{papers}" / "meta.yml"
+    recorded = yaml.safe_load((run / "checkpoints.yml").read_text(encoding="utf-8"))["A4"][papers]
+    backup = yaml.safe_load(backup_meta.read_text(encoding="utf-8"))
+    if backup.get("arm") != "A4" or backup.get("papers") != papers:
+        raise InputError(f"backup meta is for {backup.get('arm')} k{backup.get('papers')}")
+    episodes, snap_check = a4_episodes(snapshot)
+    versions = {"checkpoints.yml": recorded, "backup": backup["version"], "snapshot": a4_fingerprint(snapshot)}
+    if len(set(versions.values())) != 1:
+        raise InputError(f"checkpoint versions disagree: {versions}")
+    opened = dict(backup["sources"])
+    gather = Gather(Sources(run / "A4" / "sources", opened), load_tables(bank))
+
+    texts = []
+    for r in episodes:
+        for field in A4_FIELDS:
+            where = {"episode": r["node"], "created_at": r["props"]["created_at"], "field": field}
+            gather.scan(where, field, r["props"][field])
+            texts.append((where, r["props"][field]))
+
+    passages, readable = gather.result()
+    inputs = {
+        "snapshot": {n: sha256_file(snapshot / n) for n in ("meta.yml", "graph.jsonl")},
+        "backup_meta": sha256_file(backup_meta),
+        "tables_csv": sha256_file(bank / "facts/tables.csv"),
+        "sources": opened,
+    }
+    return {
+        "arm": "A4", "checkpoint": papers, "version": recorded, "rule": RULE,
+        "inputs": inputs,
+        "checks": {"versions": versions, "snapshot": snap_check, "sources": "sha256 ok"},
+        "stats": _stats(gather.origins, gather.dropped, gather.mentions, readable, A4_FIELDS),
+        "source_text": source_text(texts, gather.sources),
+        "passages": dict(sorted(passages.items())),
+        "readable": dict(sorted(readable.items())),
+        "origins": gather.origins,
+        "dropped": gather.dropped,
+    }  # fmt: skip
+
+
 # ---------------------------------------------------------------- 命令行
 
 
@@ -864,7 +961,7 @@ def write(result: dict[str, Any], out: Path, force: bool = False) -> Path:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("run", type=Path, help="运行目录，如 ~/pw-lab/runs/f3")
-    parser.add_argument("--arm", required=True, choices=(*GRAPH_ARMS, "A0"))
+    parser.add_argument("--arm", required=True, choices=(*GRAPH_ARMS, "A0", "A4"))
     parser.add_argument("--checkpoint", type=int, required=True, help="检查点（篇数）：10、20 或 30")
     parser.add_argument("--bank", type=Path, default=BANK, help="题库仓库（facts/tables.csv）")
     parser.add_argument("--out", type=Path, help="输出目录，默认 <运行目录>/allowlists")
@@ -885,4 +982,5 @@ def main(argv: Sequence[str] | None = None) -> int:
 if __name__ == "__main__":
     raise SystemExit(main())
 
-__all__ = ["Gather", "InputError", "Ref", "collect", "collect_a0", "merge", "normalize", "parse", "scan", "source_text", "write"]
+__all__ = ["Gather", "InputError", "Ref", "a4_fingerprint", "collect", "collect_a0", "collect_a4", "merge", "normalize",
+           "parse", "scan", "source_text", "write"]  # fmt: skip

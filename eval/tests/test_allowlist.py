@@ -443,3 +443,127 @@ def test_a0_checkpoint_versions_must_agree(tmp_path: Path) -> None:
     _git(run / "A0/shared.git", "tag", "-f", "checkpoint-1", "checkpoint-0")
     with pytest.raises(InputError, match="disagree"):
         _collect_a0(run)
+
+
+# ---------------------------------------------------------------- A4：Graphiti 的 episode
+
+
+def _a4_rows() -> list[dict]:
+    """两个 episode（三个字段各有引用）、一个实体（摘要中的引用不收）与它们之间的边；属性与 export_graphiti 的格式相同。"""
+    ep = lambda uuid, at, content, name, desc: {  # noqa: E731
+        "node": uuid, "labels": ["Episodic"],
+        "props": {"uuid": uuid, "group_id": "formal", "created_at": at, "content": content, "name": name,
+                  "source_description": desc, "source": "text", "entity_edges": [], "valid_at": at}}  # fmt: skip
+    return [
+        ep("ep-2", "2026-10-23T19:00:00.000000000+00:00", f"Board row [{P}::4:4]; unopened [{U}::5:6]; also {S}",
+           "Leaderboard rows", f"from {Q}::3:3"),
+        ep("ep-1", "2026-10-23T18:00:00.000000000+00:00", f"Table [{P}::7:7] and code [{C}::src/model.py::20:20]",
+           f"Paper {P}::11:11", "paper added"),
+        {"node": "ent-1", "labels": ["Entity", "Method"],
+         "props": {"uuid": "ent-1", "group_id": "formal", "name": "M", "summary": f"see {P}::13:13",
+                   "name_embedding": [0.1, 0.2], "created_at": "2026-10-23T18:01:00+00:00"}},
+        {"edge": ["ep-1", "MENTIONS", "ent-1"], "props": {"uuid": "e-1", "group_id": "formal", "created_at": "t"}},
+        {"edge": ["ent-1", "RELATES_TO", "ent-1"],
+         "props": {"uuid": "e-2", "group_id": "formal", "fact": f"M beats N ({P}::13:13)", "fact_embedding": [0.3]}},
+    ]  # fmt: skip
+
+
+def _a4_run(tmp_path: Path, rows: list[dict] | None = None) -> Path:
+    run = tmp_path / "run"
+    texts = {P: PAPER_TEXT, Q: "Q\n\nq text\n", S: "S\n\ns text\n"}
+    for source, text in texts.items():
+        (run / "A4/sources" / source).mkdir(parents=True)
+        (run / "A4/sources" / source / "paper.md").write_text(text)
+    (run / "A4/sources" / C / "src").mkdir(parents=True)
+    (run / "A4/sources" / C / "src/model.py").write_text(CODE_TEXT)
+    opened = {s: hashlib.sha256(t.encode()).hexdigest() for s, t in texts.items() if s != S}  # S 检查点之后才开放
+    opened[C] = tree_sha256(run / "A4/sources" / C)
+    rows = _a4_rows() if rows is None else rows
+    snap = run / "snapshots/A4/k1"
+    snap.mkdir(parents=True)
+    (snap / "graph.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    nodes = sum("node" in r for r in rows)
+    meta = {"arm": "A4", "group": "formal", "counts": {"nodes": nodes, "edges": len(rows) - nodes}}
+    (snap / "meta.yml").write_text(yaml.safe_dump(meta))
+    version = allowlist.a4_fingerprint(snap)
+    (run / "backups/A4/k1").mkdir(parents=True)
+    (run / "backups/A4/k1/meta.yml").write_text(yaml.safe_dump({"arm": "A4", "papers": 1, "version": version,
+                                                                "sources": opened}))  # fmt: skip
+    (run / "checkpoints.yml").write_text(yaml.safe_dump({"A4": {0: "nodes=0 edges=0 sha256=0", 1: version}}))
+    (tmp_path / "bank/facts").mkdir(parents=True)
+    (tmp_path / "bank/facts/tables.csv").write_text(f"table,arxiv,first,last,number\n{P}:T6,{P},6,9,1\n")
+    return run
+
+
+def _collect_a4(run: Path) -> dict:
+    return collect(run, "A4", 1, run.parent / "bank")
+
+
+def test_a4_collects_the_three_episode_fields_not_the_extracted_graph(tmp_path: Path) -> None:
+    r = _collect_a4(_a4_run(tmp_path))
+    got = sorted((o["channel"], o["ref"], o["where"]["episode"]) for o in r["origins"])
+    assert got == sorted([("content", f"{P}::7:7", "ep-1"), ("content", f"{C}::src/model.py::20:20", "ep-1"),
+                          ("name", f"{P}::11:11", "ep-1"), ("content", f"{P}::4:4", "ep-2"),
+                          ("source_description", f"{Q}::3:3", "ep-2")])  # fmt: skip
+    # 实体摘要与事实中的 13:13 是 Graphiti 改写过的文字，不放行；表内的行扩到整表
+    assert r["readable"] == {P: [[3, 4], [6, 9], [11, 11]], Q: [[3, 3]], f"{C}::src/model.py": [[12, 28]]}
+    assert [(d["reason"], d["ref"]) for d in r["dropped"]] == [("unopened", f"{U}::5:6")]
+    assert set(r["stats"]["channels"]) == {"content", "name", "source_description"}
+    assert r["stats"]["channels"]["content"]["mentions"] == 1  # 只写来源 ID 的 S
+    assert r["checks"]["snapshot"] == {"nodes": 3, "edges": 2, "episodes": 2,
+                                       "empty_fields": {"content": 0, "name": 0, "source_description": 0}}  # fmt: skip
+    assert r["source_text"]["sources"] == {}
+
+
+def test_a4_fingerprint_matches_the_writer_runs_version(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """timeline.version 对 Cypher 读出的行所算的指纹，与按快照重算的相同（Cypher 的行由快照的行构造，同 A4_CONTENT）。"""
+    from pweval.harness import timeline
+
+    rows = _a4_rows()
+    records = []
+    for r in rows:
+        pairs = [[k, v] for k, v in r["props"].items() if not k.endswith("embedding")]
+        if "node" in r:
+            records.append({"what": "node", "id": r["node"], "kind": list(reversed(r["labels"])), "props": pairs})
+        else:
+            src, kind, dst = r["edge"]
+            records.append({"what": "edge", "id": r["props"]["uuid"], "kind": [kind, src, dst], "props": pairs[::-1]})
+
+    class Driver:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute_query(self, query, **params):
+            assert query == timeline.A4_CONTENT and params == {"g": "formal"}
+            return type("Result", (), {"records": records})()
+
+    monkeypatch.setattr(timeline, "settle", lambda config: None)
+    monkeypatch.setattr(timeline.export, "driver", lambda uri: Driver())
+    config = {"arms": {"A4": {"neo4j": "bolt://x", "group_id": "formal"}}}
+    run = _a4_run(tmp_path, rows)
+    assert timeline.version(config, run, "A4") == allowlist.a4_fingerprint(run / "snapshots/A4/k1")
+
+
+@pytest.mark.parametrize(
+    ("damage", "message"),
+    [
+        (lambda run: _edit(run / "snapshots/A4/k1/graph.jsonl", "Leaderboard rows", "Board rows"), "disagree"),
+        (lambda run: _edit(run / "backups/A4/k1/meta.yml", "version: nodes=3", "version: nodes=4"), "disagree"),
+        (lambda run: _edit(run / "snapshots/A4/k1/meta.yml", "group: formal", "group: cats"), "not A4 group"),
+        (lambda run: _edit(run / "snapshots/A4/k1/meta.yml", "nodes: 3", "nodes: 4"), "graph.jsonl has"),
+        (lambda run: _edit(run / "snapshots/A4/k1/graph.jsonl", '"group_id": "formal", "fact"', '"group_id": "cats", "fact"'),
+         "outside group"),
+        (lambda run: _edit(run / "snapshots/A4/k1/graph.jsonl", '"source_description": "paper added"',
+                           '"source_description": null'), "not a string"),
+        (lambda run: _edit(run / "A4/sources" / P / "paper.md", "Para two.", "Para 2."), "sha256"),
+        (lambda run: _edit(run / "backups/A4/k1/meta.yml", "arm: A4", "arm: A3"), "backup meta"),
+    ],
+)
+def test_a4_damaged_inputs_stop_the_collection(tmp_path: Path, damage, message: str) -> None:
+    run = _a4_run(tmp_path)
+    damage(run)
+    with pytest.raises(InputError, match=message):
+        _collect_a4(run)
