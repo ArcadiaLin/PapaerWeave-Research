@@ -33,7 +33,8 @@
 - **T1：** 两个值都对且位置对记 1；两个值都对但缺位置，或只对一个值，记 0.5；否则 0。位置对指：写出的表号就是金标准的表，
   或是同一篇中有同一组 MSE、MAE 的另一张表（``facts/cells.csv``）；写行号时按 ``facts/tables.csv`` 的行号范围找表。
 - **T3：** 回答的（方法，论文）集合与金标准相同（并列须全部列出），且值与 look-back 都对，记 1；（方法，论文）都在金标准中
-  但值或 look-back 错、或并列没列全，记 0.5；出现金标准以外的（方法，论文）记 0。
+  但值或 look-back 错、或并列没列全，记 0.5；出现金标准以外的（方法，论文）记 0。look-back 金标准是一个数时，回答中的独立
+  整数（去掉表号、图号、行号、章节号、预测长度（horizon）与来源锚点中的数）须恰好是这个数。
 - **T4、T6：** 方法集合的 F1。**T5：** 被超过的基线的 F1 与（基线，后来论文）对的 F1 各占一半。
 - **T7：** 按论文的软 F1 $2\\sum c / (|A| + |G|)$。找对的论文 $c$：来源类别对且（类别不是 cited，或所引出处也对）为 1；
   类别为 cited、出处不对为 0.5；论文未声明来源而回答把数值相同的出处（``match``）说成所引来源为 0.5；其余为 0。
@@ -161,6 +162,21 @@ def _numbers(text: str | None, pattern: str) -> list[int]:
     return [int(x) for x in re.findall(pattern, text or "", flags=re.I)]
 
 
+# 说明中的出处编号与预测长度不是 look-back："720 (Table 7 caption)"、"T=336 (line 451)"、
+# "48 (Appendix C, Table 11 … for ETTm1 horizon 24)"、锚点 "2403.17814v1::451:451"
+_REFERENCE = re.compile(
+    r"\b(?:tables?|tab\.|figures?|figs?\.|lines?|appendix|app\.|sections?|sec\.|eqs?\.|horizons?)\s*[A-Z]?\.?\d+(?:[.:\-–]\d+)*"
+    r"|§\s*\d+(?:\.\d+)*"
+    r"|\b\d{4}\.\d{4,5}(?:v\d+)?(?:::\d+(?::\d+)?)?",
+    flags=re.I,
+)
+
+
+def _lookback_numbers(text: str) -> set[str]:
+    """回答的 look-back 说法中的独立整数：去掉出处编号与预测长度，``ETTh1`` 这类名称中的数字不算。"""
+    return set(re.findall(r"\b\d+\b", _REFERENCE.sub(" ", text)))
+
+
 def _has_pair(tables: Tables, table: str, mse: float, mae: float) -> bool:
     """表中某一列在同一数据集、预测长度下同时有这组 MSE 与 MAE。"""
     seen: dict[tuple[str, str, str], set[str]] = defaultdict(set)
@@ -213,7 +229,7 @@ def t3(probe: dict[str, Any], a: dict[str, Any], ask: Ask, tables: Tables) -> fl
     stated = [r["lookback"].strip() for _, _, r in rows]
     gold_lookback = str(g["lookback"]).strip()
     if re.fullmatch(r"\d+", gold_lookback):
-        right = all(set(re.findall(r"\d+", s)) == {gold_lookback} for s in stated)  # 同一个数写两次不算错
+        right = all(_lookback_numbers(s) == {gold_lookback} for s in stated)  # 同一个数写两次不算错
     elif all(s.lower() == gold_lookback.lower() for s in stated):
         right = True
     else:

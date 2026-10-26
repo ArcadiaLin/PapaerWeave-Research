@@ -89,6 +89,10 @@ def test_t3_ties_values_and_lookback() -> None:
     repeated = ["SCINet | 2106.09305 | 0.370 | 336 (input length T = 336)", both[1]]
     assert score(probe, fa(*repeated))["score"] == 1.0  # 同一个数写两次不算错
     assert score(probe, fa("SCINet | 2106.09305 | 0.370 | 336 (searched in 96, 336)", both[1]))["score"] == 0.5
+    for noted in ('336 (fixed; Table 7 caption: "fixed at 336")', "T=336 (line 451)", "336 (Appendix C, Table 11)",
+                  "336 [2106.09305v3::451:451]", "336 for ETTh1 (Sec. 4.1)", "336 for ETTm1 horizon 24"):  # fmt: skip
+        assert score(probe, fa(f"SCINet | 2106.09305 | 0.370 | {noted}", both[1]))["score"] == 1.0, noted  # 出处编号不算
+    assert score(probe, fa("SCINet | 2106.09305 | 0.370 | 96 (Table 336)", both[1]))["score"] == 0.5
     assert score(probe, fa(both[0]))["score"] == 0.5  # 并列没列全
     assert score(probe, fa(both[0], "SCINet | 2106.09305 | 0.370 | 96"))["score"] == 0.5
     assert score(probe, fa(*both, "DLinear | 2211.14730 | 0.37 | 336"))["score"] == 0.0
